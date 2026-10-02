@@ -1,40 +1,80 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <defs>
-    <linearGradient id="gradBoard" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#3B82F6"/>
-      <stop offset="100%" stop-color="#1D4ED8"/>
+    <!-- Background Squircle Gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2563EB"/>
+      <stop offset="50%" stop-color="#1D4ED8"/>
+      <stop offset="100%" stop-color="#1E3A8A"/>
     </linearGradient>
-    <linearGradient id="gradPaper" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#FFFFFF"/>
-      <stop offset="100%" stop-color="#F1F5F9"/>
+
+    <!-- Clip Gradient -->
+    <linearGradient id="clipGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#475569"/>
+      <stop offset="100%" stop-color="#334155"/>
     </linearGradient>
-    <linearGradient id="gradClip" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#94A3B8"/>
-      <stop offset="100%" stop-color="#64748B"/>
+
+    <!-- History Badge Gradient -->
+    <linearGradient id="badgeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10B981"/>
+      <stop offset="100%" stop-color="#059669"/>
     </linearGradient>
-    <filter id="shadow" x="-10%" y="-10%" width="130%" height="130%">
-      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-opacity="0.25"/>
+
+    <!-- Drop Shadows -->
+    <filter id="squircleShadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#0F172A" flood-opacity="0.35"/>
+    </filter>
+
+    <filter id="cardShadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.2"/>
+    </filter>
+
+    <filter id="badgeShadow" x="-15%" y="-15%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#064E3B" flood-opacity="0.35"/>
     </filter>
   </defs>
 
-  <!-- Clipboard Board -->
-  <rect x="20" y="24" width="88" height="92" rx="14" fill="url(#gradBoard)" filter="url(#shadow)"/>
+  <!-- Base App Squircle Container -->
+  <rect x="36" y="36" width="440" height="440" rx="104" fill="url(#bgGrad)" filter="url(#squircleShadow)"/>
+  
+  <!-- Subtle Glass Highlight Border -->
+  <rect x="37" y="37" width="438" height="438" rx="103" fill="none" stroke="#FFFFFF" stroke-opacity="0.15" stroke-width="2"/>
 
-  <!-- Paper Sheet -->
-  <rect x="30" y="36" width="68" height="72" rx="8" fill="url(#gradPaper)"/>
+  <!-- Layer 1: Deep History Stack (Furthest Back Card) -->
+  <rect x="156" y="96" width="200" height="260" rx="24" fill="#FFFFFF" opacity="0.22"/>
 
-  <!-- Lines representing history items -->
-  <rect x="40" y="48" width="48" height="4" rx="2" fill="#94A3B8"/>
-  <rect x="40" y="58" width="36" height="4" rx="2" fill="#CBD5E1"/>
-  <rect x="40" y="68" width="44" height="4" rx="2" fill="#CBD5E1"/>
+  <!-- Layer 2: Intermediate History Stack (Middle Card) -->
+  <rect x="142" y="116" width="228" height="260" rx="24" fill="#FFFFFF" opacity="0.45"/>
 
-  <!-- History Clock Badge in bottom right -->
-  <circle cx="82" cy="88" r="18" fill="#10B981" filter="url(#shadow)"/>
-  <circle cx="82" cy="88" r="15" fill="#FFFFFF"/>
+  <!-- Layer 3: Main Active Clipboard (Front Card) -->
+  <rect x="126" y="136" width="260" height="268" rx="26" fill="#FFFFFF" filter="url(#cardShadow)"/>
+
+  <!-- Top Clipboard Metallic Clip -->
+  <rect x="206" y="114" width="100" height="44" rx="14" fill="url(#clipGrad)"/>
+  <rect x="226" y="102" width="60" height="22" rx="8" fill="#94A3B8"/>
+  <circle cx="256" cy="113" r="5" fill="#475569"/>
+
+  <!-- Clipboard Content Lines -->
+  <!-- Primary active item (vibrant highlight) -->
+  <rect x="162" y="198" width="188" height="16" rx="8" fill="#3B82F6"/>
+  <!-- Secondary history items -->
+  <rect x="162" y="234" width="148" height="14" rx="7" fill="#64748B"/>
+  <rect x="162" y="266" width="172" height="14" rx="7" fill="#94A3B8"/>
+  <rect x="162" y="298" width="118" height="14" rx="7" fill="#CBD5E1"/>
+  <rect x="162" y="330" width="154" height="14" rx="7" fill="#E2E8F0"/>
+
+  <!-- History Floating Badge (Bottom Right) -->
+  <circle cx="372" cy="372" r="66" fill="url(#badgeGrad)" filter="url(#badgeShadow)"/>
+  <circle cx="372" cy="372" r="65" fill="none" stroke="#FFFFFF" stroke-opacity="0.3" stroke-width="2"/>
+  <circle cx="372" cy="372" r="50" fill="#FFFFFF"/>
+
+  <!-- Clock History Icon inside Badge -->
   <!-- Clock hands -->
-  <path d="M 82 78 L 82 88 L 89 88" fill="none" stroke="#10B981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-
-  <!-- Clipboard Top Clip -->
-  <rect x="46" y="16" width="36" height="18" rx="6" fill="url(#gradClip)"/>
-  <rect x="54" y="12" width="20" height="8" rx="3" fill="#E2E8F0"/>
+  <circle cx="372" cy="372" r="5" fill="#10B981"/>
+  <path d="M 372 372 L 372 344" stroke="#10B981" stroke-width="6.5" stroke-linecap="round"/>
+  <path d="M 372 372 L 394 372" stroke="#10B981" stroke-width="6.5" stroke-linecap="round"/>
+  <!-- Subtle circular rewind tick marks -->
+  <circle cx="372" cy="336" r="2.5" fill="#10B981"/>
+  <circle cx="408" cy="372" r="2.5" fill="#10B981"/>
+  <circle cx="372" cy="408" r="2.5" fill="#10B981"/>
+  <circle cx="336" cy="372" r="2.5" fill="#10B981"/>
 </svg>

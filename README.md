@@ -1,10 +1,17 @@
-# Linux Universal Clipboard History Manager (Win+V Alternative)
+<p align="center">
+  <img src="packaging/desktop/icons/clipboard-history.svg" alt="Clipboard History Logo" width="128" height="128" />
+</p>
 
-[![CI](https://github.com/example/clipboard-history/actions/workflows/ci.yml/badge.svg)](https://github.com/example/clipboard-history/actions)
-[![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/Rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
-[![Platform](https://img.shields.io/badge/Platform-Wayland%20%7C%20X11-success.svg)](#compatibility)
-[![Memory](https://img.shields.io/badge/Idle%20Memory-%3C15%20MB%20RSS-brightgreen.svg)](#performance)
+<h1 align="center">Linux Universal Clipboard History Manager</h1>
+<p align="center"><b>The modern, high-performance Windows Win+V alternative for Wayland and X11</b></p>
+
+<p align="center">
+  <a href="https://github.com/example/clipboard-history/actions"><img src="https://github.com/example/clipboard-history/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg" alt="License" /></a>
+  <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-1.80%2B-orange.svg" alt="Rust" /></a>
+  <a href="#compatibility"><img src="https://img.shields.io/badge/Platform-Wayland%20%7C%20X11-success.svg" alt="Platform" /></a>
+  <a href="#performance"><img src="https://img.shields.io/badge/Idle%20Memory-%3C15%20MB%20RSS-brightgreen.svg" alt="Memory" /></a>
+</p>
 
 > A blazing-fast, modern, privacy-focused Universal Clipboard History utility for Linux desktop environments (**GNOME, KDE Plasma, Cosmic, Hyprland, Sway, Cinnamon, XFCE**). Built from the ground up in **Rust** with native **Wayland & X11** display server support, embedded **SQLite WAL**, and content-addressable **SHA-256 disk blob deduplication**.
 

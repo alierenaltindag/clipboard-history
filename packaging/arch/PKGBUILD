@@ -30,5 +30,7 @@ package() {
 
     install -Dm644 packaging/desktop/clipboard-history.desktop "$pkgdir/usr/share/applications/clipboard-history.desktop"
     install -Dm644 packaging/desktop/icons/clipboard-history.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/clipboard-history.svg"
+    mkdir -p "$pkgdir/usr/share/icons/hicolor"
+    cp -r packaging/desktop/icons/hicolor/* "$pkgdir/usr/share/icons/hicolor/"
     install -Dm644 packaging/systemd/clipboard-history.service "$pkgdir/usr/lib/systemd/user/clipboard-history.service"
 }

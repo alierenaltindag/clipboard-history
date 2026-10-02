@@ -23,6 +23,15 @@ cp -f "${PROJECT_ROOT}/packaging/desktop/clipboard-history.desktop" "${APP_DIR}/
 cp -f "${PROJECT_ROOT}/packaging/desktop/clipboard-history.desktop" "${APP_DIR}/usr/share/applications/"
 cp -f "${PROJECT_ROOT}/packaging/desktop/icons/clipboard-history.svg" "${APP_DIR}/clipboard-history.svg"
 cp -f "${PROJECT_ROOT}/packaging/desktop/icons/clipboard-history.svg" "${APP_DIR}/usr/share/icons/hicolor/scalable/apps/"
+cp -f "${PROJECT_ROOT}/packaging/desktop/icons/clipboard-history.png" "${APP_DIR}/clipboard-history.png"
+cp -f "${PROJECT_ROOT}/packaging/desktop/icons/clipboard-history.png" "${APP_DIR}/.DirIcon"
+
+for size in 16 24 32 48 64 128 256 512; do
+    if [[ -f "${PROJECT_ROOT}/packaging/desktop/icons/hicolor/${size}x${size}/apps/clipboard-history.png" ]]; then
+        mkdir -p "${APP_DIR}/usr/share/icons/hicolor/${size}x${size}/apps"
+        cp -f "${PROJECT_ROOT}/packaging/desktop/icons/hicolor/${size}x${size}/apps/clipboard-history.png" "${APP_DIR}/usr/share/icons/hicolor/${size}x${size}/apps/"
+    fi
+done
 
 # Create AppRun entrypoint
 cat > "${APP_DIR}/AppRun" << 'EOF'

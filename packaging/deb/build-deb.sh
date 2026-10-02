@@ -55,6 +55,14 @@ chmod 755 "${BUILD_ROOT}/usr/bin/"*
 # Desktop, Icon, Systemd
 cp -f "${PROJECT_ROOT}/packaging/desktop/clipboard-history.desktop" "${BUILD_ROOT}/usr/share/applications/"
 cp -f "${PROJECT_ROOT}/packaging/desktop/icons/clipboard-history.svg" "${BUILD_ROOT}/usr/share/icons/hicolor/scalable/apps/"
+
+for size in 16 24 32 48 64 128 256 512; do
+    if [[ -f "${PROJECT_ROOT}/packaging/desktop/icons/hicolor/${size}x${size}/apps/clipboard-history.png" ]]; then
+        mkdir -p "${BUILD_ROOT}/usr/share/icons/hicolor/${size}x${size}/apps"
+        cp -f "${PROJECT_ROOT}/packaging/desktop/icons/hicolor/${size}x${size}/apps/clipboard-history.png" "${BUILD_ROOT}/usr/share/icons/hicolor/${size}x${size}/apps/"
+    fi
+done
+
 cp -f "${PROJECT_ROOT}/packaging/systemd/clipboard-history.service" "${BUILD_ROOT}/usr/lib/systemd/user/"
 
 dpkg-deb --build "${BUILD_ROOT}" "${PROJECT_ROOT}/target/${PACKAGE_NAME}.deb"

@@ -41,6 +41,10 @@ rm -f "${BIN_DIR}/clipboard-history-gui"
 info "Removing desktop entry and application icons..."
 rm -f "${DESKTOP_DIR}/clipboard-history.desktop"
 rm -f "${ICON_DIR}/clipboard-history.svg"
+rm -f "${HOME}/.local/share/icons/hicolor/"*/apps/clipboard-history.png
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -f -t "${HOME}/.local/share/icons/hicolor" 2>/dev/null || true
+fi
 
 # 4. Remove GNOME shortcut if present
 if command -v gsettings >/dev/null 2>&1 && [[ "${XDG_CURRENT_DESKTOP:-}" == *"GNOME"* ]]; then

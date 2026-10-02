@@ -84,6 +84,13 @@ info "Installing desktop entry and icons..."
 cp -f "${PROJECT_ROOT}/packaging/desktop/clipboard-history.desktop" "${DESKTOP_DIR}/"
 cp -f "${PROJECT_ROOT}/packaging/desktop/icons/clipboard-history.svg" "${ICON_DIR}/"
 
+for size in 16 24 32 48 64 128 256 512; do
+    if [[ -f "${PROJECT_ROOT}/packaging/desktop/icons/hicolor/${size}x${size}/apps/clipboard-history.png" ]]; then
+        mkdir -p "${HOME}/.local/share/icons/hicolor/${size}x${size}/apps"
+        cp -f "${PROJECT_ROOT}/packaging/desktop/icons/hicolor/${size}x${size}/apps/clipboard-history.png" "${HOME}/.local/share/icons/hicolor/${size}x${size}/apps/"
+    fi
+done
+
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "${DESKTOP_DIR}" || true
 fi

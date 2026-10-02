@@ -39,6 +39,7 @@ impl ClipboardWindow {
         let window = Window::builder()
             .application(app)
             .title("Clipboard History")
+            .icon_name("clipboard-history")
             .default_width(config.ui.window_width as i32)
             .default_height(config.ui.window_height as i32)
             .hide_on_close(true)
@@ -83,9 +84,14 @@ impl ClipboardWindow {
         let header = HeaderBar::new();
         header.set_show_title_buttons(false);
 
+        let title_box = GtkBox::new(Orientation::Horizontal, 8);
+        let app_icon = gtk4::Image::from_icon_name("clipboard-history");
+        app_icon.set_pixel_size(20);
         let title_label = gtk4::Label::new(Some("Clipboard History"));
         title_label.add_css_class("heading");
-        header.set_title_widget(Some(&title_label));
+        title_box.append(&app_icon);
+        title_box.append(&title_label);
+        header.set_title_widget(Some(&title_box));
 
         let clear_btn = Button::from_icon_name("edit-clear-all-symbolic");
         clear_btn.set_tooltip_text(Some("Clear unpinned history"));

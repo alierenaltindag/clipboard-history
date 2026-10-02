@@ -42,6 +42,7 @@ install -m 755 target/release/clipboard-history-gui $RPM_BUILD_ROOT%{_bindir}/
 
 install -m 644 packaging/desktop/clipboard-history.desktop $RPM_BUILD_ROOT%{_datadir}/applications/
 install -m 644 packaging/desktop/icons/clipboard-history.svg $RPM_BUILD_ROOT%{_datadir}/icons/hicolor/scalable/apps/
+cp -r packaging/desktop/icons/hicolor/* $RPM_BUILD_ROOT%{_datadir}/icons/hicolor/
 install -m 644 packaging/systemd/clipboard-history.service $RPM_BUILD_ROOT%{_userunitdir}/
 
 %files
@@ -49,7 +50,7 @@ install -m 644 packaging/systemd/clipboard-history.service $RPM_BUILD_ROOT%{_use
 %{_bindir}/clipboard-history-daemon
 %{_bindir}/clipboard-history-gui
 %{_datadir}/applications/clipboard-history.desktop
-%{_datadir}/icons/hicolor/scalable/apps/clipboard-history.svg
+%{_datadir}/icons/hicolor/*/apps/clipboard-history.*
 %{_userunitdir}/clipboard-history.service
 
 %changelog
