@@ -6,7 +6,7 @@
 <p align="center"><b>The modern, high-performance Windows Win+V alternative for Wayland and X11</b></p>
 
 <p align="center">
-  <a href="https://github.com/example/clipboard-history/actions"><img src="https://github.com/example/clipboard-history/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/alierenaltindag/clipboard-history/actions"><img src="https://github.com/alierenaltindag/clipboard-history/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg" alt="License" /></a>
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-1.80%2B-orange.svg" alt="Rust" /></a>
   <a href="#compatibility"><img src="https://img.shields.io/badge/Platform-Wayland%20%7C%20X11-success.svg" alt="Platform" /></a>
@@ -102,7 +102,7 @@ flowchart TD
 Clone the repository and run the idempotent installer:
 
 ```bash
-git clone https://github.com/example/clipboard-history.git
+git clone https://github.com/alierenaltindag/clipboard-history.git
 cd clipboard-history
 ./scripts/install.sh
 ```

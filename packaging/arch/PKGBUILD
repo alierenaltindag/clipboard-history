@@ -1,10 +1,10 @@
-# Maintainer: Antigravity Contributors <contributors@example.com>
+# Maintainer: Ali Eren Altındağ <alierenaltindaag@gmail.com>
 pkgname=clipboard-history
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="High-performance Universal Clipboard History utility for Linux (Win+V alternative)"
 arch=('x86_64' 'aarch64')
-url="https://github.com/example/clipboard-history"
+url="https://github.com/alierenaltindag/clipboard-history"
 license=('MIT' 'Apache-2.0')
 depends=('libx11' 'libxtst')
 optdepends=(

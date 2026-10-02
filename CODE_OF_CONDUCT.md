@@ -10,4 +10,4 @@ We pledge to act and interact in ways that contribute to an open, welcoming, div
 
 Community leaders will follow these Community Impact Guidelines in determining the consequences for any action they deem in violation of this Code of Conduct.
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders at alierenaltindaag@gmail.com.

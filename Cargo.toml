@@ -10,10 +10,10 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Antigravity Contributors"]
+authors = ["Ali Eren Altındağ <alierenaltindaag@gmail.com>"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/example/clipboard-history"
-homepage = "https://github.com/example/clipboard-history"
+repository = "https://github.com/alierenaltindag/clipboard-history"
+homepage = "https://github.com/alierenaltindag/clipboard-history"
 readme = "README.md"
 rust-version = "1.80"
 description = "Universal Linux Clipboard History utility (Windows Win+V alternative) for Wayland and X11"

@@ -8,10 +8,10 @@
 
 ## Reporting a Vulnerability
 
-Please report security vulnerabilities privately using [GitHub Private Vulnerability Reporting](https://github.com/alierenaltindag/protect-eye/security/advisories/new). This ensures that the issue can be discussed, triaged, and resolved before any public disclosure.
+Please report security vulnerabilities privately using [GitHub Private Vulnerability Reporting](https://github.com/alierenaltindag/clipboard-history/security/advisories/new). This ensures that the issue can be discussed, triaged, and resolved before any public disclosure.
 
 1. **Do NOT report security issues via public GitHub issues.**
-2. Submitting through the private advisory link allows us to safely collaborate on a fix.
+2. Submitting through the private advisory link allows us to safely collaborate on a fix, or email alierenaltindaag@gmail.com.
 3. You will receive an initial response acknowledging receipt within 48 hours.
 4. We will coordinate a fix, release a patch version, and publish a security advisory giving appropriate credit.
 

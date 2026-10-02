@@ -1,6 +1,6 @@
 [Unit]
 Description=Universal Linux Clipboard History Daemon
-Documentation=https://github.com/example/clipboard-history
+Documentation=https://github.com/alierenaltindag/clipboard-history
 PartOf=graphical-session.target
 After=graphical-session.target
 

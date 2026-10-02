@@ -14,7 +14,7 @@ Thank you for considering contributing to the Linux Universal Clipboard History 
 ### Building the Project
 ```bash
 # Clone the repository
-git clone https://github.com/example/clipboard-history.git
+git clone https://github.com/alierenaltindag/clipboard-history.git
 cd clipboard-history
 
 # Build all workspace crates

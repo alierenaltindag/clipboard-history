@@ -26,7 +26,7 @@ Priority: optional
 Architecture: ${ARCH}
 Depends: libc6, libx11-6, libxtst6
 Recommends: wl-clipboard, xdotool
-Maintainer: Antigravity Contributors <contributors@example.com>
+Maintainer: Ali Eren Altındağ <alierenaltindaag@gmail.com>
 Description: High-performance Universal Clipboard History utility for Linux
  Modern Win+V alternative for Wayland and X11 desktop environments,
  supporting rich text, images, file lists, and instant search.

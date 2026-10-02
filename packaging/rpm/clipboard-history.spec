@@ -4,7 +4,7 @@ Release:        1%{?dist}
 Summary:        High-performance Universal Clipboard History utility for Linux
 
 License:        MIT or Apache-2.0
-URL:            https://github.com/example/clipboard-history
+URL:            https://github.com/alierenaltindag/clipboard-history
 Source0:        %{name}-%{version}.tar.gz
 
 BuildRequires:  cargo
@@ -54,5 +54,5 @@ install -m 644 packaging/systemd/clipboard-history.service $RPM_BUILD_ROOT%{_use
 %{_userunitdir}/clipboard-history.service
 
 %changelog
-* Fri Oct 02 2026 Antigravity Contributors <contributors@example.com> - 0.1.0-1
+* Fri Oct 02 2026 Ali Eren Altındağ <alierenaltindaag@gmail.com> - 0.1.0-1
 - Initial release
