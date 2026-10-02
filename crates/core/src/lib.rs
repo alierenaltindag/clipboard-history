@@ -13,7 +13,8 @@ pub mod transforms;
 pub use blob::{BlobStore, ThumbnailGenerator};
 pub use cache::BoundedCache;
 pub use config::{
-    AppConfig, GeneralConfig, HotkeyConfig, PasteConfig, SecurityConfig, SyncConfig, UiConfig,
+    AppConfig, AppFilterMode, GeneralConfig, HotkeyConfig, PasteConfig, SecurityConfig, SyncConfig,
+    UiConfig,
 };
 pub use domain::{ClipboardEntry, EntryType, Snippet};
 pub use error::{CoreError, Result};
@@ -25,5 +26,5 @@ pub use security::{CryptoEngine, PasswordManagerGuard, SecretFilter, SecretHandl
 pub use storage::SqliteRepository;
 pub use transforms::{
     ColorInfo, ConcatDelimiter, DiffEngine, DiffLine, DiffResult, DiffTag, OcrEngine,
-    SnippetExpander, TextTransforms,
+    SnippetExpander, TextTransforms, UrlCleaner,
 };

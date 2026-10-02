@@ -88,7 +88,16 @@ impl SettingsDialog {
         incognito_row.set_active(config.security.ignore_incognito_windows);
         security_group.add(&incognito_row);
 
-        // 3. Direct keystroke auto-paste toggle
+        // 3. URL De-tracker toggle
+        let clean_urls_row = libadwaita::SwitchRow::new();
+        clean_urls_row.set_title("🛡️ URL De-Tracker & Privacy Cleaner");
+        clean_urls_row.set_subtitle(
+            "Automatically strip tracking query parameters (utm_*, fbclid, gclid, etc.) from copied links",
+        );
+        clean_urls_row.set_active(config.security.auto_clean_tracking_urls);
+        security_group.add(&clean_urls_row);
+
+        // 4. Direct keystroke auto-paste toggle
         let auto_paste_row = libadwaita::SwitchRow::new();
         auto_paste_row.set_title("Direct Keystroke Paste");
         auto_paste_row.set_subtitle("Automatically synthesize Ctrl+V when an entry is selected");
@@ -96,6 +105,33 @@ impl SettingsDialog {
         security_group.add(&auto_paste_row);
 
         page.add(&security_group);
+
+        // Application Filter Group (Blacklist / Whitelist)
+        let filter_group = libadwaita::PreferencesGroup::new();
+        filter_group.set_title("Application Filtering");
+        filter_group.set_description(Some(
+            "Filter clipboard history capture based on application name or window class",
+        ));
+
+        let mode_row = libadwaita::ComboRow::new();
+        let model = gtk4::StringList::new(&[
+            "Blacklist (Ignore specified apps)",
+            "Whitelist (Only save from specified apps)",
+        ]);
+        mode_row.set_model(Some(&model));
+        mode_row.set_title("Filter Mode");
+        mode_row.set_selected(match config.security.app_filter_mode {
+            clipboard_history_core::config::AppFilterMode::Blacklist => 0,
+            clipboard_history_core::config::AppFilterMode::Whitelist => 1,
+        });
+        filter_group.add(&mode_row);
+
+        let list_row = libadwaita::EntryRow::new();
+        list_row.set_title("Filtered Apps (comma-separated)");
+        list_row.set_text(&config.security.app_filter_list.join(", "));
+        filter_group.add(&list_row);
+
+        page.add(&filter_group);
 
         // Network Sync Group
         let sync_group = libadwaita::PreferencesGroup::new();
@@ -129,6 +165,35 @@ impl SettingsDialog {
         incognito_row.connect_active_notify(move |row| {
             cfg_incog.borrow_mut().security.ignore_incognito_windows = row.is_active();
             Self::save_and_sync(&cfg_incog.borrow());
+        });
+
+        let cfg_clean = Rc::clone(&cfg_cell);
+        clean_urls_row.connect_active_notify(move |row| {
+            cfg_clean.borrow_mut().security.auto_clean_tracking_urls = row.is_active();
+            Self::save_and_sync(&cfg_clean.borrow());
+        });
+
+        let cfg_mode = Rc::clone(&cfg_cell);
+        mode_row.connect_selected_notify(move |row| {
+            let mode = if row.selected() == 1 {
+                clipboard_history_core::config::AppFilterMode::Whitelist
+            } else {
+                clipboard_history_core::config::AppFilterMode::Blacklist
+            };
+            cfg_mode.borrow_mut().security.app_filter_mode = mode;
+            Self::save_and_sync(&cfg_mode.borrow());
+        });
+
+        let cfg_list = Rc::clone(&cfg_cell);
+        list_row.connect_changed(move |row| {
+            let text = row.text().to_string();
+            let items = text
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>();
+            cfg_list.borrow_mut().security.app_filter_list = items;
+            Self::save_and_sync(&cfg_list.borrow());
         });
 
         let cfg_paste = Rc::clone(&cfg_cell);

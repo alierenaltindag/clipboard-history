@@ -3,7 +3,7 @@
 use crate::injector::InjectorCascade;
 use clipboard_history_core::config::AppConfig;
 use clipboard_history_core::domain::ClipboardEntry;
-use clipboard_history_core::transforms::TextTransforms;
+use clipboard_history_core::transforms::{TextTransforms, UrlCleaner};
 use gdk4::prelude::*;
 use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, Button, Label, Orientation, Popover, Window};
@@ -255,6 +255,18 @@ pub fn show_transforms_popover(
         });
     });
 
+    // 5. URL De-tracker Action if text is a URL or has tracking parameters
+    let mut clean_btn_opt = None;
+    if UrlCleaner::is_url(&text_content) || UrlCleaner::has_tracking_params(&text_content) {
+        let clean_box = GtkBox::new(Orientation::Horizontal, 6);
+        clean_box.set_margin_top(4);
+        let clean_btn = Button::with_label("🛡️ Clean Tracking Params (De-Track)");
+        clean_btn.add_css_class("suggested-action");
+        clean_box.append(&clean_btn);
+        container.append(&clean_box);
+        clean_btn_opt = Some(clean_btn);
+    }
+
     popover.set_child(Some(&container));
 
     // Connect handlers
@@ -277,6 +289,16 @@ pub fn show_transforms_popover(
             }
         }
     };
+
+    if let Some(clean_btn) = clean_btn_opt {
+        let t = text_content.clone();
+        let win = main_window.clone();
+        let auto_paste = config.paste.auto_paste;
+        clean_btn.connect_clicked(move |_| {
+            let cleaned = UrlCleaner::clean_text_urls(&t);
+            make_paste_closure(cleaned, win.clone(), auto_paste)();
+        });
+    }
 
     let t = text_content.clone();
     let win = main_window.clone();

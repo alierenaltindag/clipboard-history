@@ -18,6 +18,7 @@ use clipboard_history_core::config::AppConfig;
 use clipboard_history_core::domain::ClipboardEntry;
 use clipboard_history_core::security::{PasswordManagerGuard, SecretFilter, SecretHandlingPolicy};
 use clipboard_history_core::storage::SqliteRepository;
+use clipboard_history_core::transforms::UrlCleaner;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -258,27 +259,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        // 3. Window Class Blacklist check
-        if let Some(source) = &event.source_app {
-            let lower_src = source.to_lowercase();
-            if current_cfg
-                .security
-                .ignored_window_classes
-                .iter()
-                .any(|w| lower_src.contains(&w.to_lowercase()))
-            {
-                info!(
-                    "Ignored clipboard entry from blacklisted window: {}",
-                    source
-                );
-                continue;
-            }
+        // 3. Application Filter check (Blacklist or Whitelist)
+        let active_win = window_focus_detector.get_active_window_info();
+        let active_class = active_win.as_ref().map(|(_, c)| c.as_str());
+        let source_app = event.source_app.as_deref();
+
+        if !current_cfg
+            .security
+            .is_app_allowed(source_app, active_class)
+        {
+            info!(
+                "Ignored clipboard entry filtered by application rules (mode: {:?}, app: {:?}, window_class: {:?})",
+                current_cfg.security.app_filter_mode, source_app, active_class
+            );
+            continue;
         }
 
         // 4. Process Text / HTML / UriList
         if let Some(mut text) = event.text {
             if text.trim().is_empty() {
                 continue;
+            }
+
+            // Automatic URL De-Tracker & Privacy Cleaner if enabled in settings
+            if current_cfg.security.auto_clean_tracking_urls {
+                text = UrlCleaner::clean_text_urls(&text);
             }
 
             if !circuit_breaker.allow_payload_size(text.len()) {
@@ -301,9 +306,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let hash = BlobStore::compute_hash(text.as_bytes());
 
+            let cleaned_html = event.html.map(|h| {
+                if current_cfg.security.auto_clean_tracking_urls {
+                    UrlCleaner::clean_text_urls(&h)
+                } else {
+                    h
+                }
+            });
+
             let entry = if event.mime_types.iter().any(|m| m == "text/uri-list") {
                 ClipboardEntry::new_uri_list(text, hash, event.mime_types, event.source_app)
-            } else if let Some(html) = event.html {
+            } else if let Some(html) = cleaned_html {
                 ClipboardEntry::new_html(text, html, hash, event.mime_types, event.source_app)
             } else {
                 ClipboardEntry::new_text(text, hash, event.mime_types, event.source_app)

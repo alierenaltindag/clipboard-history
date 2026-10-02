@@ -32,6 +32,11 @@
     <binary>clipboard-history-gui</binary>
   </provides>
   <releases>
+    <release version="0.5.0" date="2026-10-02">
+      <description>
+        <p>Introduces URL De-Tracker &amp; Privacy Cleaner (auto or on-demand telemetry query stripping) and Per-Application Blacklist &amp; Whitelist Manager.</p>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-10-02">
       <description>
         <p>Introduces Multi-Item Batch Operations with Concatenate Paste (custom delimiters, lists) and a built-in Clipboard Diff Viewer with side-by-side/unified syntax-highlighted comparisons.</p>

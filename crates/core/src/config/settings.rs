@@ -28,6 +28,14 @@ impl Default for GeneralConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AppFilterMode {
+    #[default]
+    Blacklist,
+    Whitelist,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityConfig {
     pub ignore_password_managers: bool,
@@ -37,6 +45,12 @@ pub struct SecurityConfig {
     pub ignored_window_classes: Vec<String>,
     pub encryption_enabled: bool,
     pub incognito_window_patterns: Vec<String>,
+    #[serde(default)]
+    pub app_filter_mode: AppFilterMode,
+    #[serde(default)]
+    pub app_filter_list: Vec<String>,
+    #[serde(default)]
+    pub auto_clean_tracking_urls: bool,
 }
 
 impl Default for SecurityConfig {
@@ -60,6 +74,71 @@ impl Default for SecurityConfig {
                 "*1password*".to_string(),
                 "*bitwarden*".to_string(),
             ],
+            app_filter_mode: AppFilterMode::Blacklist,
+            app_filter_list: Vec::new(),
+            auto_clean_tracking_urls: false,
+        }
+    }
+}
+
+impl SecurityConfig {
+    /// Determines whether a clipboard copy from the given app and/or window class is permitted.
+    pub fn is_app_allowed(&self, app_name: Option<&str>, window_class: Option<&str>) -> bool {
+        let mut candidates = Vec::new();
+        if let Some(app) = app_name {
+            let trimmed = app.trim();
+            if !trimmed.is_empty() {
+                candidates.push(trimmed.to_lowercase());
+            }
+        }
+        if let Some(cls) = window_class {
+            let trimmed = cls.trim();
+            if !trimmed.is_empty() {
+                candidates.push(trimmed.to_lowercase());
+            }
+        }
+
+        let matches_pattern = |pattern: &str, candidate: &str| -> bool {
+            let clean = pattern.trim().trim_matches('*').to_lowercase();
+            !clean.is_empty() && candidate.contains(&clean)
+        };
+
+        match self.app_filter_mode {
+            AppFilterMode::Blacklist => {
+                // If candidate matches any item in app_filter_list or legacy ignored_window_classes, reject
+                for candidate in &candidates {
+                    for filter in &self.app_filter_list {
+                        if matches_pattern(filter, candidate) {
+                            return false;
+                        }
+                    }
+                    for legacy in &self.ignored_window_classes {
+                        if matches_pattern(legacy, candidate) {
+                            return false;
+                        }
+                    }
+                }
+                true
+            }
+            AppFilterMode::Whitelist => {
+                // In whitelist mode, if list is empty, allow everything
+                if self.app_filter_list.is_empty() {
+                    return true;
+                }
+                // If candidates is empty (unknown origin), do not allow
+                if candidates.is_empty() {
+                    return false;
+                }
+                // Check if any candidate matches any pattern in app_filter_list
+                for candidate in &candidates {
+                    for filter in &self.app_filter_list {
+                        if matches_pattern(filter, candidate) {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
         }
     }
 }

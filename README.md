@@ -20,6 +20,8 @@
 ## 🌟 Key Highlights
 
 - ⚡ **Windows Win+V Ergonomics**: Instant ephemeral popup window with warm-standby activation, cursor-anchored positioning, and modern acrylic card styling.
+- 🛡️ **URL De-Tracker & Privacy Cleaner**: Strips telemetry and tracking parameters (`utm_*`, `fbclid`, `gclid`, `si`, `igshid`, `msclkid`, `mc_eid`, Amazon `/ref=`, etc.) with one-click transform in GUI, CLI command `clean-url`, or automatic real-time de-tracking.
+- 🚫 **Per-Application Blacklist & Whitelist Manager**: Granular application rules (`blacklist` or `whitelist`) to ignore confidential windows (e.g. terminals, Slack, proprietary software) or restrict capture to specific apps only.
 - 🧩 **Multi-Item Batch Operations & "Concatenate Paste"**: Select multiple entries (`Ctrl+M` or Selection Mode) and join them with custom delimiters (newlines, paragraphs, commas, bullet lists, numbered lists) to paste all at once. Batch delete, pin, or enqueue.
 - 🔀 **Built-in Clipboard Diff Viewer**: Compare any two text/code snippets with side-by-side/unified syntax-highlighted diffs, additions/deletions statistics, swap controls, and one-click diff copying.
 - 🔁 **Sequential Paste Queue (FIFO)**: Queue multiple clipboard items and pop them one by one into any document using the HUD status badge or `clipboard-history queue pop`.
@@ -223,6 +225,10 @@ clipboard-history batch-delete <ID_1> <ID_2> <ID_3>
 # On-Demand Image OCR
 clipboard-history ocr <IMAGE_ENTRY_ID_OR_HASH>
 
+# URL De-Tracker & Privacy Cleaner
+clipboard-history clean-url "https://example.com?utm_source=twitter&fbclid=123"
+clipboard-history clean-url <ENTRY_ID>
+
 # Pin / unpin an entry by ID
 clipboard-history pin <ENTRY_ID>
 clipboard-history unpin <ENTRY_ID>
@@ -241,11 +247,15 @@ clipboard-history status
 
 # View and update configuration (takes effect immediately)
 clipboard-history config show
-clipboard-history config set-passwords false   # Allow or block password manager copies
-clipboard-history config set-incognito false   # Allow or block incognito/private window copies
-clipboard-history config set-auto-paste false  # Toggle direct keystroke paste
-clipboard-history config set-sync true         # Enable P2P LAN clipboard synchronization
-clipboard-history config set-pin "654321"      # Update 6-digit zero-trust pairing PIN
+clipboard-history config set-clean-urls true        # Auto-strip tracking queries from copied links
+clipboard-history config set-app-filter-mode blacklist  # "blacklist" or "whitelist"
+clipboard-history config add-app-filter "slack"     # Ignore copies from Slack
+clipboard-history config remove-app-filter "slack"
+clipboard-history config set-passwords false        # Allow or block password manager copies
+clipboard-history config set-incognito false        # Allow or block incognito/private window copies
+clipboard-history config set-auto-paste false       # Toggle direct keystroke paste
+clipboard-history config set-sync true              # Enable P2P LAN clipboard synchronization
+clipboard-history config set-pin "654321"           # Update 6-digit zero-trust pairing PIN
 ```
 
 ---
@@ -265,6 +275,9 @@ rate_limit_per_second = 10       # Circuit breaker threshold
 [security]
 ignore_password_managers = true  # Rejects KeePassXC, 1Password, Bitwarden copies (Default: true)
 ignore_incognito_windows = true  # Rejects copies made in private/incognito windows (Default: true)
+auto_clean_tracking_urls = false # Automatically strip tracking query parameters (utm_*, fbclid, etc.)
+app_filter_mode = "blacklist"    # "blacklist" (block listed) or "whitelist" (only allow listed)
+app_filter_list = []             # List of filtered application names or window classes
 secret_policy = "reject"         # "reject", "mask", or "allow"
 encryption_enabled = false       # Pure-Rust AES-256-GCM envelope encryption at rest
 custom_secret_patterns = []      # Additional custom regex filters

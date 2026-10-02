@@ -664,3 +664,137 @@ fn test_sqlite_batch_operations() {
         assert!(!item.is_pinned);
     }
 }
+
+#[test]
+fn test_url_cleaner_tracking_params() {
+    use clipboard_history_core::transforms::UrlCleaner;
+
+    // 1. UTM and common ads parameters
+    let raw1 = "https://example.com/article?utm_source=twitter&utm_medium=social&utm_campaign=spring2026&id=123";
+    let cleaned1 = UrlCleaner::clean_tracking_params(raw1);
+    assert_eq!(cleaned1, "https://example.com/article?id=123");
+
+    // 2. All query params are tracking params
+    let raw2 = "https://example.com/shop?utm_source=email&fbclid=IwAR123456&gclid=CjwKCAiA";
+    let cleaned2 = UrlCleaner::clean_tracking_params(raw2);
+    assert_eq!(cleaned2, "https://example.com/shop");
+
+    // 3. YouTube link: preserve 'v', strip 'si' and 'feature'
+    let yt = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&si=u1pP9z&feature=shared";
+    let cleaned_yt = UrlCleaner::clean_tracking_params(yt);
+    assert_eq!(cleaned_yt, "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+
+    // 4. Twitter / X link: strip 's' and 't'
+    let x_url = "https://x.com/rustlang/status/1234567890?s=20&t=a1b2c3d4";
+    let cleaned_x = UrlCleaner::clean_tracking_params(x_url);
+    assert_eq!(cleaned_x, "https://x.com/rustlang/status/1234567890");
+
+    // 5. Amazon URL: strip /ref= in path and tracking queries
+    let amz =
+        "https://www.amazon.com/dp/B08N5WRWNW/ref=sr_1_1?keywords=keyboard&qid=12345&ref_=as_li";
+    let cleaned_amz = UrlCleaner::clean_tracking_params(amz);
+    assert_eq!(
+        cleaned_amz,
+        "https://www.amazon.com/dp/B08N5WRWNW?keywords=keyboard&qid=12345"
+    );
+
+    // 6. Fragment preservation
+    let frag_url = "https://docs.rs/similar/latest/similar/?utm_medium=referral#functions";
+    let cleaned_frag = UrlCleaner::clean_tracking_params(frag_url);
+    assert_eq!(
+        cleaned_frag,
+        "https://docs.rs/similar/latest/similar/#functions"
+    );
+
+    // 7. Text block with embedded URLs and trailing punctuation
+    let text = "Check out https://youtube.com/watch?v=abc&si=track1. Also visit https://example.com/test?fbclid=xyz, thanks!";
+    let cleaned_text = UrlCleaner::clean_text_urls(text);
+    assert_eq!(
+        cleaned_text,
+        "Check out https://youtube.com/watch?v=abc. Also visit https://example.com/test, thanks!"
+    );
+
+    // 8. Meta/Instagram, Microsoft, Mailchimp, and Google query preservation
+    let google_url = "https://www.google.com/search?q=rust+lang&gclid=Cj0KCQ&dclid=123&gad_source=1&gbraid=456&wbraid=789";
+    let cleaned_google = UrlCleaner::clean_tracking_params(google_url);
+    assert_eq!(cleaned_google, "https://www.google.com/search?q=rust+lang");
+
+    let meta_url =
+        "https://instagram.com/p/abc123xyz/?igshid=YmMyMTA2M2Y=&fb_source=feed&fb_custom=test";
+    let cleaned_meta = UrlCleaner::clean_tracking_params(meta_url);
+    assert_eq!(cleaned_meta, "https://instagram.com/p/abc123xyz/");
+
+    let ms_mc_url = "https://store.example.com/item?id=99&msclkid=ms123&mc_cid=cid456&mc_eid=eid789&recipient_id=rec1";
+    let cleaned_ms_mc = UrlCleaner::clean_tracking_params(ms_mc_url);
+    assert_eq!(cleaned_ms_mc, "https://store.example.com/item?id=99");
+
+    // 9. has_tracking_params detection
+    assert!(UrlCleaner::has_tracking_params(
+        "https://test.com?utm_source=test"
+    ));
+    assert!(UrlCleaner::has_tracking_params(
+        "https://test.com?fb_source=newsfeed"
+    ));
+    assert!(!UrlCleaner::has_tracking_params(
+        "https://test.com/search?q=rust"
+    ));
+    assert!(!UrlCleaner::has_tracking_params("Plain text without URLs"));
+}
+
+#[test]
+fn test_app_filter_rules() {
+    use clipboard_history_core::config::{AppConfig, AppFilterMode, SecurityConfig};
+
+    let mut sec = SecurityConfig::default();
+    assert_eq!(sec.app_filter_mode, AppFilterMode::Blacklist);
+    assert!(sec.app_filter_list.is_empty());
+
+    // 1. Blacklist mode: default legacy classes (KeePassXC, 1Password, Bitwarden) are blocked
+    assert!(!sec.is_app_allowed(Some("org.keepassxc.KeePassXC"), None));
+    assert!(!sec.is_app_allowed(None, Some("1password-gui")));
+    assert!(sec.is_app_allowed(Some("Alacritty"), Some("alacritty")));
+    assert!(sec.is_app_allowed(None, None));
+
+    // 2. Blacklist mode: adding app to filter list
+    sec.app_filter_list.push("slack".to_string());
+    sec.app_filter_list.push("discord".to_string());
+
+    assert!(!sec.is_app_allowed(Some("Slack"), None));
+    assert!(!sec.is_app_allowed(None, Some("discord")));
+    assert!(sec.is_app_allowed(Some("firefox"), Some("Navigator")));
+
+    // 3. Whitelist mode with empty list allows all
+    sec.app_filter_mode = AppFilterMode::Whitelist;
+    sec.app_filter_list.clear();
+    assert!(sec.is_app_allowed(Some("firefox"), None));
+    assert!(sec.is_app_allowed(Some("Slack"), None));
+
+    // 4. Whitelist mode with configured allowed apps
+    sec.app_filter_list.push("code".to_string());
+    sec.app_filter_list.push("terminal".to_string());
+
+    // Matches allowed list
+    assert!(sec.is_app_allowed(Some("Visual Studio Code"), Some("code")));
+    assert!(sec.is_app_allowed(Some("gnome-terminal"), None));
+
+    // Does not match allowed list -> blocked
+    assert!(!sec.is_app_allowed(Some("Slack"), Some("slack")));
+    assert!(!sec.is_app_allowed(Some("firefox"), Some("Navigator")));
+    assert!(!sec.is_app_allowed(None, None));
+
+    // 5. TOML Serialization and Deserialization round-trip
+    let mut config = AppConfig::default();
+    config.security.app_filter_mode = AppFilterMode::Whitelist;
+    config.security.app_filter_list = vec!["firefox".to_string(), "alacritty".to_string()];
+    config.security.auto_clean_tracking_urls = true;
+
+    let toml_str = toml::to_string(&config).expect("Serialization failed");
+    let loaded: AppConfig = toml::from_str(&toml_str).expect("Deserialization failed");
+
+    assert_eq!(loaded.security.app_filter_mode, AppFilterMode::Whitelist);
+    assert_eq!(
+        loaded.security.app_filter_list,
+        vec!["firefox".to_string(), "alacritty".to_string()]
+    );
+    assert!(loaded.security.auto_clean_tracking_urls);
+}

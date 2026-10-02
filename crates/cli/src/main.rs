@@ -148,6 +148,12 @@ enum Commands {
         ids: Vec<String>,
     },
 
+    #[command(about = "Clean tracking parameters from a URL or clipboard entry")]
+    CleanUrl {
+        #[arg(help = "URL string or clipboard entry ID")]
+        target: String,
+    },
+
     #[command(about = "Manage clipboard history configuration settings")]
     Config {
         #[command(subcommand)]
@@ -205,6 +211,30 @@ enum ConfigAction {
     SetIncognito {
         #[arg(action = clap::ArgAction::Set, help = "true to ignore (do not save), false to allow saving")]
         enabled: bool,
+    },
+
+    #[command(about = "Toggle automatic cleaning of tracking parameters from copied URLs")]
+    SetCleanUrls {
+        #[arg(action = clap::ArgAction::Set, help = "true to automatically clean tracking parameters, false to preserve raw URLs")]
+        enabled: bool,
+    },
+
+    #[command(about = "Set application filter mode (blacklist or whitelist)")]
+    SetAppFilterMode {
+        #[arg(help = "Filter mode: blacklist or whitelist")]
+        mode: String,
+    },
+
+    #[command(about = "Add application name or window class to filter list")]
+    AddAppFilter {
+        #[arg(help = "Application name or window class (e.g. 'slack', 'org.gnome.Calculator')")]
+        app: String,
+    },
+
+    #[command(about = "Remove application name or window class from filter list")]
+    RemoveAppFilter {
+        #[arg(help = "Application name or window class to remove")]
+        app: String,
     },
 
     #[command(about = "Toggle direct keystroke auto-paste")]
@@ -762,6 +792,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
+        Commands::CleanUrl { target } => {
+            let is_url = target.starts_with("http://") || target.starts_with("https://");
+            let (original_text, entry_id) = if is_url {
+                (target.clone(), None)
+            } else {
+                // Try fetching entry by ID from daemon
+                let req = IpcRequest::GetEntry { id: target.clone() };
+                match IpcClient::send_request(&socket_path, &req).await {
+                    Ok(IpcResponse::Entry(entry_opt)) => {
+                        if let Some(entry) = *entry_opt {
+                            (
+                                entry.text_content.unwrap_or(entry.preview),
+                                Some(target.clone()),
+                            )
+                        } else {
+                            (target.clone(), None)
+                        }
+                    }
+                    _ => (target.clone(), None),
+                }
+            };
+
+            let cleaned =
+                clipboard_history_core::transforms::UrlCleaner::clean_text_urls(&original_text);
+
+            if cleaned == original_text {
+                println!("No tracking parameters detected in target:");
+                println!("{}", original_text);
+            } else {
+                // Add cleaned entry to clipboard history
+                let add_req = IpcRequest::AddManualEntry {
+                    text: cleaned.clone(),
+                };
+                let _ = IpcClient::send_request(&socket_path, &add_req).await;
+
+                if let Some(id) = entry_id {
+                    println!("Cleaned tracking parameters from entry {}:", id);
+                } else {
+                    println!("Cleaned tracking parameters from URL:");
+                }
+                println!("Original : {}", original_text);
+                println!("Cleaned  : {}", cleaned);
+                println!("(Cleaned text copied to clipboard history)");
+            }
+        }
+
         Commands::Config { action } => {
             // Retrieve current configuration: try daemon IPC first, fallback to disk
             let mut cfg = match IpcClient::send_request(&socket_path, &IpcRequest::GetConfig).await
@@ -795,6 +871,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         } else {
                             "DISABLED"
                         }
+                    );
+                    println!(
+                        "  Auto-clean Tracking URLs  : {} (strip utm_*, fbclid, gclid, etc.)",
+                        if cfg.security.auto_clean_tracking_urls {
+                            "ENABLED"
+                        } else {
+                            "DISABLED"
+                        }
+                    );
+                    println!(
+                        "  App Filter Mode           : {:?}",
+                        cfg.security.app_filter_mode
+                    );
+                    println!(
+                        "  App Filter List           : {:?}",
+                        cfg.security.app_filter_list
                     );
                     println!(
                         "  Secret Handling Policy   : {:?}",
@@ -881,6 +973,74 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             "copies from incognito/private windows will be saved"
                         }
                     );
+                }
+                ConfigAction::SetCleanUrls { enabled } => {
+                    cfg.security.auto_clean_tracking_urls = enabled;
+                    save_and_broadcast_config(&socket_path, &cfg).await?;
+                    println!(
+                        "Auto-clean tracking URLs updated: {} ({})",
+                        if enabled { "ENABLED" } else { "DISABLED" },
+                        if enabled {
+                            "tracking parameters (utm_*, fbclid, etc.) will be automatically removed from copied links"
+                        } else {
+                            "raw copied links will be preserved unchanged"
+                        }
+                    );
+                }
+                ConfigAction::SetAppFilterMode { mode } => {
+                    let new_mode = match mode.to_lowercase().as_str() {
+                        "blacklist" | "black" => {
+                            clipboard_history_core::config::AppFilterMode::Blacklist
+                        }
+                        "whitelist" | "white" => {
+                            clipboard_history_core::config::AppFilterMode::Whitelist
+                        }
+                        other => {
+                            eprintln!(
+                                "Invalid filter mode '{}'. Expected 'blacklist' or 'whitelist'.",
+                                other
+                            );
+                            return Ok(());
+                        }
+                    };
+                    cfg.security.app_filter_mode = new_mode;
+                    save_and_broadcast_config(&socket_path, &cfg).await?;
+                    println!("Application filter mode updated to: {:?}", new_mode);
+                }
+                ConfigAction::AddAppFilter { app } => {
+                    let trimmed = app.trim().to_string();
+                    if !trimmed.is_empty() && !cfg.security.app_filter_list.contains(&trimmed) {
+                        cfg.security.app_filter_list.push(trimmed.clone());
+                        save_and_broadcast_config(&socket_path, &cfg).await?;
+                        println!(
+                            "Added '{}' to application filter list: {:?}",
+                            trimmed, cfg.security.app_filter_list
+                        );
+                    } else {
+                        println!(
+                            "'{}' is already in application filter list: {:?}",
+                            trimmed, cfg.security.app_filter_list
+                        );
+                    }
+                }
+                ConfigAction::RemoveAppFilter { app } => {
+                    let trimmed = app.trim().to_lowercase();
+                    let before = cfg.security.app_filter_list.len();
+                    cfg.security
+                        .app_filter_list
+                        .retain(|a| a.trim().to_lowercase() != trimmed);
+                    if cfg.security.app_filter_list.len() < before {
+                        save_and_broadcast_config(&socket_path, &cfg).await?;
+                        println!(
+                            "Removed '{}' from application filter list: {:?}",
+                            app, cfg.security.app_filter_list
+                        );
+                    } else {
+                        println!(
+                            "'{}' was not found in application filter list: {:?}",
+                            app, cfg.security.app_filter_list
+                        );
+                    }
                 }
                 ConfigAction::SetAutoPaste { enabled } => {
                     cfg.paste.auto_paste = enabled;

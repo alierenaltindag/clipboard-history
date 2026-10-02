@@ -564,3 +564,198 @@ impl DiffEngine {
         }
     }
 }
+
+static URL_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://[^\s<>]+").unwrap());
+
+const TRACKING_PARAMS: &[&str] = &[
+    "utm_source",
+    "utm_medium",
+    "utm_campaign",
+    "utm_term",
+    "utm_content",
+    "utm_id",
+    "utm_source_platform",
+    "utm_creative_format",
+    "utm_marketing_tactic",
+    "utm_cid",
+    "utm_reader",
+    "utm_referrer",
+    "utm_name",
+    "utm_social",
+    "utm_social-type",
+    "fbclid",
+    "fb_action_ids",
+    "fb_action_types",
+    "fb_source",
+    "fb_ref",
+    "igshid",
+    "gclid",
+    "gclsrc",
+    "dclid",
+    "gad_source",
+    "gbraid",
+    "wbraid",
+    "_ga",
+    "_gl",
+    "twclid",
+    "si",
+    "feature",
+    "_r",
+    "_t",
+    "tt_from",
+    "tt_medium",
+    "msclkid",
+    "mc_cid",
+    "mc_eid",
+    "recipient_id",
+    "vero_id",
+    "vero_conv",
+    "_hsenc",
+    "_hsmi",
+    "mkt_tok",
+    "yclid",
+    "ym_debug",
+    "ref",
+    "ref_src",
+    "ref_",
+    "source",
+    "campaign",
+    "trk",
+    "tracking_id",
+    "aff_id",
+    "affiliate_id",
+    "spjobid",
+    "spmailingid",
+    "spreportid",
+];
+
+pub struct UrlCleaner;
+
+impl UrlCleaner {
+    /// Checks if a string is a standard HTTP/HTTPS URL.
+    pub fn is_url(s: &str) -> bool {
+        let trimmed = s.trim();
+        trimmed.starts_with("http://") || trimmed.starts_with("https://")
+    }
+
+    /// Determines whether a given query parameter is considered tracking/telemetry.
+    pub fn is_tracking_param(domain: Option<&str>, param_name: &str) -> bool {
+        let lower = param_name.to_lowercase();
+        if lower.starts_with("utm_")
+            || lower.starts_with("pf_rd_")
+            || lower.starts_with("ref_")
+            || lower.starts_with("fb_")
+        {
+            return true;
+        }
+        if TRACKING_PARAMS.contains(&lower.as_str()) {
+            return true;
+        }
+        if let Some(dom) = domain {
+            let dom_lower = dom.to_lowercase();
+            if (dom_lower.contains("twitter.com") || dom_lower.contains("x.com"))
+                && (lower == "s" || lower == "t")
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Strips tracking and telemetry parameters from a single URL while preserving valid query params and fragments.
+    pub fn clean_tracking_params(raw_url: &str) -> String {
+        let trimmed = raw_url.trim();
+        if !Self::is_url(trimmed) && !trimmed.contains('?') {
+            return trimmed.to_string();
+        }
+
+        // Split off fragment
+        let (without_frag, frag) = match trimmed.find('#') {
+            Some(idx) => (&trimmed[..idx], &trimmed[idx..]),
+            None => (trimmed, ""),
+        };
+
+        // Split base from query string
+        let (base, query_opt) = match without_frag.find('?') {
+            Some(idx) => (&without_frag[..idx], Some(&without_frag[idx + 1..])),
+            None => (without_frag, None),
+        };
+
+        // Extract domain from base if available
+        let domain = if let Some(idx) = base.find("://") {
+            let after_scheme = &base[idx + 3..];
+            let host = match after_scheme.find('/') {
+                Some(end) => &after_scheme[..end],
+                None => after_scheme,
+            };
+            Some(host)
+        } else {
+            None
+        };
+
+        // Clean Amazon /ref=... path segments
+        let mut base_string = base.to_string();
+        if let Some(dom) = domain {
+            if dom.to_lowercase().contains("amazon.") {
+                if let Some(ref_idx) = base_string.find("/ref=") {
+                    base_string = base_string[..ref_idx].to_string();
+                }
+            }
+        }
+
+        let query = match query_opt {
+            Some(q) => q,
+            None => {
+                return format!("{}{}", base_string, frag);
+            }
+        };
+
+        let mut cleaned_params = Vec::new();
+        for pair in query.split('&') {
+            if pair.is_empty() {
+                continue;
+            }
+            let key = match pair.find('=') {
+                Some(idx) => &pair[..idx],
+                None => pair,
+            };
+            if !Self::is_tracking_param(domain, key) {
+                cleaned_params.push(pair);
+            }
+        }
+
+        if cleaned_params.is_empty() {
+            format!("{}{}", base_string, frag)
+        } else {
+            format!("{}?{}{}", base_string, cleaned_params.join("&"), frag)
+        }
+    }
+
+    /// Finds all URLs within text and cleans tracking parameters from them.
+    pub fn clean_text_urls(text: &str) -> String {
+        let trimmed = text.trim();
+        if Self::is_url(trimmed) && !trimmed.contains(char::is_whitespace) {
+            return Self::clean_tracking_params(trimmed);
+        }
+
+        URL_REGEX
+            .replace_all(text, |caps: &regex::Captures| {
+                let match_str = &caps[0];
+                let trailing_punct: String = match_str
+                    .chars()
+                    .rev()
+                    .take_while(|c| matches!(c, '.' | ',' | ';' | ':' | ')' | ']' | '}'))
+                    .collect();
+                let trailing_punct: String = trailing_punct.chars().rev().collect();
+                let actual_url = &match_str[..match_str.len() - trailing_punct.len()];
+                let cleaned = Self::clean_tracking_params(actual_url);
+                format!("{}{}", cleaned, trailing_punct)
+            })
+            .into_owned()
+    }
+
+    /// Returns true if the text contains any URLs with tracking parameters.
+    pub fn has_tracking_params(text: &str) -> bool {
+        Self::clean_text_urls(text) != text
+    }
+}

@@ -468,7 +468,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "clipboard-history-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "clap",
  "clipboard-history-core",
@@ -479,7 +479,7 @@ dependencies = [
 
 [[package]]
 name = "clipboard-history-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -507,7 +507,7 @@ dependencies = [
 
 [[package]]
 name = "clipboard-history-daemon"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -528,7 +528,7 @@ dependencies = [
 
 [[package]]
 name = "clipboard-history-gui"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "clap",
