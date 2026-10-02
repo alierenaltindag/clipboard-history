@@ -11,8 +11,8 @@ use clipboard_history_core::transforms::TextTransforms;
 use gdk4::Key;
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, Button, CssProvider, EventControllerKey, HeaderBar, ListBox, Orientation,
-    ScrolledWindow, SearchEntry, Window,
+    Align, Box as GtkBox, Button, CssProvider, EventControllerKey, HeaderBar, Label, ListBox,
+    Orientation, ScrolledWindow, SearchEntry, Window,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -88,6 +88,10 @@ impl ClipboardWindow {
         title_box.append(&app_icon);
         title_box.append(&title_label);
         header.set_title_widget(Some(&title_box));
+
+        let select_mode_btn = Button::from_icon_name("selection-mode-symbolic");
+        select_mode_btn.set_tooltip_text(Some("Toggle Multi-Selection Mode (Ctrl+M)"));
+        header.pack_start(&select_mode_btn);
 
         let add_snippet_btn = Button::from_icon_name("list-add-symbolic");
         add_snippet_btn.set_tooltip_text(Some("Add Canned Snippet"));
@@ -165,7 +169,36 @@ impl ClipboardWindow {
         list_box.add_css_class("navigation-sidebar");
         scrolled.set_child(Some(&list_box));
 
+        // Multi-Selection Action Bar
+        let action_bar = gtk4::ActionBar::new();
+        action_bar.set_revealed(false);
+
+        let selected_count_label = Label::new(Some("0 selected"));
+        selected_count_label.add_css_class("heading");
+        selected_count_label.set_margin_start(8);
+        action_bar.pack_start(&selected_count_label);
+
+        let join_paste_btn = Button::with_label("📋 Join & Paste");
+        join_paste_btn.add_css_class("suggested-action");
+        action_bar.pack_end(&join_paste_btn);
+
+        let diff_btn = Button::with_label("🔀 Compare Diff");
+        diff_btn.set_sensitive(false);
+        diff_btn.set_visible(false);
+        action_bar.pack_end(&diff_btn);
+
+        let enqueue_all_btn = Button::with_label("🔁 Enqueue All");
+        action_bar.pack_end(&enqueue_all_btn);
+
+        let pin_all_btn = Button::with_label("📌 Pin All");
+        action_bar.pack_end(&pin_all_btn);
+
+        let delete_selected_btn = Button::with_label("🗑️ Delete");
+        delete_selected_btn.add_css_class("destructive-action");
+        action_bar.pack_end(&delete_selected_btn);
+
         main_box.append(&scrolled);
+        main_box.append(&action_bar);
         window.set_child(Some(&main_box));
 
         let entries: Rc<RefCell<Vec<ClipboardEntry>>> = Rc::new(RefCell::new(Vec::new()));
@@ -378,11 +411,298 @@ impl ClipboardWindow {
             });
         });
 
+        // Multi-Selection State & Handlers
+        let is_multi_select = Rc::new(RefCell::new(false));
+
+        let is_multi_for_toggle = is_multi_select.clone();
+        let list_box_for_toggle = list_box.clone();
+        let select_btn_for_toggle = select_mode_btn.clone();
+        let action_bar_for_toggle = action_bar.clone();
+        let selected_count_for_toggle = selected_count_label.clone();
+        let join_btn_for_toggle = join_paste_btn.clone();
+        let enq_btn_for_toggle = enqueue_all_btn.clone();
+        let pin_btn_for_toggle = pin_all_btn.clone();
+        let del_btn_for_toggle = delete_selected_btn.clone();
+        let diff_btn_for_toggle = diff_btn.clone();
+
+        let toggle_selection_mode = Rc::new(move || {
+            let mut active = is_multi_for_toggle.borrow_mut();
+            *active = !*active;
+            if *active {
+                list_box_for_toggle.set_selection_mode(gtk4::SelectionMode::Multiple);
+                select_btn_for_toggle.add_css_class("suggested-action");
+                action_bar_for_toggle.set_revealed(true);
+                selected_count_for_toggle.set_text("0 selected");
+                join_btn_for_toggle.set_sensitive(false);
+                enq_btn_for_toggle.set_sensitive(false);
+                pin_btn_for_toggle.set_sensitive(false);
+                del_btn_for_toggle.set_sensitive(false);
+                diff_btn_for_toggle.set_sensitive(false);
+                diff_btn_for_toggle.set_visible(false);
+            } else {
+                list_box_for_toggle.unselect_all();
+                list_box_for_toggle.set_selection_mode(gtk4::SelectionMode::Single);
+                select_btn_for_toggle.remove_css_class("suggested-action");
+                action_bar_for_toggle.set_revealed(false);
+            }
+        });
+
+        let toggle_for_click = toggle_selection_mode.clone();
+        select_mode_btn.connect_clicked(move |_| {
+            toggle_for_click();
+        });
+
+        // Update action bar buttons when rows are selected
+        let is_multi_for_sel = is_multi_select.clone();
+        let list_box_for_sel = list_box.clone();
+        let count_lbl_for_sel = selected_count_label.clone();
+        let join_btn_for_sel = join_paste_btn.clone();
+        let diff_btn_for_sel = diff_btn.clone();
+        let enq_btn_for_sel = enqueue_all_btn.clone();
+        let pin_btn_for_sel = pin_all_btn.clone();
+        let del_btn_for_sel = delete_selected_btn.clone();
+
+        list_box.connect_selected_rows_changed(move |_| {
+            if !*is_multi_for_sel.borrow() {
+                return;
+            }
+            let rows = list_box_for_sel.selected_rows();
+            let count = rows.len();
+            count_lbl_for_sel.set_text(&format!("{} selected", count));
+            let has_sel = count > 0;
+            join_btn_for_sel.set_sensitive(has_sel);
+            enq_btn_for_sel.set_sensitive(has_sel);
+            pin_btn_for_sel.set_sensitive(has_sel);
+            del_btn_for_sel.set_sensitive(has_sel);
+            diff_btn_for_sel.set_sensitive(count == 2);
+            diff_btn_for_sel.set_visible(count == 2);
+        });
+
+        // 📋 Join & Paste Popover
+        let popover = gtk4::Popover::new();
+        let pop_box = GtkBox::new(Orientation::Vertical, 4);
+        pop_box.set_margin_start(8);
+        pop_box.set_margin_end(8);
+        pop_box.set_margin_top(8);
+        pop_box.set_margin_bottom(8);
+
+        let pop_header = Label::new(Some("Join with delimiter:"));
+        pop_header.add_css_class("heading");
+        pop_header.set_halign(Align::Start);
+        pop_box.append(&pop_header);
+
+        let delimiters = [
+            (
+                clipboard_history_core::transforms::ConcatDelimiter::Newline,
+                "Newlines (\\n)",
+            ),
+            (
+                clipboard_history_core::transforms::ConcatDelimiter::DoubleNewline,
+                "Paragraphs (\\n\\n)",
+            ),
+            (
+                clipboard_history_core::transforms::ConcatDelimiter::Comma,
+                "Comma (, )",
+            ),
+            (
+                clipboard_history_core::transforms::ConcatDelimiter::Space,
+                "Space ( )",
+            ),
+            (
+                clipboard_history_core::transforms::ConcatDelimiter::Semicolon,
+                "Semicolon (; )",
+            ),
+            (
+                clipboard_history_core::transforms::ConcatDelimiter::NumberedList,
+                "Numbered List (1. ...)",
+            ),
+            (
+                clipboard_history_core::transforms::ConcatDelimiter::BulletList,
+                "Bulleted List (- ...)",
+            ),
+        ];
+
+        for (delim, label_str) in delimiters {
+            let item_btn = Button::with_label(label_str);
+            item_btn.add_css_class("flat");
+            item_btn.set_halign(Align::Fill);
+
+            let pop_close = popover.clone();
+            let win_join = window.clone();
+            let list_for_join = list_box.clone();
+            let filtered_for_join = filtered_entries.clone();
+            let cfg_for_join = config.clone();
+            let toggle_exit = toggle_selection_mode.clone();
+
+            item_btn.connect_clicked(move |_| {
+                pop_close.popdown();
+                let mut rows = list_for_join.selected_rows();
+                rows.sort_by_key(|r| r.index());
+                let items = filtered_for_join.borrow();
+                let mut texts = Vec::new();
+                for r in rows {
+                    let idx = r.index() as usize;
+                    if let Some(e) = items.get(idx) {
+                        texts.push(e.text_content.clone().unwrap_or_else(|| e.preview.clone()));
+                    }
+                }
+                if !texts.is_empty() {
+                    let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+                    let joined = clipboard_history_core::transforms::TextTransforms::concatenate(
+                        &text_refs, &delim,
+                    );
+                    if let Some(display) = gdk4::Display::default() {
+                        display.clipboard().set_text(&joined);
+                    }
+                    win_join.set_visible(false);
+                    toggle_exit();
+                    if cfg_for_join.paste.auto_paste {
+                        glib::MainContext::default().spawn_local(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            let cascade = InjectorCascade::new();
+                            let (name, success) = cascade.execute_paste().await;
+                            info!(
+                                "Concatenated paste executed: injector={}, success={}",
+                                name, success
+                            );
+                        });
+                    }
+                }
+            });
+            pop_box.append(&item_btn);
+        }
+
+        popover.set_child(Some(&pop_box));
+        popover.set_parent(&join_paste_btn);
+
+        let pop_trigger = popover.clone();
+        join_paste_btn.connect_clicked(move |_| {
+            pop_trigger.popup();
+        });
+
+        // 🔀 Compare Diff Button
+        let list_for_diff = list_box.clone();
+        let filtered_for_diff = filtered_entries.clone();
+        let win_diff = window.clone();
+        diff_btn.connect_clicked(move |_| {
+            let mut rows = list_for_diff.selected_rows();
+            if rows.len() == 2 {
+                rows.sort_by_key(|r| r.index());
+                let idx_a = rows[0].index() as usize;
+                let idx_b = rows[1].index() as usize;
+                let items = filtered_for_diff.borrow();
+                if let (Some(ea), Some(eb)) = (items.get(idx_a), items.get(idx_b)) {
+                    let text_a = ea
+                        .text_content
+                        .clone()
+                        .unwrap_or_else(|| ea.preview.clone());
+                    let text_b = eb
+                        .text_content
+                        .clone()
+                        .unwrap_or_else(|| eb.preview.clone());
+                    let label_a = ea.preview.clone();
+                    let label_b = eb.preview.clone();
+                    crate::diff_dialog::DiffDialog::show(
+                        &win_diff, text_a, text_b, label_a, label_b,
+                    );
+                }
+            }
+        });
+
+        // 🔁 Enqueue All Button
+        let list_for_enq = list_box.clone();
+        let filtered_for_enq = filtered_entries.clone();
+        let toggle_for_enq = toggle_selection_mode.clone();
+        enqueue_all_btn.connect_clicked(move |_| {
+            let rows = list_for_enq.selected_rows();
+            let items = filtered_for_enq.borrow();
+            let ids: Vec<String> = rows
+                .iter()
+                .filter_map(|r| items.get(r.index() as usize).map(|e| e.id.clone()))
+                .collect();
+            if !ids.is_empty() {
+                let count = ids.len();
+                glib::MainContext::default().spawn_local(async move {
+                    if let Ok(mut client) = IpcClient::connect().await {
+                        let _ = client.send(&IpcRequest::EnqueueItems { ids }).await;
+                        info!("Enqueued {} batch items into paste queue", count);
+                    }
+                });
+                toggle_for_enq();
+            }
+        });
+
+        // 📌 Pin / Unpin All Button
+        let list_for_pin = list_box.clone();
+        let filtered_for_pin = filtered_entries.clone();
+        let fn_refresh_for_pin = Rc::clone(&filter_and_render);
+        let toggle_for_pin = toggle_selection_mode.clone();
+        pin_all_btn.connect_clicked(move |_| {
+            let rows = list_for_pin.selected_rows();
+            let items = filtered_for_pin.borrow();
+            let mut any_unpinned = false;
+            let mut ids = Vec::new();
+            for r in rows {
+                if let Some(e) = items.get(r.index() as usize) {
+                    ids.push(e.id.clone());
+                    if !e.is_pinned {
+                        any_unpinned = true;
+                    }
+                }
+            }
+            if !ids.is_empty() {
+                let refresh = fn_refresh_for_pin.clone();
+                let pin_flag = any_unpinned;
+                let toggle_exit = toggle_for_pin.clone();
+                glib::MainContext::default().spawn_local(async move {
+                    if let Ok(mut client) = IpcClient::connect().await {
+                        let _ = client
+                            .send(&IpcRequest::BatchPin {
+                                ids,
+                                pinned: pin_flag,
+                            })
+                            .await;
+                        refresh();
+                    }
+                });
+                toggle_exit();
+            }
+        });
+
+        // 🗑️ Delete Selected Button
+        let list_for_del = list_box.clone();
+        let filtered_for_del = filtered_entries.clone();
+        let fn_refresh_for_del = Rc::clone(&filter_and_render);
+        let toggle_for_del = toggle_selection_mode.clone();
+        delete_selected_btn.connect_clicked(move |_| {
+            let rows = list_for_del.selected_rows();
+            let items = filtered_for_del.borrow();
+            let ids: Vec<String> = rows
+                .iter()
+                .filter_map(|r| items.get(r.index() as usize).map(|e| e.id.clone()))
+                .collect();
+            if !ids.is_empty() {
+                let refresh = fn_refresh_for_del.clone();
+                let toggle_exit = toggle_for_del.clone();
+                glib::MainContext::default().spawn_local(async move {
+                    if let Ok(mut client) = IpcClient::connect().await {
+                        let _ = client.send(&IpcRequest::BatchDelete { ids }).await;
+                        refresh();
+                    }
+                });
+                toggle_exit();
+            }
+        });
+
         // Row Activated: Paste item
         let filtered_for_act = Rc::clone(&filtered_entries);
         let win_for_act = window.clone();
         let cfg_for_act = config.clone();
+        let is_multi_for_act = is_multi_select.clone();
         list_box.connect_row_activated(move |_, row| {
+            if *is_multi_for_act.borrow() {
+                return;
+            }
             let idx = row.index() as usize;
             let items = filtered_for_act.borrow();
             if let Some(entry) = items.get(idx) {
@@ -414,17 +734,30 @@ impl ClipboardWindow {
             }
         });
 
-        // Keyboard Navigation Controller (Shift+Enter, Ctrl+T, Escape, Del, P, 1..9)
+        // Keyboard Navigation Controller (Shift+Enter, Ctrl+T, Ctrl+M, Escape, Del, P, 1..9)
         let key_controller = EventControllerKey::new();
         let win_key = window.clone();
         let list_box_key = list_box.clone();
         let filtered_key = Rc::clone(&filtered_entries);
         let cfg_key = config.clone();
+        let is_multi_key = is_multi_select.clone();
+        let toggle_key = toggle_selection_mode.clone();
 
         key_controller.connect_key_pressed(move |_, key, _, state| {
-            // Dismiss
+            // Dismiss or Exit Selection Mode
             if key == Key::Escape {
+                if *is_multi_key.borrow() {
+                    toggle_key();
+                    return glib::Propagation::Stop;
+                }
                 win_key.set_visible(false);
+                return glib::Propagation::Stop;
+            }
+
+            // Toggle Multi-Selection Mode (Ctrl+M)
+            if (key == Key::m || key == Key::M) && state.contains(gdk4::ModifierType::CONTROL_MASK)
+            {
+                toggle_key();
                 return glib::Propagation::Stop;
             }
 

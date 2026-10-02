@@ -331,6 +331,31 @@ impl DaemonServer {
                     Err(e) => IpcResponse::Error(format!("Failed to read image blob: {}", e)),
                 },
 
+                IpcRequest::BatchDelete { ids } => match repo.batch_delete(&ids) {
+                    Ok(count) => IpcResponse::BatchSuccess { count },
+                    Err(e) => IpcResponse::Error(e.to_string()),
+                },
+
+                IpcRequest::BatchPin { ids, pinned } => match repo.batch_set_pinned(&ids, pinned) {
+                    Ok(count) => IpcResponse::BatchSuccess { count },
+                    Err(e) => IpcResponse::Error(e.to_string()),
+                },
+
+                IpcRequest::ComputeDiff { id_a, id_b } => {
+                    let text_a = match repo.get_by_id(&id_a) {
+                        Ok(entry) => entry.text_content.unwrap_or(entry.preview),
+                        Err(_) => String::new(),
+                    };
+                    let text_b = match repo.get_by_id(&id_b) {
+                        Ok(entry) => entry.text_content.unwrap_or(entry.preview),
+                        Err(_) => String::new(),
+                    };
+                    let diff_res = clipboard_history_core::transforms::DiffEngine::compute_diff(
+                        &text_a, &text_b,
+                    );
+                    IpcResponse::DiffResult(Box::new(diff_res))
+                }
+
                 IpcRequest::ToggleWindow
                 | IpcRequest::ShowWindow
                 | IpcRequest::HideWindow

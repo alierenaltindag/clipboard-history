@@ -112,6 +112,42 @@ enum Commands {
         id: String,
     },
 
+    #[command(about = "Concatenate multiple clipboard entries and copy to clipboard")]
+    Join {
+        #[arg(short, long, help = "Custom delimiter (default: newline)")]
+        delimiter: Option<String>,
+        #[arg(short, long, help = "Format as numbered list (1. ..., 2. ...)")]
+        numbered: bool,
+        #[arg(short, long, help = "Format as bulleted list (- ..., - ...)")]
+        bullets: bool,
+        #[arg(help = "Entry IDs to concatenate in order")]
+        ids: Vec<String>,
+    },
+
+    #[command(about = "Compare and display visual diff between two entries")]
+    Diff {
+        #[arg(help = "First entry ID (Original / A)")]
+        id_a: String,
+        #[arg(help = "Second entry ID (Modified / B)")]
+        id_b: String,
+        #[arg(long, help = "Disable ANSI color formatting in output")]
+        no_color: bool,
+    },
+
+    #[command(about = "Delete multiple entries by ID in batch")]
+    BatchDelete {
+        #[arg(help = "Entry IDs to delete")]
+        ids: Vec<String>,
+    },
+
+    #[command(about = "Pin or unpin multiple entries in batch")]
+    BatchPin {
+        #[arg(long, help = "Unpin instead of pin")]
+        unpin: bool,
+        #[arg(help = "Entry IDs to pin/unpin")]
+        ids: Vec<String>,
+    },
+
     #[command(about = "Manage clipboard history configuration settings")]
     Config {
         #[command(subcommand)]
@@ -580,6 +616,147 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("{}", text);
                 }
                 Ok(IpcResponse::Error(e)) => eprintln!("OCR Error: {}", e),
+                Err(_) => print_daemon_offline_error(),
+                _ => eprintln!("Unexpected response"),
+            }
+        }
+
+        Commands::Join {
+            delimiter,
+            numbered,
+            bullets,
+            ids,
+        } => {
+            if ids.is_empty() {
+                eprintln!("Error: At least one entry ID must be provided to join.");
+                return Ok(());
+            }
+
+            let mut texts = Vec::new();
+            for id in &ids {
+                let req = IpcRequest::GetEntry { id: id.clone() };
+                match IpcClient::send_request(&socket_path, &req).await {
+                    Ok(IpcResponse::Entry(entry_opt)) => {
+                        if let Some(entry) = *entry_opt {
+                            texts.push(entry.text_content.unwrap_or(entry.preview));
+                        } else {
+                            eprintln!("Warning: Entry '{}' not found, skipping.", id);
+                        }
+                    }
+                    _ => {
+                        eprintln!("Warning: Could not fetch entry '{}', skipping.", id);
+                    }
+                }
+            }
+
+            if texts.is_empty() {
+                eprintln!("Error: None of the specified entries could be retrieved.");
+                return Ok(());
+            }
+
+            let delim = if numbered {
+                clipboard_history_core::transforms::ConcatDelimiter::NumberedList
+            } else if bullets {
+                clipboard_history_core::transforms::ConcatDelimiter::BulletList
+            } else if let Some(d) = delimiter {
+                let unescaped = d.replace("\\n", "\n").replace("\\t", "\t");
+                clipboard_history_core::transforms::ConcatDelimiter::Custom(unescaped)
+            } else {
+                clipboard_history_core::transforms::ConcatDelimiter::Newline
+            };
+
+            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+            let joined =
+                clipboard_history_core::transforms::TextTransforms::concatenate(&text_refs, &delim);
+
+            // Copy to daemon clipboard history
+            let add_req = IpcRequest::AddManualEntry {
+                text: joined.clone(),
+            };
+            let _ = IpcClient::send_request(&socket_path, &add_req).await;
+
+            println!(
+                "Concatenated {} items ({} bytes) into clipboard:",
+                texts.len(),
+                joined.len()
+            );
+            println!("{:-<50}", "");
+            println!("{}", joined);
+        }
+
+        Commands::Diff {
+            id_a,
+            id_b,
+            no_color,
+        } => {
+            let req = IpcRequest::ComputeDiff {
+                id_a: id_a.clone(),
+                id_b: id_b.clone(),
+            };
+            match IpcClient::send_request(&socket_path, &req).await {
+                Ok(IpcResponse::DiffResult(diff_res)) => {
+                    if no_color {
+                        println!("{}", diff_res.unified);
+                    } else {
+                        println!(
+                            "\x1b[1mDiff Comparison\x1b[0m: \x1b[32m+{} additions\x1b[0m, \x1b[31m-{} deletions\x1b[0m",
+                            diff_res.additions, diff_res.deletions
+                        );
+                        println!("{:-<50}", "");
+                        for line in &diff_res.lines {
+                            match line.tag {
+                                clipboard_history_core::transforms::DiffTag::Insert => {
+                                    println!("\x1b[32m+ {}\x1b[0m", line.text);
+                                }
+                                clipboard_history_core::transforms::DiffTag::Delete => {
+                                    println!("\x1b[31m- {}\x1b[0m", line.text);
+                                }
+                                clipboard_history_core::transforms::DiffTag::Equal => {
+                                    println!("  {}", line.text);
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(IpcResponse::Error(e)) => eprintln!("Diff Error: {}", e),
+                Err(_) => print_daemon_offline_error(),
+                _ => eprintln!("Unexpected response"),
+            }
+        }
+
+        Commands::BatchDelete { ids } => {
+            let count = ids.len();
+            let req = IpcRequest::BatchDelete { ids };
+            match IpcClient::send_request(&socket_path, &req).await {
+                Ok(IpcResponse::BatchSuccess { count: deleted }) => {
+                    println!(
+                        "Successfully deleted {} entries (requested {}).",
+                        deleted, count
+                    );
+                }
+                Ok(IpcResponse::Error(e)) => eprintln!("Batch Delete Error: {}", e),
+                Err(_) => print_daemon_offline_error(),
+                _ => eprintln!("Unexpected response"),
+            }
+        }
+
+        Commands::BatchPin { unpin, ids } => {
+            let count = ids.len();
+            let pin_flag = !unpin;
+            let req = IpcRequest::BatchPin {
+                ids,
+                pinned: pin_flag,
+            };
+            match IpcClient::send_request(&socket_path, &req).await {
+                Ok(IpcResponse::BatchSuccess { count: updated }) => {
+                    println!(
+                        "Successfully {} {} entries (requested {}).",
+                        if pin_flag { "pinned" } else { "unpinned" },
+                        updated,
+                        count
+                    );
+                }
+                Ok(IpcResponse::Error(e)) => eprintln!("Batch Pin Error: {}", e),
                 Err(_) => print_daemon_offline_error(),
                 _ => eprintln!("Unexpected response"),
             }

@@ -251,6 +251,33 @@ impl SqliteRepository {
         }
     }
 
+    pub fn batch_delete(&self, ids: &[String]) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let mut deleted = 0;
+        for id in ids {
+            let affected = conn.execute(
+                "DELETE FROM entries WHERE id = ?1 OR id LIKE ?1 || '%'",
+                params![id],
+            )?;
+            deleted += affected;
+        }
+        Ok(deleted)
+    }
+
+    pub fn batch_set_pinned(&self, ids: &[String], pinned: bool) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let mut updated = 0;
+        let flag = if pinned { 1 } else { 0 };
+        for id in ids {
+            let affected = conn.execute(
+                "UPDATE entries SET is_pinned = ?1 WHERE id = ?2 OR id LIKE ?2 || '%'",
+                params![flag, id],
+            )?;
+            updated += affected;
+        }
+        Ok(updated)
+    }
+
     pub fn clear(&self, include_pinned: bool) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
         let affected = if include_pinned {

@@ -86,6 +86,19 @@ pub enum IpcRequest {
     PerformOcr {
         blob_hash: String,
     },
+    // Batch operations
+    BatchDelete {
+        ids: Vec<String>,
+    },
+    BatchPin {
+        ids: Vec<String>,
+        pinned: bool,
+    },
+    // Diff comparison
+    ComputeDiff {
+        id_a: String,
+        id_b: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,5 +128,9 @@ pub enum IpcResponse {
     OcrResult {
         text: String,
     },
+    BatchSuccess {
+        count: usize,
+    },
+    DiffResult(Box<crate::transforms::DiffResult>),
     Error(String),
 }

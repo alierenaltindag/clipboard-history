@@ -23,4 +23,7 @@ pub use ipc::{
 pub use search::ParsedSearchQuery;
 pub use security::{CryptoEngine, PasswordManagerGuard, SecretFilter, SecretHandlingPolicy};
 pub use storage::SqliteRepository;
-pub use transforms::{ColorInfo, OcrEngine, SnippetExpander, TextTransforms};
+pub use transforms::{
+    ColorInfo, ConcatDelimiter, DiffEngine, DiffLine, DiffResult, DiffTag, OcrEngine,
+    SnippetExpander, TextTransforms,
+};

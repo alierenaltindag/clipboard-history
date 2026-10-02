@@ -20,6 +20,8 @@
 ## 🌟 Key Highlights
 
 - ⚡ **Windows Win+V Ergonomics**: Instant ephemeral popup window with warm-standby activation, cursor-anchored positioning, and modern acrylic card styling.
+- 🧩 **Multi-Item Batch Operations & "Concatenate Paste"**: Select multiple entries (`Ctrl+M` or Selection Mode) and join them with custom delimiters (newlines, paragraphs, commas, bullet lists, numbered lists) to paste all at once. Batch delete, pin, or enqueue.
+- 🔀 **Built-in Clipboard Diff Viewer**: Compare any two text/code snippets with side-by-side/unified syntax-highlighted diffs, additions/deletions statistics, swap controls, and one-click diff copying.
 - 🔁 **Sequential Paste Queue (FIFO)**: Queue multiple clipboard items and pop them one by one into any document using the HUD status badge or `clipboard-history queue pop`.
 - 📝 **Permanent Snippets & Canned Responses**: Dedicated Snippets tab and modal creation dialog. Dynamic template expansion for `{date}`, `{time}`, `{datetime}`, `{year}`, `{month}`, `{day}`, `{uuid}`, and active `{clipboard}`.
 - 🔍 **On-Demand Image OCR**: Extract text directly from copied screenshots and image entries with one click or via `clipboard-history ocr <id>` (graceful `tesseract` integration).
@@ -97,6 +99,7 @@ flowchart TD
 | `Enter` / Click | Select entry, hide popup, and paste into active window |
 | `Shift + Enter` | Paste as plain unformatted text (strips HTML/rich styles) |
 | `Ctrl + T` | Open Quick Transforms modal (case converts, JSON, Base64, QR, OCR, colors) |
+| `Ctrl + M` | Toggle Multi-Selection Mode for batch operations and diffing |
 | `Q` | Enqueue selected item into Sequential Paste Queue (FIFO) |
 | `1` – `9` | Quick paste items 1 through 9 |
 | `Delete` / `Backspace` | Delete selected entry |
@@ -201,6 +204,21 @@ clipboard-history queue status
 clipboard-history queue add <ENTRY_ID_1> <ENTRY_ID_2> <ENTRY_ID_3>
 clipboard-history queue pop      # Pops next item and outputs text
 clipboard-history queue clear
+
+# Concatenate & Join Multiple Entries
+clipboard-history join <ID_1> <ID_2> <ID_3>                    # Join with newlines
+clipboard-history join --delimiter ", " <ID_1> <ID_2>          # Join with commas
+clipboard-history join --numbered <ID_1> <ID_2>                # Join as numbered list
+clipboard-history join --bullets <ID_1> <ID_2>                 # Join as bulleted list
+
+# Built-in Clipboard Diff Viewer (Colorized terminal diff)
+clipboard-history diff <ENTRY_ID_A> <ENTRY_ID_B>
+clipboard-history diff <ENTRY_ID_A> <ENTRY_ID_B> --no-color
+
+# Batch Pin and Delete
+clipboard-history batch-pin <ID_1> <ID_2> <ID_3>
+clipboard-history batch-pin --unpin <ID_1> <ID_2>
+clipboard-history batch-delete <ID_1> <ID_2> <ID_3>
 
 # On-Demand Image OCR
 clipboard-history ocr <IMAGE_ENTRY_ID_OR_HASH>

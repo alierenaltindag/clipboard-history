@@ -3,6 +3,7 @@ use base64::Engine;
 use qrcode::render::svg;
 use qrcode::QrCode;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::LazyLock;
 
@@ -239,6 +240,24 @@ impl TextTransforms {
             .build();
         Ok(svg_image)
     }
+
+    /// Concatenates multiple text items using the specified delimiter format.
+    pub fn concatenate(items: &[&str], delimiter: &ConcatDelimiter) -> String {
+        match delimiter {
+            ConcatDelimiter::NumberedList => items
+                .iter()
+                .enumerate()
+                .map(|(i, s)| format!("{}. {}", i + 1, s.trim()))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            ConcatDelimiter::BulletList => items
+                .iter()
+                .map(|s| format!("- {}", s.trim()))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => items.join(delimiter.as_str()),
+        }
+    }
 }
 
 impl ColorInfo {
@@ -403,5 +422,145 @@ impl OcrEngine {
 
         let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
         Ok(text)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConcatDelimiter {
+    Newline,
+    DoubleNewline,
+    Comma,
+    Space,
+    Semicolon,
+    NumberedList,
+    BulletList,
+    Custom(String),
+}
+
+impl ConcatDelimiter {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Newline => "\n",
+            Self::DoubleNewline => "\n\n",
+            Self::Comma => ", ",
+            Self::Space => " ",
+            Self::Semicolon => "; ",
+            Self::NumberedList => "\n",
+            Self::BulletList => "\n",
+            Self::Custom(s) => s.as_str(),
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Newline => "Newlines (\\n)",
+            Self::DoubleNewline => "Paragraphs (\\n\\n)",
+            Self::Comma => "Comma (, )",
+            Self::Space => "Space ( )",
+            Self::Semicolon => "Semicolon (; )",
+            Self::NumberedList => "Numbered List (1. ...)",
+            Self::BulletList => "Bulleted List (- ...)",
+            Self::Custom(_) => "Custom Delimiter",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiffTag {
+    Equal,
+    Insert,
+    Delete,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffLine {
+    pub tag: DiffTag,
+    pub text: String,
+    pub old_index: Option<usize>,
+    pub new_index: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffResult {
+    pub unified: String,
+    pub additions: usize,
+    pub deletions: usize,
+    pub lines: Vec<DiffLine>,
+}
+
+pub struct DiffEngine;
+
+impl DiffEngine {
+    pub fn compute_diff(old_text: &str, new_text: &str) -> DiffResult {
+        use similar::{ChangeTag, TextDiff};
+
+        let diff = TextDiff::from_lines(old_text, new_text);
+        let mut additions = 0;
+        let mut deletions = 0;
+        let mut lines = Vec::new();
+
+        let mut old_idx = 1;
+        let mut new_idx = 1;
+
+        for change in diff.iter_all_changes() {
+            let tag = match change.tag() {
+                ChangeTag::Equal => {
+                    let line = DiffLine {
+                        tag: DiffTag::Equal,
+                        text: change
+                            .value()
+                            .trim_end_matches(&['\r', '\n'][..])
+                            .to_string(),
+                        old_index: Some(old_idx),
+                        new_index: Some(new_idx),
+                    };
+                    old_idx += 1;
+                    new_idx += 1;
+                    line
+                }
+                ChangeTag::Delete => {
+                    deletions += 1;
+                    let line = DiffLine {
+                        tag: DiffTag::Delete,
+                        text: change
+                            .value()
+                            .trim_end_matches(&['\r', '\n'][..])
+                            .to_string(),
+                        old_index: Some(old_idx),
+                        new_index: None,
+                    };
+                    old_idx += 1;
+                    line
+                }
+                ChangeTag::Insert => {
+                    additions += 1;
+                    let line = DiffLine {
+                        tag: DiffTag::Insert,
+                        text: change
+                            .value()
+                            .trim_end_matches(&['\r', '\n'][..])
+                            .to_string(),
+                        old_index: None,
+                        new_index: Some(new_idx),
+                    };
+                    new_idx += 1;
+                    line
+                }
+            };
+            lines.push(tag);
+        }
+
+        let unified = diff
+            .unified_diff()
+            .context_radius(3)
+            .header("Original", "Modified")
+            .to_string();
+
+        DiffResult {
+            unified,
+            additions,
+            deletions,
+            lines,
+        }
     }
 }

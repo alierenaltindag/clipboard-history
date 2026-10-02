@@ -1,4 +1,5 @@
 mod app;
+mod diff_dialog;
 mod injector;
 mod list_row;
 mod search;

@@ -539,3 +539,128 @@ fn test_lan_sync_crypto_roundtrip() {
     let wrong_result = LanCrypto::decrypt(wrong_pin, &encrypted);
     assert!(wrong_result.is_err());
 }
+
+#[test]
+fn test_text_concatenation_delimiters() {
+    use clipboard_history_core::transforms::{ConcatDelimiter, TextTransforms};
+
+    let items = ["Apple", "Banana", "Cherry"];
+
+    // Newlines
+    assert_eq!(
+        TextTransforms::concatenate(&items, &ConcatDelimiter::Newline),
+        "Apple\nBanana\nCherry"
+    );
+
+    // Paragraphs
+    assert_eq!(
+        TextTransforms::concatenate(&items, &ConcatDelimiter::DoubleNewline),
+        "Apple\n\nBanana\n\nCherry"
+    );
+
+    // Comma
+    assert_eq!(
+        TextTransforms::concatenate(&items, &ConcatDelimiter::Comma),
+        "Apple, Banana, Cherry"
+    );
+
+    // Numbered List
+    assert_eq!(
+        TextTransforms::concatenate(&items, &ConcatDelimiter::NumberedList),
+        "1. Apple\n2. Banana\n3. Cherry"
+    );
+
+    // Bullet List
+    assert_eq!(
+        TextTransforms::concatenate(&items, &ConcatDelimiter::BulletList),
+        "- Apple\n- Banana\n- Cherry"
+    );
+
+    // Custom Delimiter
+    assert_eq!(
+        TextTransforms::concatenate(&items, &ConcatDelimiter::Custom(" | ".to_string())),
+        "Apple | Banana | Cherry"
+    );
+}
+
+#[test]
+fn test_diff_engine_computation() {
+    use clipboard_history_core::transforms::{DiffEngine, DiffTag};
+
+    let text_a = "fn main() {\n    println!(\"Hello\");\n}\n";
+    let text_b = "fn main() {\n    println!(\"Hello, World!\");\n    // Added\n}\n";
+
+    let diff = DiffEngine::compute_diff(text_a, text_b);
+
+    assert_eq!(diff.additions, 2);
+    assert_eq!(diff.deletions, 1);
+    assert!(diff.unified.contains("@@"));
+    assert!(diff.unified.contains("-    println!(\"Hello\");"));
+    assert!(diff.unified.contains("+    println!(\"Hello, World!\");"));
+    assert!(diff.unified.contains("+    // Added"));
+
+    // Verify tag counts in lines
+    let insert_count = diff
+        .lines
+        .iter()
+        .filter(|l| l.tag == DiffTag::Insert)
+        .count();
+    let delete_count = diff
+        .lines
+        .iter()
+        .filter(|l| l.tag == DiffTag::Delete)
+        .count();
+    let equal_count = diff
+        .lines
+        .iter()
+        .filter(|l| l.tag == DiffTag::Equal)
+        .count();
+
+    assert_eq!(insert_count, 2);
+    assert_eq!(delete_count, 1);
+    assert!(equal_count >= 2);
+}
+
+#[test]
+fn test_sqlite_batch_operations() {
+    use clipboard_history_core::blob::BlobStore;
+    use clipboard_history_core::domain::ClipboardEntry;
+    use clipboard_history_core::storage::SqliteRepository;
+
+    let repo = SqliteRepository::open_in_memory().expect("Failed to open in-memory db");
+
+    let mut ids = Vec::new();
+    for i in 0..5 {
+        let text = format!("Batch item {}", i);
+        let hash = BlobStore::compute_hash(text.as_bytes());
+        let entry = ClipboardEntry::new_text(text, hash, vec!["text/plain".to_string()], None);
+        let inserted = repo.insert_or_update(&entry).unwrap();
+        ids.push(inserted.id);
+    }
+    assert_eq!(repo.count().unwrap(), 5);
+
+    // Batch pin first 3 items
+    let pinned_count = repo.batch_set_pinned(&ids[0..3], true).unwrap();
+    assert_eq!(pinned_count, 3);
+    for id in &ids[0..3] {
+        let item = repo.get_by_id(id).unwrap();
+        assert!(item.is_pinned);
+    }
+    for id in &ids[3..5] {
+        let item = repo.get_by_id(id).unwrap();
+        assert!(!item.is_pinned);
+    }
+
+    // Batch delete last 2 items
+    let deleted_count = repo.batch_delete(&ids[3..5]).unwrap();
+    assert_eq!(deleted_count, 2);
+    assert_eq!(repo.count().unwrap(), 3);
+
+    // Batch unpin remaining
+    let unpinned_count = repo.batch_set_pinned(&ids[0..3], false).unwrap();
+    assert_eq!(unpinned_count, 3);
+    for id in &ids[0..3] {
+        let item = repo.get_by_id(id).unwrap();
+        assert!(!item.is_pinned);
+    }
+}
