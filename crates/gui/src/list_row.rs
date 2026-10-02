@@ -1,14 +1,17 @@
-#[cfg(feature = "gtk")]
+#![cfg(feature = "gtk")]
+
 use clipboard_history_core::domain::{ClipboardEntry, EntryType};
-#[cfg(feature = "gtk")]
+use clipboard_history_core::transforms::TextTransforms;
 use gtk4::prelude::*;
-#[cfg(feature = "gtk")]
 use gtk4::{Box as GtkBox, Button, Image, Label, ListBoxRow, Orientation};
 
 #[cfg(feature = "gtk")]
 pub struct EntryRow {
     pub row: ListBoxRow,
-    pub entry_id: String,
+    pub entry: ClipboardEntry,
+    pub pin_btn: Button,
+    pub delete_btn: Button,
+    pub actions_btn: Button,
 }
 
 #[cfg(feature = "gtk")]
@@ -19,8 +22,8 @@ impl EntryRow {
 
         let container = GtkBox::new(Orientation::Vertical, 4);
 
-        // Header row: index badge, type icon, source / timestamp, pin & delete buttons
-        let header = GtkBox::new(Orientation::Horizontal, 8);
+        // Header row: index badge, type icon, color chip, source / timestamp, pin, delete, action buttons
+        let header = GtkBox::new(Orientation::Horizontal, 6);
 
         // Quick paste index indicator (1..9)
         if index < 9 {
@@ -45,10 +48,31 @@ impl EntryRow {
         type_label.add_css_class("dim-label");
         header.append(&type_label);
 
+        // Color swatch chip if color detected in text
+        if let Some(color) = TextTransforms::detect_color(&entry.preview) {
+            let color_chip = Label::new(Some("   "));
+            let provider = gtk4::CssProvider::new();
+            provider.load_from_data(&format!(
+                "label {{ background-color: {}; border-radius: 4px; border: 1px solid rgba(0,0,0,0.3); }}",
+                color.hex
+            ));
+            color_chip
+                .style_context()
+                .add_provider(&provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
+            color_chip.set_tooltip_text(Some(&format!("Color: {}", color.hex)));
+            header.append(&color_chip);
+        }
+
         // Spacer
         let spacer = GtkBox::new(Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
         header.append(&spacer);
+
+        // Actions button (Ctrl+T / Transforms)
+        let actions_btn = Button::from_icon_name("view-more-symbolic");
+        actions_btn.add_css_class("flat");
+        actions_btn.set_tooltip_text(Some("Quick Transforms & Actions (Ctrl+T)"));
+        header.append(&actions_btn);
 
         // Pin button
         let pin_btn = Button::from_icon_name(if entry.is_pinned {
@@ -57,13 +81,13 @@ impl EntryRow {
             "view-pin-outline-symbolic"
         });
         pin_btn.add_css_class("flat");
-        pin_btn.set_tooltip_text(Some(if entry.is_pinned { "Unpin" } else { "Pin" }));
+        pin_btn.set_tooltip_text(Some(if entry.is_pinned { "Unpin" } else { "Pin (P)" }));
         header.append(&pin_btn);
 
         // Delete button
         let delete_btn = Button::from_icon_name("user-trash-symbolic");
         delete_btn.add_css_class("flat");
-        delete_btn.set_tooltip_text(Some("Delete"));
+        delete_btn.set_tooltip_text(Some("Delete (Del)"));
         header.append(&delete_btn);
 
         container.append(&header);
@@ -87,7 +111,10 @@ impl EntryRow {
 
         Self {
             row,
-            entry_id: entry.id.clone(),
+            entry: entry.clone(),
+            pin_btn,
+            delete_btn,
+            actions_btn,
         }
     }
 }

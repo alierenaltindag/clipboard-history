@@ -31,6 +31,9 @@ pub enum CoreError {
 
     #[error("Blob not found: {0}")]
     BlobNotFound(String),
+
+    #[error("Crypto error: {0}")]
+    Crypto(#[from] crate::security::CryptoError),
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;

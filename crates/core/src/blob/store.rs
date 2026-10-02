@@ -60,6 +60,26 @@ impl BlobStore {
         Ok(bytes)
     }
 
+    /// Saves raw data encrypted with AES-256-GCM.
+    pub fn save_encrypted(
+        &self,
+        data: &[u8],
+        crypto: &crate::security::CryptoEngine,
+    ) -> Result<String> {
+        let encrypted_bytes = crypto.encrypt(data).map_err(CoreError::Crypto)?;
+        self.save(&encrypted_bytes)
+    }
+
+    /// Reads an encrypted blob and decrypts it with AES-256-GCM.
+    pub fn read_decrypted(
+        &self,
+        hash: &str,
+        crypto: &crate::security::CryptoEngine,
+    ) -> Result<Vec<u8>> {
+        let ciphertext = self.read(hash)?;
+        crypto.decrypt(&ciphertext).map_err(CoreError::Crypto)
+    }
+
     pub fn exists(&self, hash: &str) -> bool {
         self.path_for(hash).exists()
     }

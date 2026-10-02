@@ -1,13 +1,16 @@
 mod circuit_breaker;
 mod eviction;
 mod server;
+mod tray;
 mod watcher;
+mod window_focus;
 
 use circuit_breaker::CircuitBreaker;
 use eviction::EvictionWorker;
 use server::DaemonServer;
 use watcher::traits::{ClipboardWatcher, RawClipboardEvent};
 use watcher::{WaylandWatcher, X11Watcher};
+use window_focus::WindowFocusDetector;
 
 use clap::Parser;
 use clipboard_history_core::blob::{BlobStore, ThumbnailGenerator};
@@ -149,6 +152,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(0);
     });
 
+    // Spawn System Tray StatusNotifierItem Service
+    if config.ui.tray_icon_enabled {
+        let tray_paused = Arc::clone(&is_paused);
+        tokio::spawn(async move {
+            if let Err(e) = tray::start_tray_service(tray_paused).await {
+                debug!("D-Bus Tray service could not be initialized: {}", e);
+            }
+        });
+    }
+
+    let window_focus_detector = WindowFocusDetector::new();
+
     // Main Event Processing Loop
     while let Some(event) = event_rx.recv().await {
         if is_paused.load(Ordering::Relaxed) {
@@ -160,7 +175,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        // 1. Password Manager & Sensitive MIME check
+        // 1. Incognito & Private Browsing Window Check
+        if window_focus_detector.is_incognito_active(&config.security.incognito_window_patterns) {
+            info!("Ignored clipboard copy originating while incognito/private browsing window was active");
+            continue;
+        }
+
+        // 2. Password Manager & Sensitive MIME check
         if config.security.ignore_password_managers
             && PasswordManagerGuard::is_sensitive_mime(&event.mime_types)
         {

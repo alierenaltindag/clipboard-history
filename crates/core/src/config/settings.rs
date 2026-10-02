@@ -34,6 +34,8 @@ pub struct SecurityConfig {
     pub secret_policy: SecretHandlingPolicy,
     pub custom_secret_patterns: Vec<String>,
     pub ignored_window_classes: Vec<String>,
+    pub encryption_enabled: bool,
+    pub incognito_window_patterns: Vec<String>,
 }
 
 impl Default for SecurityConfig {
@@ -47,6 +49,15 @@ impl Default for SecurityConfig {
                 "1password".to_string(),
                 "bitwarden".to_string(),
             ],
+            encryption_enabled: false,
+            incognito_window_patterns: vec![
+                "*incognito*".to_string(),
+                "*private browsing*".to_string(),
+                "*tor browser*".to_string(),
+                "*keepass*".to_string(),
+                "*1password*".to_string(),
+                "*bitwarden*".to_string(),
+            ],
         }
     }
 }
@@ -58,6 +69,7 @@ pub struct UiConfig {
     pub window_height: u32,
     pub font_size: Option<f64>,
     pub show_preview_thumbnails: bool,
+    pub tray_icon_enabled: bool,
 }
 
 impl Default for UiConfig {
@@ -68,6 +80,7 @@ impl Default for UiConfig {
             window_height: 580,
             font_size: None,
             show_preview_thumbnails: true,
+            tray_icon_enabled: true,
         }
     }
 }
@@ -123,6 +136,10 @@ impl AppConfig {
 
     pub fn config_path() -> PathBuf {
         Self::config_dir().join("config.toml")
+    }
+
+    pub fn secret_key_path() -> PathBuf {
+        Self::config_dir().join("secret.key")
     }
 
     pub fn data_dir() -> PathBuf {

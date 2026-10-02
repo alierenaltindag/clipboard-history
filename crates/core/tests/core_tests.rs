@@ -203,3 +203,139 @@ async fn test_ipc_framing() {
         _ => panic!("Unexpected response type"),
     }
 }
+
+#[test]
+fn test_crypto_engine_encryption_decryption() {
+    let dir = tempdir().unwrap();
+    let key_path = dir.path().join("secret.key");
+
+    let crypto = clipboard_history_core::security::CryptoEngine::load_or_create(&key_path)
+        .expect("Failed to initialize CryptoEngine");
+
+    assert!(key_path.exists());
+
+    // Test raw byte encryption
+    let plaintext = b"Sensitive secret payload to be encrypted with AES-256-GCM";
+    let ciphertext = crypto.encrypt(plaintext).expect("Encryption failed");
+    assert_ne!(plaintext.as_slice(), ciphertext.as_slice());
+
+    let decrypted = crypto.decrypt(&ciphertext).expect("Decryption failed");
+    assert_eq!(plaintext.as_slice(), decrypted.as_slice());
+
+    // Test string encryption with $ENC$ prefix
+    let secret_str = "sk-live-1234567890abcdef";
+    let enc_str = crypto.encrypt_str(secret_str).expect("String enc failed");
+    assert!(enc_str.starts_with("$ENC$"));
+    let dec_str = crypto.decrypt_str(&enc_str).expect("String dec failed");
+    assert_eq!(secret_str, dec_str);
+
+    // Test tamper resistance
+    let mut tampered = ciphertext.clone();
+    let last = tampered.len() - 1;
+    tampered[last] ^= 0x01;
+    assert!(crypto.decrypt(&tampered).is_err());
+
+    // Verify key file POSIX 0600 permissions
+    let meta = std::fs::metadata(&key_path).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+
+    // Test encrypted blob storage in BlobStore
+    let store = BlobStore::new(dir.path().join("blobs")).unwrap();
+    let secret_blob = b"Secret binary blob data protected with AES-GCM";
+    let blob_hash = store
+        .save_encrypted(secret_blob, &crypto)
+        .expect("save_encrypted failed");
+    assert!(store.exists(&blob_hash));
+    let decrypted_blob = store
+        .read_decrypted(&blob_hash, &crypto)
+        .expect("read_decrypted failed");
+    assert_eq!(decrypted_blob, secret_blob);
+}
+
+#[test]
+fn test_text_transforms_and_color_detection() {
+    use clipboard_history_core::transforms::TextTransforms;
+
+    // Case conversions
+    assert_eq!(TextTransforms::to_uppercase("hello world"), "HELLO WORLD");
+    assert_eq!(TextTransforms::to_lowercase("HELLO WORLD"), "hello world");
+    assert_eq!(
+        TextTransforms::to_title_case("hello world_foo-bar"),
+        "Hello World_Foo-Bar"
+    );
+    assert_eq!(
+        TextTransforms::to_snake_case("helloWorldFoo"),
+        "hello_world_foo"
+    );
+    assert_eq!(
+        TextTransforms::to_kebab_case("helloWorldFoo"),
+        "hello-world-foo"
+    );
+    assert_eq!(
+        TextTransforms::to_camel_case("hello_world_foo"),
+        "helloWorldFoo"
+    );
+
+    // JSON prettify / minify
+    let json_raw = r#"{"name":"test","count":42}"#;
+    let prettified = TextTransforms::json_prettify(json_raw).expect("Prettify failed");
+    assert!(prettified.contains('\n'));
+    let minified = TextTransforms::json_minify(&prettified).expect("Minify failed");
+    let val_original: serde_json::Value = serde_json::from_str(json_raw).unwrap();
+    let val_minified: serde_json::Value = serde_json::from_str(&minified).unwrap();
+    assert_eq!(val_original, val_minified);
+
+    // Base64
+    let original = "Hello clipboard!";
+    let b64 = TextTransforms::base64_encode(original);
+    assert_eq!(TextTransforms::base64_decode(&b64).unwrap(), original);
+
+    // URL encode / decode
+    let url_str = "hello world & foo=bar";
+    let encoded = TextTransforms::url_encode(url_str);
+    assert_eq!(encoded, "hello%20world%20%26%20foo%3Dbar");
+    assert_eq!(TextTransforms::url_decode(&encoded).unwrap(), url_str);
+
+    // HTML strip formatting
+    let html = "<p>Hello <b>World</b>&nbsp;&amp;&nbsp;friends!</p>";
+    assert_eq!(
+        TextTransforms::strip_formatting(html),
+        "Hello World & friends!"
+    );
+
+    // Color detection
+    let hex_color = TextTransforms::detect_color("#3B82F6").expect("Hex color not detected");
+    assert_eq!(hex_color.hex, "#3B82F6");
+    assert_eq!(hex_color.r, 0x3B);
+    assert_eq!(hex_color.g, 0x82);
+    assert_eq!(hex_color.b, 0xF6);
+
+    let rgb_color =
+        TextTransforms::detect_color("rgb(255, 128, 0)").expect("RGB color not detected");
+    assert_eq!(rgb_color.hex, "#FF8000");
+
+    let hex3_color = TextTransforms::detect_color("#F80").expect("3-digit Hex not detected");
+    assert_eq!(hex3_color.hex, "#FF8800");
+    assert_eq!(hex3_color.r, 255);
+    assert_eq!(hex3_color.g, 136);
+    assert_eq!(hex3_color.b, 0);
+
+    let hex8_color = TextTransforms::detect_color("#3B82F680").expect("8-digit Hex not detected");
+    assert_eq!(hex8_color.hex, "#3B82F6");
+    assert!((hex8_color.a - 0.50196).abs() < 0.01);
+
+    let rgba_color =
+        TextTransforms::detect_color("rgba(100, 150, 200, 0.5)").expect("RGBA not detected");
+    assert_eq!(rgba_color.r, 100);
+    assert_eq!(rgba_color.g, 150);
+    assert_eq!(rgba_color.b, 200);
+    assert_eq!(rgba_color.a, 0.5);
+
+    // QR Code generation
+    let qr_svg =
+        TextTransforms::generate_qr_svg("https://github.com/alierenaltindag/clipboard-history")
+            .expect("QR generation failed");
+    assert!(qr_svg.contains("<svg"));
+    assert!(qr_svg.contains("</svg>"));
+}
