@@ -1,4 +1,4 @@
-use crate::domain::{ClipboardEntry, EntryType};
+use crate::domain::{ClipboardEntry, EntryType, Snippet};
 use crate::error::{CoreError, Result};
 use crate::storage::schema::INITIAL_SCHEMA;
 use chrono::{DateTime, Utc};
@@ -327,6 +327,115 @@ impl SqliteRepository {
         let conn = self.conn.lock().unwrap();
         conn.execute("VACUUM", [])?;
         Ok(())
+    }
+
+    pub fn insert_snippet(&self, snippet: &Snippet) -> Result<Snippet> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO snippets (id, label, content, category, created_at, last_used_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                snippet.id,
+                snippet.label,
+                snippet.content,
+                snippet.category,
+                snippet.created_at.to_rfc3339(),
+                snippet.last_used_at.to_rfc3339(),
+            ],
+        )?;
+        Ok(snippet.clone())
+    }
+
+    pub fn update_snippet(&self, snippet: &Snippet) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE snippets SET label = ?1, content = ?2, category = ?3, last_used_at = ?4 WHERE id = ?5",
+            params![
+                snippet.label,
+                snippet.content,
+                snippet.category,
+                snippet.last_used_at.to_rfc3339(),
+                snippet.id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_snippet(&self, id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute("DELETE FROM snippets WHERE id = ?1", params![id])?;
+        Ok(rows > 0)
+    }
+
+    pub fn get_snippet(&self, id: &str) -> Result<Option<Snippet>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, label, content, category, created_at, last_used_at FROM snippets WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(Self::map_snippet_row(row)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn list_snippets(&self, category: Option<&str>) -> Result<Vec<Snippet>> {
+        let conn = self.conn.lock().unwrap();
+        let mut snippets = Vec::new();
+        if let Some(cat) = category {
+            let mut stmt = conn.prepare(
+                "SELECT id, label, content, category, created_at, last_used_at FROM snippets WHERE category = ?1 ORDER BY last_used_at DESC",
+            )?;
+            let mut rows = stmt.query(params![cat])?;
+            while let Some(row) = rows.next()? {
+                snippets.push(Self::map_snippet_row(row)?);
+            }
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT id, label, content, category, created_at, last_used_at FROM snippets ORDER BY last_used_at DESC",
+            )?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                snippets.push(Self::map_snippet_row(row)?);
+            }
+        }
+        Ok(snippets)
+    }
+
+    pub fn touch_snippet(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE snippets SET last_used_at = ?1 WHERE id = ?2",
+            params![now, id],
+        )?;
+        Ok(())
+    }
+
+    fn map_snippet_row(row: &rusqlite::Row) -> rusqlite::Result<Snippet> {
+        let id: String = row.get(0)?;
+        let label: String = row.get(1)?;
+        let content: String = row.get(2)?;
+        let category: String = row.get(3)?;
+        let created_at_str: String = row.get(4)?;
+        let last_used_at_str: String = row.get(5)?;
+
+        let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+        let last_used_at = DateTime::parse_from_rfc3339(&last_used_at_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+
+        Ok(Snippet {
+            id,
+            label,
+            content,
+            category,
+            created_at,
+            last_used_at,
+        })
     }
 
     fn map_row(row: &rusqlite::Row) -> rusqlite::Result<ClipboardEntry> {

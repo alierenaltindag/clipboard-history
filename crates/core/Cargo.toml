@@ -20,7 +20,7 @@ lru = "0.12"
 directories = "5.0"
 thiserror = "2.0"
 tracing = "0.1"
-tokio = { version = "1.40", features = ["sync", "io-util", "net", "macros", "fs", "rt", "time"] }
+tokio = { version = "1.40", features = ["sync", "io-util", "net", "macros", "fs", "rt", "time", "process"] }
 tempfile = "3.13"
 aes-gcm = "0.10"
 zeroize = { version = "1.8", features = ["derive"] }

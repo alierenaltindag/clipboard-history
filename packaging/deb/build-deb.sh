@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-VERSION="0.1.0"
+VERSION="$(grep -m1 '^version =' "${PROJECT_ROOT}/Cargo.toml" | cut -d '"' -f2)"
 ARCH="$(dpkg --print-architecture 2>/dev/null || echo "amd64")"
 PACKAGE_NAME="clipboard-history_${VERSION}_${ARCH}"
 BUILD_ROOT="${PROJECT_ROOT}/target/deb/${PACKAGE_NAME}"

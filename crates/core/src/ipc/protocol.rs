@@ -1,6 +1,13 @@
 use crate::config::AppConfig;
-use crate::domain::{ClipboardEntry, EntryType};
+use crate::domain::{ClipboardEntry, EntryType, Snippet};
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct QueueStatus {
+    pub active: bool,
+    pub remaining_count: usize,
+    pub next_preview: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum IpcRequest {
@@ -50,6 +57,35 @@ pub enum IpcRequest {
     AddManualEntry {
         text: String,
     },
+    // Snippets requests
+    ListSnippets {
+        category: Option<String>,
+    },
+    CreateSnippet {
+        label: String,
+        content: String,
+        category: Option<String>,
+    },
+    UpdateSnippet {
+        snippet: Box<Snippet>,
+    },
+    DeleteSnippet {
+        id: String,
+    },
+    UseSnippet {
+        id: String,
+    },
+    // Sequential Paste Queue requests
+    EnqueueItems {
+        ids: Vec<String>,
+    },
+    ClearQueue,
+    GetQueueStatus,
+    PopAndPasteQueue,
+    // OCR request
+    PerformOcr {
+        blob_hash: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,5 +104,16 @@ pub enum IpcResponse {
     Status(DaemonStatus),
     Config(Box<AppConfig>),
     Blob(Vec<u8>),
+    Snippets(Vec<Snippet>),
+    Snippet(Box<Snippet>),
+    QueueStatus(QueueStatus),
+    QueuePopped {
+        remaining_count: usize,
+        pasted: bool,
+        text: Option<String>,
+    },
+    OcrResult {
+        text: String,
+    },
     Error(String),
 }

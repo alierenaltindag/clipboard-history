@@ -96,6 +96,24 @@ impl SettingsDialog {
         security_group.add(&auto_paste_row);
 
         page.add(&security_group);
+
+        // Network Sync Group
+        let sync_group = libadwaita::PreferencesGroup::new();
+        sync_group.set_title("P2P Local Network Sync");
+
+        let sync_toggle_row = libadwaita::SwitchRow::new();
+        sync_toggle_row.set_title("Enable LAN Clipboard Sync");
+        sync_toggle_row
+            .set_subtitle("Synchronize clipboard end-to-end encrypted with other devices on LAN");
+        sync_toggle_row.set_active(config.sync.enabled);
+        sync_group.add(&sync_toggle_row);
+
+        let pin_row = libadwaita::EntryRow::new();
+        pin_row.set_title("Pairing PIN");
+        pin_row.set_text(&config.sync.pairing_pin);
+        sync_group.add(&pin_row);
+
+        page.add(&sync_group);
         dialog.add(&page);
 
         // Connect setting listeners to save to config.toml and sync with daemon via IPC
@@ -129,6 +147,18 @@ impl SettingsDialog {
         retention_row.connect_value_notify(move |row| {
             cfg_ret.borrow_mut().general.retention_days = row.value() as u32;
             Self::save_and_sync(&cfg_ret.borrow());
+        });
+
+        let cfg_sync = Rc::clone(&cfg_cell);
+        sync_toggle_row.connect_active_notify(move |row| {
+            cfg_sync.borrow_mut().sync.enabled = row.is_active();
+            Self::save_and_sync(&cfg_sync.borrow());
+        });
+
+        let cfg_pin = Rc::clone(&cfg_cell);
+        pin_row.connect_changed(move |row| {
+            cfg_pin.borrow_mut().sync.pairing_pin = row.text().to_string();
+            Self::save_and_sync(&cfg_pin.borrow());
         });
 
         dialog.present();

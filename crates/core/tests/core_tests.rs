@@ -370,3 +370,172 @@ fn test_security_config_defaults_and_toggle() {
     assert!(des_re.security.ignore_password_managers);
     assert!(des_re.security.ignore_incognito_windows);
 }
+
+#[test]
+fn test_snippets_crud_sqlite() {
+    use clipboard_history_core::domain::Snippet;
+    use clipboard_history_core::storage::SqliteRepository;
+
+    let repo = SqliteRepository::open_in_memory().expect("Failed to open in-memory db");
+
+    let snippet1 = Snippet::new(
+        "Greeting".to_string(),
+        "Hello {clipboard}, welcome!".to_string(),
+        Some("Templates".to_string()),
+    );
+    let snippet2 = Snippet::new(
+        "Email Sig".to_string(),
+        "Best regards,\nAli".to_string(),
+        Some("Signatures".to_string()),
+    );
+
+    // Insert
+    let inserted1 = repo
+        .insert_snippet(&snippet1)
+        .expect("Insert snippet 1 failed");
+    let inserted2 = repo
+        .insert_snippet(&snippet2)
+        .expect("Insert snippet 2 failed");
+    assert_eq!(inserted1.label, "Greeting");
+    assert_eq!(inserted2.label, "Email Sig");
+
+    // List all
+    let all = repo.list_snippets(None).expect("List snippets failed");
+    assert_eq!(all.len(), 2);
+
+    // Filter by category
+    let templates = repo
+        .list_snippets(Some("Templates"))
+        .expect("Filter snippets failed");
+    assert_eq!(templates.len(), 1);
+    assert_eq!(templates[0].label, "Greeting");
+
+    // Get by ID
+    let fetched = repo.get_snippet(&snippet1.id).expect("Get snippet failed");
+    assert!(fetched.is_some());
+    assert_eq!(fetched.unwrap().content, "Hello {clipboard}, welcome!");
+
+    // Touch snippet (updates last_used_at)
+    repo.touch_snippet(&snippet1.id)
+        .expect("Touch snippet failed");
+
+    // Update snippet
+    let mut updated = snippet1.clone();
+    updated.content = "Updated content".to_string();
+    repo.update_snippet(&updated)
+        .expect("Update snippet failed");
+    let fetched_updated = repo.get_snippet(&snippet1.id).unwrap().unwrap();
+    assert_eq!(fetched_updated.content, "Updated content");
+
+    // Delete snippet
+    let deleted = repo
+        .delete_snippet(&snippet1.id)
+        .expect("Delete snippet failed");
+    assert!(deleted);
+    let after_delete = repo.list_snippets(None).unwrap();
+    assert_eq!(after_delete.len(), 1);
+    assert_eq!(after_delete[0].id, snippet2.id);
+}
+
+#[test]
+fn test_snippet_template_expansion() {
+    use clipboard_history_core::transforms::SnippetExpander;
+
+    let template = "Date: {date}, Time: {time}, UUID: {uuid}, Clip: [{clipboard}]";
+    let expanded = SnippetExpander::expand(template, Some("CopiedText"));
+
+    assert!(expanded.contains("Date: 202")); // Year 202...
+    assert!(expanded.contains("Time: "));
+    assert!(expanded.contains("Clip: [CopiedText]"));
+    assert!(!expanded.contains("{uuid}")); // UUID was replaced
+    assert!(!expanded.contains("{date}"));
+    assert!(!expanded.contains("{time}"));
+
+    // Multiple UUIDs generate distinct identifiers
+    let multi_uuid_tpl = "{uuid}_{uuid}";
+    let multi_expanded = SnippetExpander::expand(multi_uuid_tpl, None);
+    let parts: Vec<&str> = multi_expanded.split('_').collect();
+    assert_eq!(parts.len(), 2);
+    assert_ne!(parts[0], parts[1]);
+}
+
+#[test]
+fn test_color_format_conversions() {
+    use clipboard_history_core::transforms::TextTransforms;
+
+    let color = TextTransforms::detect_color("#3B82F6").expect("Detect color failed");
+    assert_eq!(color.to_hex_string(), "#3B82F6");
+    assert_eq!(color.to_rgb_string(), "rgb(59, 130, 246)");
+    assert_eq!(
+        color.to_css_var("primary-color"),
+        "--primary-color: #3B82F6;"
+    );
+
+    let hsl = color.to_hsl_string();
+    assert!(hsl.starts_with("hsl("));
+    assert!(hsl.ends_with("%)"));
+
+    let glsl = color.to_glsl_vec4();
+    assert!(glsl.starts_with("vec4("));
+
+    let swift = color.to_swift_ui();
+    assert!(swift.starts_with("Color(red:"));
+}
+
+#[test]
+fn test_search_syntax_parser() {
+    use clipboard_history_core::domain::{ClipboardEntry, EntryType};
+    use clipboard_history_core::search::parser::ParsedSearchQuery;
+
+    let parsed = ParsedSearchQuery::parse("type:code app:firefox is:pinned query_term");
+    assert_eq!(parsed.entry_type, Some(EntryType::Code));
+    assert_eq!(parsed.source_app.as_deref(), Some("firefox"));
+    assert_eq!(parsed.is_pinned, Some(true));
+    assert_eq!(parsed.text_query, "query_term");
+    assert!(!parsed.is_snippet);
+
+    let mut entry = ClipboardEntry::new_text(
+        "fn main() {}".to_string(),
+        "hash".to_string(),
+        vec!["text/plain".to_string()],
+        Some("Firefox Browser".to_string()),
+    );
+    entry.entry_type = EntryType::Code;
+    entry.is_pinned = true;
+
+    assert!(parsed.matches_entry(&entry));
+
+    // Mismatched type
+    entry.entry_type = EntryType::Text;
+    assert!(!parsed.matches_entry(&entry));
+
+    // Snippets token
+    let snippet_query = ParsedSearchQuery::parse("is:snippet response");
+    assert!(snippet_query.is_snippet);
+    assert_eq!(snippet_query.text_query, "response");
+    assert!(!snippet_query.matches_entry(&entry));
+    entry.source_app = Some("Snippet".to_string());
+    assert!(snippet_query.matches_entry(&entry));
+}
+
+#[test]
+fn test_lan_sync_crypto_roundtrip() {
+    use clipboard_history_core::sync::lan::LanCrypto;
+
+    let pin = "123456";
+    let data = b"Confidential clipboard payload transmitted over local WiFi network";
+
+    // Encrypt
+    let encrypted = LanCrypto::encrypt(pin, data).expect("Encryption failed");
+    assert_ne!(encrypted, data);
+    assert!(encrypted.len() > 12); // Must contain nonce + tag
+
+    // Decrypt with correct PIN
+    let decrypted = LanCrypto::decrypt(pin, &encrypted).expect("Decryption failed");
+    assert_eq!(decrypted, data);
+
+    // Decrypt with wrong PIN must fail
+    let wrong_pin = "654321";
+    let wrong_result = LanCrypto::decrypt(wrong_pin, &encrypted);
+    assert!(wrong_result.is_err());
+}

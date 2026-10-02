@@ -117,6 +117,30 @@ impl Default for HotkeyConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncConfig {
+    pub enabled: bool,
+    pub device_name: String,
+    pub listen_port: u16,
+    pub pairing_pin: String,
+    pub peer_addresses: Vec<String>,
+}
+
+impl Default for SyncConfig {
+    fn default() -> Self {
+        let hostname = std::env::var("HOSTNAME")
+            .or_else(|_| std::env::var("USER"))
+            .unwrap_or_else(|_| "Linux-Desktop".to_string());
+        Self {
+            enabled: false,
+            device_name: hostname,
+            listen_port: 54123,
+            pairing_pin: "123456".to_string(),
+            peer_addresses: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     pub general: GeneralConfig,
@@ -124,6 +148,7 @@ pub struct AppConfig {
     pub ui: UiConfig,
     pub paste: PasteConfig,
     pub hotkey: HotkeyConfig,
+    pub sync: SyncConfig,
 }
 
 impl AppConfig {

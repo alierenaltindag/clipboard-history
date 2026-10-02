@@ -94,11 +94,64 @@ enum Commands {
         text: String,
     },
 
+    #[command(about = "Manage permanent canned snippets")]
+    Snippets {
+        #[command(subcommand)]
+        action: Option<SnippetAction>,
+    },
+
+    #[command(about = "Manage sequential paste queue")]
+    Queue {
+        #[command(subcommand)]
+        action: Option<QueueAction>,
+    },
+
+    #[command(about = "Extract text from an image entry using OCR")]
+    Ocr {
+        #[arg(help = "Entry ID or blob hash")]
+        id: String,
+    },
+
     #[command(about = "Manage clipboard history configuration settings")]
     Config {
         #[command(subcommand)]
         action: Option<ConfigAction>,
     },
+}
+
+#[derive(Subcommand, Debug)]
+enum SnippetAction {
+    #[command(about = "List all snippets")]
+    List,
+    #[command(about = "Add a new snippet")]
+    Add {
+        #[arg(help = "Snippet label/title")]
+        label: String,
+        #[arg(help = "Snippet content")]
+        content: String,
+        #[arg(short, long, help = "Optional category")]
+        category: Option<String>,
+    },
+    #[command(about = "Delete a snippet by ID")]
+    Delete {
+        #[arg(help = "Snippet ID")]
+        id: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum QueueAction {
+    #[command(about = "Display current paste queue status")]
+    Status,
+    #[command(about = "Enqueue entry IDs to the paste queue")]
+    Add {
+        #[arg(help = "Entry IDs to enqueue")]
+        ids: Vec<String>,
+    },
+    #[command(about = "Pop and paste next item in queue")]
+    Pop,
+    #[command(about = "Clear the paste queue")]
+    Clear,
 }
 
 #[derive(Subcommand, Debug)]
@@ -122,6 +175,18 @@ enum ConfigAction {
     SetAutoPaste {
         #[arg(action = clap::ArgAction::Set, help = "true to enable auto-paste, false to copy-only")]
         enabled: bool,
+    },
+
+    #[command(about = "Toggle P2P LAN clipboard synchronization")]
+    SetSync {
+        #[arg(action = clap::ArgAction::Set, help = "true to enable LAN sync, false to disable")]
+        enabled: bool,
+    },
+
+    #[command(about = "Set P2P LAN sync pairing PIN")]
+    SetPin {
+        #[arg(help = "6-digit pairing PIN")]
+        pin: String,
     },
 
     #[command(about = "Set maximum entries limit")]
@@ -358,6 +423,168 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
+        Commands::Snippets { action } => match action.unwrap_or(SnippetAction::List) {
+            SnippetAction::List => {
+                let req = IpcRequest::ListSnippets { category: None };
+                match IpcClient::send_request(&socket_path, &req).await {
+                    Ok(IpcResponse::Snippets(snippets)) => {
+                        if snippets.is_empty() {
+                            println!("No snippets saved yet. Add one with: clipboard-history snippets add <label> <content>");
+                            return Ok(());
+                        }
+                        println!(
+                            "{:<8} | {:<20} | {:<12} | {:<40}",
+                            "ID", "LABEL", "CATEGORY", "CONTENT"
+                        );
+                        println!("{:-<85}", "");
+                        for s in snippets {
+                            let short_id = &s.id[..8.min(s.id.len())];
+                            let preview = if s.content.len() > 37 {
+                                format!("{}...", &s.content[..37])
+                            } else {
+                                s.content.clone()
+                            };
+                            println!(
+                                "{:<8} | {:<20} | {:<12} | {:<40}",
+                                short_id, s.label, s.category, preview
+                            );
+                        }
+                    }
+                    Ok(IpcResponse::Error(e)) => eprintln!("Error: {}", e),
+                    Err(_) => print_daemon_offline_error(),
+                    _ => eprintln!("Unexpected response"),
+                }
+            }
+            SnippetAction::Add {
+                label,
+                content,
+                category,
+            } => {
+                let req = IpcRequest::CreateSnippet {
+                    label: label.clone(),
+                    content,
+                    category,
+                };
+                match IpcClient::send_request(&socket_path, &req).await {
+                    Ok(IpcResponse::Snippet(s)) => {
+                        println!("Created snippet '{}' (ID: {})", s.label, s.id)
+                    }
+                    Ok(IpcResponse::Error(e)) => eprintln!("Error: {}", e),
+                    Err(_) => print_daemon_offline_error(),
+                    _ => eprintln!("Unexpected response"),
+                }
+            }
+            SnippetAction::Delete { id } => {
+                let req = IpcRequest::DeleteSnippet { id: id.clone() };
+                match IpcClient::send_request(&socket_path, &req).await {
+                    Ok(IpcResponse::Success) => println!("Deleted snippet {}", id),
+                    Ok(IpcResponse::Error(e)) => eprintln!("Error: {}", e),
+                    Err(_) => print_daemon_offline_error(),
+                    _ => eprintln!("Unexpected response"),
+                }
+            }
+        },
+
+        Commands::Queue { action } => match action.unwrap_or(QueueAction::Status) {
+            QueueAction::Status => {
+                let req = IpcRequest::GetQueueStatus;
+                match IpcClient::send_request(&socket_path, &req).await {
+                    Ok(IpcResponse::QueueStatus(qs)) => {
+                        println!("Sequential Paste Queue Status");
+                        println!("----------------------------");
+                        println!(
+                            "Active          : {}",
+                            if qs.active { "YES" } else { "EMPTY / IDLE" }
+                        );
+                        println!("Items Remaining : {}", qs.remaining_count);
+                        if let Some(next) = qs.next_preview {
+                            println!("Next in Line    : {}", next);
+                        }
+                    }
+                    Ok(IpcResponse::Error(e)) => eprintln!("Error: {}", e),
+                    Err(_) => print_daemon_offline_error(),
+                    _ => eprintln!("Unexpected response"),
+                }
+            }
+            QueueAction::Add { ids } => {
+                let count = ids.len();
+                let req = IpcRequest::EnqueueItems { ids };
+                match IpcClient::send_request(&socket_path, &req).await {
+                    Ok(IpcResponse::Success) => {
+                        println!("Enqueued {} item(s) to paste queue.", count)
+                    }
+                    Ok(IpcResponse::Error(e)) => eprintln!("Error: {}", e),
+                    Err(_) => print_daemon_offline_error(),
+                    _ => eprintln!("Unexpected response"),
+                }
+            }
+            QueueAction::Pop => {
+                let req = IpcRequest::PopAndPasteQueue;
+                match IpcClient::send_request(&socket_path, &req).await {
+                    Ok(IpcResponse::QueuePopped {
+                        remaining_count,
+                        pasted,
+                        text,
+                    }) => {
+                        if pasted {
+                            if let Some(t) = text {
+                                println!(
+                                    "Popped item from queue ({} remaining):\n{}",
+                                    remaining_count, t
+                                );
+                            } else {
+                                println!("Popped item from queue ({} remaining).", remaining_count);
+                            }
+                        } else {
+                            println!("Paste queue is empty.");
+                        }
+                    }
+                    Ok(IpcResponse::Error(e)) => eprintln!("Error: {}", e),
+                    Err(_) => print_daemon_offline_error(),
+                    _ => eprintln!("Unexpected response"),
+                }
+            }
+            QueueAction::Clear => {
+                let req = IpcRequest::ClearQueue;
+                match IpcClient::send_request(&socket_path, &req).await {
+                    Ok(IpcResponse::Success) => println!("Cleared paste queue."),
+                    Ok(IpcResponse::Error(e)) => eprintln!("Error: {}", e),
+                    Err(_) => print_daemon_offline_error(),
+                    _ => eprintln!("Unexpected response"),
+                }
+            }
+        },
+
+        Commands::Ocr { id } => {
+            // First try resolving entry by ID to get its blob_hash
+            let blob_hash = match IpcClient::send_request(
+                &socket_path,
+                &IpcRequest::GetEntry { id: id.clone() },
+            )
+            .await
+            {
+                Ok(IpcResponse::Entry(entry)) => {
+                    if let Some(e) = *entry {
+                        e.blob_hash.unwrap_or(id.clone())
+                    } else {
+                        id.clone()
+                    }
+                }
+                _ => id.clone(),
+            };
+
+            let req = IpcRequest::PerformOcr { blob_hash };
+            match IpcClient::send_request(&socket_path, &req).await {
+                Ok(IpcResponse::OcrResult { text }) => {
+                    println!("OCR Extracted Text:\n-------------------");
+                    println!("{}", text);
+                }
+                Ok(IpcResponse::Error(e)) => eprintln!("OCR Error: {}", e),
+                Err(_) => print_daemon_offline_error(),
+                _ => eprintln!("Unexpected response"),
+            }
+        }
+
         Commands::Config { action } => {
             // Retrieve current configuration: try daemon IPC first, fallback to disk
             let mut cfg = match IpcClient::send_request(&socket_path, &IpcRequest::GetConfig).await
@@ -438,6 +665,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             "DISABLED"
                         }
                     );
+                    println!();
+                    println!("P2P Local Network Sync:");
+                    println!(
+                        "  LAN Sync Status           : {}",
+                        if cfg.sync.enabled {
+                            "ENABLED"
+                        } else {
+                            "DISABLED"
+                        }
+                    );
+                    println!("  Device Name               : {}", cfg.sync.device_name);
+                    println!("  Listen Port               : {}", cfg.sync.listen_port);
+                    println!("  Pairing PIN               : {}", cfg.sync.pairing_pin);
                 }
                 ConfigAction::SetPasswords { enabled } => {
                     cfg.security.ignore_password_managers = enabled;
@@ -472,6 +712,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "Direct keystroke auto-paste updated: {}",
                         if enabled { "ENABLED" } else { "DISABLED" }
                     );
+                }
+                ConfigAction::SetSync { enabled } => {
+                    cfg.sync.enabled = enabled;
+                    save_and_broadcast_config(&socket_path, &cfg).await?;
+                    println!(
+                        "P2P LAN Sync updated: {}",
+                        if enabled { "ENABLED" } else { "DISABLED" }
+                    );
+                }
+                ConfigAction::SetPin { pin } => {
+                    cfg.sync.pairing_pin = pin.clone();
+                    save_and_broadcast_config(&socket_path, &cfg).await?;
+                    println!("P2P LAN sync pairing PIN updated to: {}", pin);
                 }
                 ConfigAction::SetMaxEntries { limit } => {
                     cfg.general.max_entries = limit;

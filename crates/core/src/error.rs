@@ -32,6 +32,9 @@ pub enum CoreError {
     #[error("Blob not found: {0}")]
     BlobNotFound(String),
 
+    #[error("Storage/OCR error: {0}")]
+    Storage(String),
+
     #[error("Crypto error: {0}")]
     Crypto(#[from] crate::security::CryptoError),
 }

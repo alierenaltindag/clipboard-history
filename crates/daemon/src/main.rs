@@ -162,6 +162,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // Spawn P2P LAN Encrypted Sync Service
+    let sync_cfg_arc = config_arc.clone();
+    let sync_repo = repo.clone();
+    let listen_port = config.sync.listen_port;
+    tokio::spawn(async move {
+        let addr = format!("0.0.0.0:{}", listen_port);
+        if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {
+            info!("P2P LAN Encrypted Sync listening on {}", addr);
+            while let Ok((mut socket, peer_addr)) = listener.accept().await {
+                let current_sync = sync_cfg_arc.read().await.sync.clone();
+                if !current_sync.enabled {
+                    continue;
+                }
+                let pin = current_sync.pairing_pin.clone();
+                let dev_name = current_sync.device_name.clone();
+                let sync_repo = sync_repo.clone();
+                tokio::spawn(async move {
+                    use clipboard_history_core::sync::{
+                        read_sync_message, send_sync_message, SyncMessage,
+                    };
+                    let (mut reader, mut writer) = socket.split();
+                    while let Ok(msg) = read_sync_message(&mut reader, &pin).await {
+                        match msg {
+                            SyncMessage::AuthRequest { pairing_pin, .. } => {
+                                let success = pairing_pin == pin;
+                                let _ = send_sync_message(
+                                    &mut writer,
+                                    &pin,
+                                    &SyncMessage::AuthResponse {
+                                        success,
+                                        device_name: dev_name.clone(),
+                                        message: if success {
+                                            "Authenticated".to_string()
+                                        } else {
+                                            "Invalid PIN".to_string()
+                                        },
+                                    },
+                                )
+                                .await;
+                            }
+                            SyncMessage::EntrySync {
+                                origin_device,
+                                entry,
+                            } => {
+                                info!(
+                                    "Received synced clipboard entry from peer {} ({})",
+                                    origin_device, peer_addr
+                                );
+                                let _ = sync_repo.insert_or_update(&entry);
+                            }
+                            SyncMessage::Ping => {
+                                let _ =
+                                    send_sync_message(&mut writer, &pin, &SyncMessage::Pong).await;
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+            }
+        } else {
+            debug!("Could not bind LAN Sync port {}", listen_port);
+        }
+    });
+
     let window_focus_detector = WindowFocusDetector::new();
 
     // Main Event Processing Loop
@@ -252,6 +316,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "Captured clipboard entry: [{}] {}",
                     entry.entry_type, entry.preview
                 );
+                broadcast_to_peers(&current_cfg.sync, &entry);
             }
         } else if let Some(image_bytes) = event.image_data {
             if !circuit_breaker.allow_payload_size(image_bytes.len()) {
@@ -288,9 +353,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 error!("Failed to save image entry: {}", e);
             } else {
                 debug!("Captured clipboard image entry: {}", entry.preview);
+                broadcast_to_peers(&current_cfg.sync, &entry);
             }
         }
     }
 
     Ok(())
+}
+
+fn broadcast_to_peers(cfg: &clipboard_history_core::config::SyncConfig, entry: &ClipboardEntry) {
+    if !cfg.enabled || cfg.peer_addresses.is_empty() {
+        return;
+    }
+    use clipboard_history_core::sync::{send_sync_message, SyncMessage};
+    let msg = SyncMessage::EntrySync {
+        origin_device: cfg.device_name.clone(),
+        entry: Box::new(entry.clone()),
+    };
+    for peer in cfg.peer_addresses.clone() {
+        let pin = cfg.pairing_pin.clone();
+        let msg = msg.clone();
+        tokio::spawn(async move {
+            if let Ok(mut stream) = tokio::net::TcpStream::connect(&peer).await {
+                let _ = send_sync_message(&mut stream, &pin, &msg).await;
+            }
+        });
+    }
 }

@@ -3,6 +3,7 @@ mod injector;
 mod list_row;
 mod search;
 mod settings_dialog;
+mod snippet_dialog;
 mod transforms_dialog;
 mod window;
 

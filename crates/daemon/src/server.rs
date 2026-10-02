@@ -1,16 +1,18 @@
 use clipboard_history_core::blob::BlobStore;
 use clipboard_history_core::config::AppConfig;
-use clipboard_history_core::domain::ClipboardEntry;
+use clipboard_history_core::domain::{ClipboardEntry, Snippet};
 use clipboard_history_core::error::Result;
 use clipboard_history_core::ipc::{
-    read_message, write_message, DaemonStatus, IpcRequest, IpcResponse,
+    read_message, write_message, DaemonStatus, IpcRequest, IpcResponse, QueueStatus,
 };
 use clipboard_history_core::storage::SqliteRepository;
+use clipboard_history_core::transforms::OcrEngine;
+use std::collections::VecDeque;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::RwLock;
@@ -23,6 +25,7 @@ pub struct DaemonServer {
     is_paused: Arc<AtomicBool>,
     socket_path: PathBuf,
     start_time: Instant,
+    paste_queue: Arc<Mutex<VecDeque<ClipboardEntry>>>,
 }
 
 impl DaemonServer {
@@ -40,6 +43,7 @@ impl DaemonServer {
             is_paused,
             socket_path,
             start_time: Instant::now(),
+            paste_queue: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -63,6 +67,7 @@ impl DaemonServer {
         let config = self.config;
         let is_paused = self.is_paused;
         let start_time = self.start_time;
+        let paste_queue = self.paste_queue;
 
         loop {
             match listener.accept().await {
@@ -71,6 +76,7 @@ impl DaemonServer {
                     let blob_cloned = blob_store.clone();
                     let config_cloned = Arc::clone(&config);
                     let paused_cloned = Arc::clone(&is_paused);
+                    let queue_cloned = Arc::clone(&paste_queue);
 
                     tokio::spawn(async move {
                         if let Err(e) = Self::handle_client(
@@ -80,6 +86,7 @@ impl DaemonServer {
                             config_cloned,
                             paused_cloned,
                             start_time,
+                            queue_cloned,
                         )
                         .await
                         {
@@ -101,6 +108,7 @@ impl DaemonServer {
         config: Arc<RwLock<AppConfig>>,
         is_paused: Arc<AtomicBool>,
         start_time: Instant,
+        paste_queue: Arc<Mutex<VecDeque<ClipboardEntry>>>,
     ) -> Result<()> {
         let (mut reader, mut writer) = stream.into_split();
 
@@ -202,6 +210,126 @@ impl DaemonServer {
                         Err(e) => IpcResponse::Error(e.to_string()),
                     }
                 }
+
+                IpcRequest::ListSnippets { category } => {
+                    match repo.list_snippets(category.as_deref()) {
+                        Ok(snippets) => IpcResponse::Snippets(snippets),
+                        Err(e) => IpcResponse::Error(e.to_string()),
+                    }
+                }
+
+                IpcRequest::CreateSnippet {
+                    label,
+                    content,
+                    category,
+                } => {
+                    let snippet = Snippet::new(label, content, category);
+                    match repo.insert_snippet(&snippet) {
+                        Ok(s) => IpcResponse::Snippet(Box::new(s)),
+                        Err(e) => IpcResponse::Error(e.to_string()),
+                    }
+                }
+
+                IpcRequest::UpdateSnippet { snippet } => match repo.update_snippet(&snippet) {
+                    Ok(_) => IpcResponse::Success,
+                    Err(e) => IpcResponse::Error(e.to_string()),
+                },
+
+                IpcRequest::DeleteSnippet { id } => match repo.delete_snippet(&id) {
+                    Ok(_) => IpcResponse::Success,
+                    Err(e) => IpcResponse::Error(e.to_string()),
+                },
+
+                IpcRequest::UseSnippet { id } => {
+                    let _ = repo.touch_snippet(&id);
+                    IpcResponse::Success
+                }
+
+                IpcRequest::EnqueueItems { ids } => {
+                    let mut q = paste_queue.lock().unwrap();
+                    for id in ids {
+                        if let Ok(entry) = repo.get_by_id(&id) {
+                            q.push_back(entry);
+                        }
+                    }
+                    info!(
+                        "Enqueued items into sequential paste queue. Size: {}",
+                        q.len()
+                    );
+                    IpcResponse::Success
+                }
+
+                IpcRequest::ClearQueue => {
+                    let mut q = paste_queue.lock().unwrap();
+                    q.clear();
+                    info!("Cleared sequential paste queue");
+                    IpcResponse::Success
+                }
+
+                IpcRequest::GetQueueStatus => {
+                    let q = paste_queue.lock().unwrap();
+                    let remaining_count = q.len();
+                    let active = !q.is_empty();
+                    let next_preview = q.front().map(|e| e.preview.clone());
+                    IpcResponse::QueueStatus(QueueStatus {
+                        active,
+                        remaining_count,
+                        next_preview,
+                    })
+                }
+
+                IpcRequest::PopAndPasteQueue => {
+                    let mut q = paste_queue.lock().unwrap();
+                    if let Some(entry) = q.pop_front() {
+                        let remaining_count = q.len();
+                        let text = entry.text_content.unwrap_or(entry.preview);
+                        info!(
+                            "Popped item from sequential paste queue. Remaining: {}",
+                            remaining_count
+                        );
+                        let hash = BlobStore::compute_hash(text.as_bytes());
+                        let popped_entry = ClipboardEntry::new_text(
+                            text.clone(),
+                            hash,
+                            vec!["text/plain".to_string()],
+                            Some("PasteQueue".to_string()),
+                        );
+                        let _ = repo.insert_or_update(&popped_entry);
+                        IpcResponse::QueuePopped {
+                            remaining_count,
+                            pasted: true,
+                            text: Some(text),
+                        }
+                    } else {
+                        IpcResponse::QueuePopped {
+                            remaining_count: 0,
+                            pasted: false,
+                            text: None,
+                        }
+                    }
+                }
+
+                IpcRequest::PerformOcr { blob_hash } => match blob_store.read(&blob_hash) {
+                    Ok(image_bytes) => match OcrEngine::extract_text(&image_bytes).await {
+                        Ok(extracted_text) => {
+                            if !extracted_text.trim().is_empty() {
+                                let hash = BlobStore::compute_hash(extracted_text.as_bytes());
+                                let entry = ClipboardEntry::new_text(
+                                    extracted_text.clone(),
+                                    hash,
+                                    vec!["text/plain".to_string()],
+                                    Some("OCR".to_string()),
+                                );
+                                let _ = repo.insert_or_update(&entry);
+                            }
+                            IpcResponse::OcrResult {
+                                text: extracted_text,
+                            }
+                        }
+                        Err(e) => IpcResponse::Error(e.to_string()),
+                    },
+                    Err(e) => IpcResponse::Error(format!("Failed to read image blob: {}", e)),
+                },
 
                 IpcRequest::ToggleWindow
                 | IpcRequest::ShowWindow

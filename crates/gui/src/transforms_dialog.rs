@@ -56,6 +56,117 @@ pub fn show_transforms_popover(
         label.add_css_class("monospace");
         color_box.append(&label);
         container.append(&color_box);
+
+        // Color Formats Bar
+        let fmt_box = GtkBox::new(Orientation::Horizontal, 4);
+        let hex_btn = Button::with_label("Hex");
+        let rgb_btn = Button::with_label("RGB");
+        let hsl_btn = Button::with_label("HSL");
+        let css_btn = Button::with_label("CSS var");
+        let glsl_btn = Button::with_label("GLSL");
+
+        hex_btn.add_css_class("flat");
+        rgb_btn.add_css_class("flat");
+        hsl_btn.add_css_class("flat");
+        css_btn.add_css_class("flat");
+        glsl_btn.add_css_class("flat");
+
+        fmt_box.append(&hex_btn);
+        fmt_box.append(&rgb_btn);
+        fmt_box.append(&hsl_btn);
+        fmt_box.append(&css_btn);
+        fmt_box.append(&glsl_btn);
+        container.append(&fmt_box);
+
+        let col_clone = color.clone();
+        let win = main_window.clone();
+        let ap = config.paste.auto_paste;
+        hex_btn.connect_clicked(move |_| {
+            if let Some(display) = gdk4::Display::default() {
+                display.clipboard().set_text(&col_clone.to_hex_string());
+            }
+            win.set_visible(false);
+        });
+
+        let col_clone = color.clone();
+        let win = main_window.clone();
+        rgb_btn.connect_clicked(move |_| {
+            if let Some(display) = gdk4::Display::default() {
+                display.clipboard().set_text(&col_clone.to_rgb_string());
+            }
+            win.set_visible(false);
+        });
+
+        let col_clone = color.clone();
+        let win = main_window.clone();
+        hsl_btn.connect_clicked(move |_| {
+            if let Some(display) = gdk4::Display::default() {
+                display.clipboard().set_text(&col_clone.to_hsl_string());
+            }
+            win.set_visible(false);
+        });
+
+        let col_clone = color.clone();
+        let win = main_window.clone();
+        css_btn.connect_clicked(move |_| {
+            if let Some(display) = gdk4::Display::default() {
+                display
+                    .clipboard()
+                    .set_text(&col_clone.to_css_var("primary-color"));
+            }
+            win.set_visible(false);
+        });
+
+        let col_clone = color.clone();
+        let win = main_window.clone();
+        glsl_btn.connect_clicked(move |_| {
+            if let Some(display) = gdk4::Display::default() {
+                display.clipboard().set_text(&col_clone.to_glsl_vec4());
+            }
+            win.set_visible(false);
+        });
+    }
+
+    // OCR for Image entries
+    if let Some(blob_hash) = &entry.blob_hash {
+        let ocr_box = GtkBox::new(Orientation::Horizontal, 6);
+        ocr_box.set_margin_top(4);
+        let ocr_btn = Button::with_label("🔍 Extract Text (OCR)");
+        ocr_btn.add_css_class("suggested-action");
+        ocr_box.append(&ocr_btn);
+        container.append(&ocr_box);
+
+        let hash_cloned = blob_hash.clone();
+        let win_ocr = main_window.clone();
+        ocr_btn.connect_clicked(move |_| {
+            let hash = hash_cloned.clone();
+            let win = win_ocr.clone();
+            glib::MainContext::default().spawn_local(async move {
+                if let Ok(mut client) = clipboard_history_core::ipc::IpcClient::connect().await {
+                    match client
+                        .send(&clipboard_history_core::ipc::IpcRequest::PerformOcr {
+                            blob_hash: hash,
+                        })
+                        .await
+                    {
+                        Ok(clipboard_history_core::ipc::IpcResponse::OcrResult { text }) => {
+                            if let Some(display) = gdk4::Display::default() {
+                                display.clipboard().set_text(&text);
+                            }
+                            win.set_visible(false);
+                            info!(
+                                "OCR extracted {} characters and copied to clipboard",
+                                text.len()
+                            );
+                        }
+                        Ok(clipboard_history_core::ipc::IpcResponse::Error(e)) => {
+                            tracing::warn!("OCR request failed: {}", e);
+                        }
+                        _ => {}
+                    }
+                }
+            });
+        });
     }
 
     // 2. Case Conversion Row
@@ -124,7 +235,25 @@ pub fn show_transforms_popover(
     let plain_btn = Button::with_label("📄 Paste as Plain Text");
     plain_btn.add_css_class("flat");
     qr_box.append(&plain_btn);
+
+    let queue_btn = Button::with_label("🔄 Add to Queue");
+    queue_btn.add_css_class("flat");
+    qr_box.append(&queue_btn);
+
     container.append(&qr_box);
+
+    let id_for_queue = entry.id.clone();
+    queue_btn.connect_clicked(move |_| {
+        let id = id_for_queue.clone();
+        glib::MainContext::default().spawn_local(async move {
+            if let Ok(mut client) = clipboard_history_core::ipc::IpcClient::connect().await {
+                let _ = client
+                    .send(&clipboard_history_core::ipc::IpcRequest::EnqueueItems { ids: vec![id] })
+                    .await;
+                info!("Enqueued item into paste queue");
+            }
+        });
+    });
 
     popover.set_child(Some(&container));
 

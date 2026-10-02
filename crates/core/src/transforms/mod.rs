@@ -240,3 +240,168 @@ impl TextTransforms {
         Ok(svg_image)
     }
 }
+
+impl ColorInfo {
+    pub fn to_hex_string(&self) -> String {
+        if (self.a - 1.0).abs() < 0.001 {
+            format!("#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
+        } else {
+            let alpha_u8 = (self.a * 255.0).round() as u8;
+            format!(
+                "#{:02X}{:02X}{:02X}{:02X}",
+                self.r, self.g, self.b, alpha_u8
+            )
+        }
+    }
+
+    pub fn to_rgb_string(&self) -> String {
+        if (self.a - 1.0).abs() < 0.001 {
+            format!("rgb({}, {}, {})", self.r, self.g, self.b)
+        } else {
+            format!("rgba({}, {}, {}, {:.2})", self.r, self.g, self.b, self.a)
+        }
+    }
+
+    pub fn to_hsl_string(&self) -> String {
+        let r = self.r as f32 / 255.0;
+        let g = self.g as f32 / 255.0;
+        let b = self.b as f32 / 255.0;
+
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let delta = max - min;
+
+        let l = (max + min) / 2.0;
+        let (h, s) = if delta.abs() < 0.0001 {
+            (0.0, 0.0)
+        } else {
+            let s = if l > 0.5 {
+                delta / (2.0 - max - min)
+            } else {
+                delta / (max + min)
+            };
+            let h = if (max - r).abs() < 0.0001 {
+                ((g - b) / delta + (if g < b { 6.0 } else { 0.0 })) / 6.0
+            } else if (max - g).abs() < 0.0001 {
+                ((b - r) / delta + 2.0) / 6.0
+            } else {
+                ((r - g) / delta + 4.0) / 6.0
+            };
+            (h * 360.0, s * 100.0)
+        };
+
+        let l_pct = l * 100.0;
+        if (self.a - 1.0).abs() < 0.001 {
+            format!("hsl({:.0}, {:.0}%, {:.0}%)", h, s, l_pct)
+        } else {
+            format!("hsla({:.0}, {:.0}%, {:.0}%, {:.2})", h, s, l_pct, self.a)
+        }
+    }
+
+    pub fn to_css_var(&self, var_name: &str) -> String {
+        format!("--{}: {};", var_name, self.hex)
+    }
+
+    pub fn to_glsl_vec4(&self) -> String {
+        format!(
+            "vec4({:.3}, {:.3}, {:.3}, {:.3})",
+            self.r as f32 / 255.0,
+            self.g as f32 / 255.0,
+            self.b as f32 / 255.0,
+            self.a
+        )
+    }
+
+    pub fn to_swift_ui(&self) -> String {
+        format!(
+            "Color(red: {:.3}, green: {:.3}, blue: {:.3}, opacity: {:.3})",
+            self.r as f32 / 255.0,
+            self.g as f32 / 255.0,
+            self.b as f32 / 255.0,
+            self.a
+        )
+    }
+}
+
+pub struct SnippetExpander;
+
+impl SnippetExpander {
+    pub fn expand(template: &str, current_clipboard: Option<&str>) -> String {
+        let now = chrono::Local::now();
+        let mut result = template.to_string();
+
+        result = result.replace("{date}", &now.format("%Y-%m-%d").to_string());
+        result = result.replace("{time}", &now.format("%H:%M:%S").to_string());
+        result = result.replace("{datetime}", &now.to_rfc3339());
+        result = result.replace("{year}", &now.format("%Y").to_string());
+        result = result.replace("{month}", &now.format("%m").to_string());
+        result = result.replace("{day}", &now.format("%d").to_string());
+
+        while result.contains("{uuid}") {
+            result = result.replacen("{uuid}", &uuid::Uuid::new_v4().to_string(), 1);
+        }
+
+        if let Some(clip) = current_clipboard {
+            result = result.replace("{clipboard}", clip);
+        } else {
+            result = result.replace("{clipboard}", "");
+        }
+
+        result
+    }
+}
+
+pub struct OcrEngine;
+
+impl OcrEngine {
+    /// Check if tesseract binary is installed and executable in PATH
+    pub async fn is_available() -> bool {
+        tokio::process::Command::new("tesseract")
+            .arg("--version")
+            .output()
+            .await
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Run tesseract on raw image bytes asynchronously
+    pub async fn extract_text(image_bytes: &[u8]) -> Result<String, crate::error::CoreError> {
+        use std::io::Write;
+
+        let mut temp_file = tempfile::Builder::new()
+            .prefix("clipboard-ocr-")
+            .suffix(".png")
+            .tempfile()
+            .map_err(|e| {
+                crate::error::CoreError::Storage(format!("Failed to create OCR tempfile: {}", e))
+            })?;
+
+        temp_file.write_all(image_bytes).map_err(|e| {
+            crate::error::CoreError::Storage(format!("Failed to write OCR tempfile: {}", e))
+        })?;
+
+        let temp_path = temp_file.path().to_path_buf();
+
+        let output = tokio::process::Command::new("tesseract")
+            .arg(&temp_path)
+            .arg("stdout")
+            .arg("-l")
+            .arg("eng+osd")
+            .output()
+            .await
+            .map_err(|e| {
+                crate::error::CoreError::Storage(format!("Failed to run tesseract: {}", e))
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(crate::error::CoreError::Storage(format!(
+                "Tesseract failed: {}",
+                stderr
+            )));
+        }
+
+        let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok(text)
+    }
+}

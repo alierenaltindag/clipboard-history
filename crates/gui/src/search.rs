@@ -1,4 +1,5 @@
 use clipboard_history_core::domain::{ClipboardEntry, EntryType};
+use clipboard_history_core::search::ParsedSearchQuery;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 
@@ -11,6 +12,7 @@ pub enum CategoryFilter {
     Files,
     Code,
     Pinned,
+    Snippets,
 }
 
 #[allow(dead_code)]
@@ -33,32 +35,40 @@ impl FuzzySearchEngine {
         category: CategoryFilter,
     ) -> Vec<ClipboardEntry> {
         let trimmed_query = query.trim();
+        let parsed = ParsedSearchQuery::parse(trimmed_query);
 
         let filtered_by_category: Vec<&ClipboardEntry> = entries
             .iter()
-            .filter(|entry| match category {
-                CategoryFilter::All => true,
-                CategoryFilter::Text => {
-                    entry.entry_type == EntryType::Text || entry.entry_type == EntryType::Html
-                }
-                CategoryFilter::Images => entry.entry_type == EntryType::Image,
-                CategoryFilter::Files => entry.entry_type == EntryType::UriList,
-                CategoryFilter::Code => entry.entry_type == EntryType::Code,
-                CategoryFilter::Pinned => entry.is_pinned,
+            .filter(|entry| {
+                // Category bar check
+                let cat_match = match category {
+                    CategoryFilter::All => true,
+                    CategoryFilter::Text => {
+                        entry.entry_type == EntryType::Text || entry.entry_type == EntryType::Html
+                    }
+                    CategoryFilter::Images => entry.entry_type == EntryType::Image,
+                    CategoryFilter::Files => entry.entry_type == EntryType::UriList,
+                    CategoryFilter::Code => entry.entry_type == EntryType::Code,
+                    CategoryFilter::Pinned => entry.is_pinned,
+                    CategoryFilter::Snippets => entry.source_app.as_deref() == Some("Snippet"),
+                };
+
+                cat_match && parsed.matches_entry(entry)
             })
             .collect();
 
-        if trimmed_query.is_empty() {
+        let match_target = parsed.text_query.trim();
+        if match_target.is_empty() {
             return filtered_by_category.into_iter().cloned().collect();
         }
 
         let mut scored: Vec<(i64, &ClipboardEntry)> = filtered_by_category
             .into_iter()
             .filter_map(|entry| {
-                let mut best_score = self.matcher.fuzzy_match(&entry.preview, trimmed_query);
+                let mut best_score = self.matcher.fuzzy_match(&entry.preview, match_target);
 
                 if let Some(text) = &entry.text_content {
-                    let text_score = self.matcher.fuzzy_match(text, trimmed_query);
+                    let text_score = self.matcher.fuzzy_match(text, match_target);
                     best_score = match (best_score, text_score) {
                         (Some(s1), Some(s2)) => Some(s1.max(s2)),
                         (s1, s2) => s1.or(s2),
@@ -66,7 +76,7 @@ impl FuzzySearchEngine {
                 }
 
                 if let Some(src) = &entry.source_app {
-                    let src_score = self.matcher.fuzzy_match(src, trimmed_query);
+                    let src_score = self.matcher.fuzzy_match(src, match_target);
                     best_score = match (best_score, src_score) {
                         (Some(s1), Some(s2)) => Some(s1.max(s2)),
                         (s1, s2) => s1.or(s2),

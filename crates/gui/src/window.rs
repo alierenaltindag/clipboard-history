@@ -89,6 +89,14 @@ impl ClipboardWindow {
         title_box.append(&title_label);
         header.set_title_widget(Some(&title_box));
 
+        let add_snippet_btn = Button::from_icon_name("list-add-symbolic");
+        add_snippet_btn.set_tooltip_text(Some("Add Canned Snippet"));
+        header.pack_end(&add_snippet_btn);
+
+        let queue_hud_btn = Button::from_icon_name("media-playlist-consecutive-symbolic");
+        queue_hud_btn.set_tooltip_text(Some("Paste Next Item from Queue"));
+        header.pack_end(&queue_hud_btn);
+
         let settings_btn = Button::from_icon_name("preferences-system-symbolic");
         settings_btn.set_tooltip_text(Some("Preferences"));
         header.pack_end(&settings_btn);
@@ -127,6 +135,7 @@ impl ClipboardWindow {
         let files_btn = Button::with_label("Files");
         let code_btn = Button::with_label("Code");
         let pinned_btn = Button::with_label("📌 Pinned");
+        let snippets_btn = Button::with_label("📝 Snippets");
 
         all_btn.add_css_class("filter-active");
         text_btn.add_css_class("flat");
@@ -134,6 +143,7 @@ impl ClipboardWindow {
         files_btn.add_css_class("flat");
         code_btn.add_css_class("flat");
         pinned_btn.add_css_class("flat");
+        snippets_btn.add_css_class("flat");
 
         filter_box.append(&all_btn);
         filter_box.append(&text_btn);
@@ -141,6 +151,7 @@ impl ClipboardWindow {
         filter_box.append(&files_btn);
         filter_box.append(&code_btn);
         filter_box.append(&pinned_btn);
+        filter_box.append(&snippets_btn);
 
         main_box.append(&filter_box);
 
@@ -299,6 +310,49 @@ impl ClipboardWindow {
             filter_box.clone(),
             Rc::clone(&filter_and_render),
         ));
+        snippets_btn.connect_clicked(make_filter_handler(
+            CategoryFilter::Snippets,
+            snippets_btn.clone(),
+            filter_box.clone(),
+            Rc::clone(&filter_and_render),
+        ));
+
+        let win_for_snip = window.clone();
+        let fn_for_snip = Rc::clone(&filter_and_render);
+        add_snippet_btn.connect_clicked(move |_| {
+            let tr = Rc::clone(&fn_for_snip);
+            crate::snippet_dialog::SnippetDialog::show(&win_for_snip, move || {
+                tr();
+            });
+        });
+
+        let win_for_q = window.clone();
+        queue_hud_btn.connect_clicked(move |_| {
+            let win = win_for_q.clone();
+            glib::MainContext::default().spawn_local(async move {
+                if let Ok(mut client) = IpcClient::connect().await {
+                    if let Ok(IpcResponse::QueuePopped {
+                        remaining_count,
+                        pasted,
+                        text,
+                    }) = client.send(&IpcRequest::PopAndPasteQueue).await
+                    {
+                        if pasted {
+                            if let Some(popped_text) = text {
+                                if let Some(display) = gdk4::Display::default() {
+                                    display.clipboard().set_text(&popped_text);
+                                }
+                            }
+                            win.set_visible(false);
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            let cascade = InjectorCascade::new();
+                            let _ = cascade.execute_paste().await;
+                            info!("Pasted sequential item, {} remaining", remaining_count);
+                        }
+                    }
+                }
+            });
+        });
 
         // Search entry live typing
         let fn_for_search = Rc::clone(&filter_and_render);
@@ -316,7 +370,7 @@ impl ClipboardWindow {
                 if let Ok(mut client) = IpcClient::connect().await {
                     let _ = client
                         .send(&IpcRequest::ClearHistory {
-                            delete_pinned: false,
+                            include_pinned: false,
                         })
                         .await;
                     fn_call();
@@ -332,7 +386,19 @@ impl ClipboardWindow {
             let idx = row.index() as usize;
             let items = filtered_for_act.borrow();
             if let Some(entry) = items.get(idx) {
-                let text = entry.preview.clone();
+                let mut text = entry.preview.clone();
+                if entry.source_app.as_deref() == Some("Snippet") {
+                    if let Some(raw) = &entry.text_content {
+                        let current_clip = items
+                            .iter()
+                            .find(|e| e.source_app.as_deref() != Some("Snippet"))
+                            .and_then(|e| e.text_content.as_deref().or(Some(&e.preview)));
+                        text = clipboard_history_core::transforms::SnippetExpander::expand(
+                            raw,
+                            current_clip,
+                        );
+                    }
+                }
                 if let Some(display) = gdk4::Display::default() {
                     display.clipboard().set_text(&text);
                 }
@@ -398,6 +464,26 @@ impl ClipboardWindow {
                                     "Plain text paste executed: injector={}, success={}",
                                     name, success
                                 );
+                            }
+                        });
+                        return glib::Propagation::Stop;
+                    }
+                }
+            }
+
+            // Enqueue into Paste Queue (Q)
+            if key == Key::q || key == Key::Q {
+                if let Some(selected_row) = list_box_key.selected_row() {
+                    let idx = selected_row.index() as usize;
+                    let items = filtered_key.borrow();
+                    if let Some(entry) = items.get(idx) {
+                        let id = entry.id.clone();
+                        glib::MainContext::default().spawn_local(async move {
+                            if let Ok(mut client) = IpcClient::connect().await {
+                                let _ = client
+                                    .send(&IpcRequest::EnqueueItems { ids: vec![id] })
+                                    .await;
+                                info!("Enqueued item into paste queue via 'Q' key");
                             }
                         });
                         return glib::Propagation::Stop;
@@ -484,13 +570,37 @@ impl ClipboardWindow {
 
         glib::MainContext::default().spawn_local(async move {
             if let Ok(mut client) = IpcClient::connect().await {
-                let req = IpcRequest::ListEntries {
+                let req = IpcRequest::GetEntries {
                     limit: 100,
                     offset: 0,
-                    entry_type: None,
-                    only_pinned: false,
+                    filter: None,
+                    pinned_only: false,
                 };
-                if let Ok(IpcResponse::EntryList(items)) = client.send(&req).await {
+                if let Ok(IpcResponse::Entries(mut items)) = client.send(&req).await {
+                    if let Ok(IpcResponse::Snippets(snippets)) = client
+                        .send(&IpcRequest::ListSnippets { category: None })
+                        .await
+                    {
+                        for s in snippets {
+                            items.push(ClipboardEntry {
+                                id: s.id,
+                                content_hash: format!("snippet_{}", s.label),
+                                entry_type: clipboard_history_core::domain::EntryType::Text,
+                                preview: format!("📝 {} — {}", s.label, s.content),
+                                text_content: Some(s.content),
+                                html_content: None,
+                                blob_hash: None,
+                                thumbnail_blob_hash: None,
+                                mime_types: vec!["text/plain".to_string()],
+                                size_bytes: s.label.len(),
+                                created_at: s.created_at,
+                                last_used_at: s.last_used_at,
+                                is_pinned: true,
+                                source_app: Some("Snippet".to_string()),
+                            });
+                        }
+                    }
+
                     *entries_cell.borrow_mut() = items.clone();
                     *filtered_cell.borrow_mut() = items.clone();
 

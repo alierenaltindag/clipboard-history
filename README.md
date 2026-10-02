@@ -20,6 +20,12 @@
 ## 🌟 Key Highlights
 
 - ⚡ **Windows Win+V Ergonomics**: Instant ephemeral popup window with warm-standby activation, cursor-anchored positioning, and modern acrylic card styling.
+- 🔁 **Sequential Paste Queue (FIFO)**: Queue multiple clipboard items and pop them one by one into any document using the HUD status badge or `clipboard-history queue pop`.
+- 📝 **Permanent Snippets & Canned Responses**: Dedicated Snippets tab and modal creation dialog. Dynamic template expansion for `{date}`, `{time}`, `{datetime}`, `{year}`, `{month}`, `{day}`, `{uuid}`, and active `{clipboard}`.
+- 🔍 **On-Demand Image OCR**: Extract text directly from copied screenshots and image entries with one click or via `clipboard-history ocr <id>` (graceful `tesseract` integration).
+- 🎨 **Color Format Converter & Swatches**: Real-time detection of Hex and RGB/RGBA colors with inline preview swatches and one-click conversions to Hex, RGB, HSL, CSS variables (`--color`), GLSL `vec4`, and SwiftUI `Color`.
+- 🔎 **Advanced Search Syntax**: Instant full-text search paired with power directives: `type:code|image|text`, `app:<name>`, `is:pinned`, and `is:snippet`.
+- 🌐 **Zero-Trust P2P LAN Encrypted Sync**: Synchronize clipboard events across local devices over TCP with pure-Rust AES-256-GCM encryption derived from a 6-digit pairing PIN and CSPRNG nonces.
 - 🐧 **Universal Wayland & X11 Support**: Direct integration via Wayland protocols (`wlr-data-control`, `wl-paste --watch`) and native X11 (`XFixes`, `XTest`, `xdotool`).
 - 🗄️ **Zero-Corruption Storage Engine**: Embedded SQLite in WAL mode (`PRAGMA synchronous = NORMAL; PRAGMA mmap_size = 268MB;`) paired with content-addressable SHA-256 blob storage for media.
 - 🖼️ **Rich Data Types & Instant Thumbnails**: Plain text, HTML/rich text, file lists (`text/uri-list`), and images (PNG, JPEG, WebP) with downscaled 128×128 thumbnails for lag-free 60–120 FPS scrolling.
@@ -89,6 +95,9 @@ flowchart TD
 | `Super + V` | Open / Toggle Clipboard History popup |
 | `↑` / `↓` | Navigate history list |
 | `Enter` / Click | Select entry, hide popup, and paste into active window |
+| `Shift + Enter` | Paste as plain unformatted text (strips HTML/rich styles) |
+| `Ctrl + T` | Open Quick Transforms modal (case converts, JSON, Base64, QR, OCR, colors) |
+| `Q` | Enqueue selected item into Sequential Paste Queue (FIFO) |
 | `1` – `9` | Quick paste items 1 through 9 |
 | `Delete` / `Backspace` | Delete selected entry |
 | `P` | Pin / unpin selected entry (prevents auto-eviction) |
@@ -178,8 +187,23 @@ clipboard-history list --limit 20
 clipboard-history list --type image
 clipboard-history list --pinned
 
-# Search clipboard entries
-clipboard-history search "api key"
+# Search clipboard entries with advanced syntax
+clipboard-history search "type:code app:github is:pinned token"
+
+# Permanent Snippets & Canned Responses
+clipboard-history snippets list
+clipboard-history snippets add "Email Sig" "Best regards,\nAli Eren Altındağ" --category "Signatures"
+clipboard-history snippets add "Bug Report" "### Context\n- Date: {date}\n- Session ID: {uuid}\n- Log: {clipboard}"
+clipboard-history snippets delete <SNIPPET_ID>
+
+# Sequential Paste Queue (FIFO)
+clipboard-history queue status
+clipboard-history queue add <ENTRY_ID_1> <ENTRY_ID_2> <ENTRY_ID_3>
+clipboard-history queue pop      # Pops next item and outputs text
+clipboard-history queue clear
+
+# On-Demand Image OCR
+clipboard-history ocr <IMAGE_ENTRY_ID_OR_HASH>
 
 # Pin / unpin an entry by ID
 clipboard-history pin <ENTRY_ID>
@@ -202,6 +226,8 @@ clipboard-history config show
 clipboard-history config set-passwords false   # Allow or block password manager copies
 clipboard-history config set-incognito false   # Allow or block incognito/private window copies
 clipboard-history config set-auto-paste false  # Toggle direct keystroke paste
+clipboard-history config set-sync true         # Enable P2P LAN clipboard synchronization
+clipboard-history config set-pin "654321"      # Update 6-digit zero-trust pairing PIN
 ```
 
 ---
@@ -245,6 +271,13 @@ tray_icon_enabled = true         # Freedesktop StatusNotifierItem tray icon
 auto_paste = true                # Directly synthesizes Ctrl+V after selection
 paste_delay_ms = 120             # Milliseconds before key injection
 preferred_injector = "xtest"     # "xtest", "xdotool", "wtype", "ydotool", or "copy-only"
+
+[sync]
+enabled = false                  # Toggle P2P LAN clipboard synchronization
+device_name = "linux-desktop"    # Identifying name for this node
+listen_port = 54123              # Local TCP listening port
+pairing_pin = "123456"           # 6-digit zero-trust pairing key (AES-256-GCM derived)
+peer_addresses = []              # Known peer endpoints, e.g. ["192.168.1.150:54123"]
 
 [hotkey]
 shortcut = "Super+V"

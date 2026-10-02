@@ -32,6 +32,16 @@
     <binary>clipboard-history-gui</binary>
   </provides>
   <releases>
+    <release version="0.3.0" date="2026-10-02">
+      <description>
+        <p>Introduces Sequential Paste Queue (FIFO), Permanent Snippets with dynamic template expansion, On-Demand Image OCR, Color Format Converter, Advanced Search Syntax, and Zero-Trust P2P LAN Encrypted Sync.</p>
+      </description>
+    </release>
+    <release version="0.2.0" date="2026-10-02">
+      <description>
+        <p>Added quick text transforms, offline QR code generation, AES-256-GCM storage encryption, D-Bus StatusNotifierItem tray icon, active window focus detection, and adjustable security settings.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-10-02">
       <description>
         <p>Initial public release of Linux Universal Clipboard History utility.</p>
