@@ -339,3 +339,34 @@ fn test_text_transforms_and_color_detection() {
     assert!(qr_svg.contains("<svg"));
     assert!(qr_svg.contains("</svg>"));
 }
+
+#[test]
+fn test_security_config_defaults_and_toggle() {
+    use clipboard_history_core::config::AppConfig;
+
+    let mut config = AppConfig::default();
+    // Default must be true: ignore/protect password managers and incognito windows
+    assert!(config.security.ignore_password_managers);
+    assert!(config.security.ignore_incognito_windows);
+
+    // Verify disabling
+    config.security.ignore_password_managers = false;
+    config.security.ignore_incognito_windows = false;
+    assert!(!config.security.ignore_password_managers);
+    assert!(!config.security.ignore_incognito_windows);
+
+    // Verify round-trip serialization to TOML
+    let toml_str = toml::to_string(&config).unwrap();
+    let deserialized: AppConfig = toml::from_str(&toml_str).unwrap();
+    assert!(!deserialized.security.ignore_password_managers);
+    assert!(!deserialized.security.ignore_incognito_windows);
+
+    // Verify re-enabling
+    let mut config_re_enabled = deserialized;
+    config_re_enabled.security.ignore_password_managers = true;
+    config_re_enabled.security.ignore_incognito_windows = true;
+    let toml_re = toml::to_string(&config_re_enabled).unwrap();
+    let des_re: AppConfig = toml::from_str(&toml_re).unwrap();
+    assert!(des_re.security.ignore_password_managers);
+    assert!(des_re.security.ignore_incognito_windows);
+}

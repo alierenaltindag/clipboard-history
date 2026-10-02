@@ -93,6 +93,48 @@ enum Commands {
         #[arg(help = "Text to add")]
         text: String,
     },
+
+    #[command(about = "Manage clipboard history configuration settings")]
+    Config {
+        #[command(subcommand)]
+        action: Option<ConfigAction>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ConfigAction {
+    #[command(about = "Display current configuration")]
+    Show,
+
+    #[command(about = "Toggle protection for password managers (KeePassXC, 1Password, Bitwarden)")]
+    SetPasswords {
+        #[arg(action = clap::ArgAction::Set, help = "true to protect (do not save), false to allow saving")]
+        enabled: bool,
+    },
+
+    #[command(about = "Toggle protection for incognito and private browsing windows")]
+    SetIncognito {
+        #[arg(action = clap::ArgAction::Set, help = "true to ignore (do not save), false to allow saving")]
+        enabled: bool,
+    },
+
+    #[command(about = "Toggle direct keystroke auto-paste")]
+    SetAutoPaste {
+        #[arg(action = clap::ArgAction::Set, help = "true to enable auto-paste, false to copy-only")]
+        enabled: bool,
+    },
+
+    #[command(about = "Set maximum entries limit")]
+    SetMaxEntries {
+        #[arg(help = "Maximum number of history entries")]
+        limit: usize,
+    },
+
+    #[command(about = "Set retention duration in days")]
+    SetRetention {
+        #[arg(help = "Retention period in days")]
+        days: u32,
+    },
 }
 
 #[tokio::main]
@@ -315,8 +357,150 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => eprintln!("Unexpected response"),
             }
         }
+
+        Commands::Config { action } => {
+            // Retrieve current configuration: try daemon IPC first, fallback to disk
+            let mut cfg = match IpcClient::send_request(&socket_path, &IpcRequest::GetConfig).await
+            {
+                Ok(IpcResponse::Config(c)) => *c,
+                _ => AppConfig::load_or_default(),
+            };
+
+            match action.unwrap_or(ConfigAction::Show) {
+                ConfigAction::Show => {
+                    println!("Clipboard History Configuration");
+                    println!("===============================");
+                    println!(
+                        "Config File               : {}",
+                        AppConfig::config_path().display()
+                    );
+                    println!();
+                    println!("Security & Privacy:");
+                    println!(
+                        "  Protect Password Managers : {} (ignore KeePassXC, Bitwarden, etc.)",
+                        if cfg.security.ignore_password_managers {
+                            "ENABLED [Default]"
+                        } else {
+                            "DISABLED"
+                        }
+                    );
+                    println!(
+                        "  Ignore Incognito Windows  : {} (ignore private browsing windows)",
+                        if cfg.security.ignore_incognito_windows {
+                            "ENABLED [Default]"
+                        } else {
+                            "DISABLED"
+                        }
+                    );
+                    println!(
+                        "  Secret Handling Policy   : {:?}",
+                        cfg.security.secret_policy
+                    );
+                    println!(
+                        "  Storage Encryption       : {}",
+                        if cfg.security.encryption_enabled {
+                            "ENABLED (AES-256-GCM)"
+                        } else {
+                            "DISABLED"
+                        }
+                    );
+                    println!();
+                    println!("General & Retention:");
+                    println!("  Max History Entries       : {}", cfg.general.max_entries);
+                    println!(
+                        "  Retention Period (Days)   : {}",
+                        cfg.general.retention_days
+                    );
+                    println!(
+                        "  Max Blob Size (MB)        : {}",
+                        cfg.general.max_blob_size_mb
+                    );
+                    println!();
+                    println!("Paste Behavior:");
+                    println!(
+                        "  Direct Keystroke Paste    : {}",
+                        if cfg.paste.auto_paste {
+                            "ENABLED (Ctrl+V)"
+                        } else {
+                            "DISABLED (Copy only)"
+                        }
+                    );
+                    println!("  Paste Delay (ms)          : {}", cfg.paste.paste_delay_ms);
+                    println!();
+                    println!("UI & System:");
+                    println!("  Hotkey Shortcut           : {}", cfg.hotkey.shortcut);
+                    println!("  Theme                     : {}", cfg.ui.theme);
+                    println!(
+                        "  System Tray Icon          : {}",
+                        if cfg.ui.tray_icon_enabled {
+                            "ENABLED"
+                        } else {
+                            "DISABLED"
+                        }
+                    );
+                }
+                ConfigAction::SetPasswords { enabled } => {
+                    cfg.security.ignore_password_managers = enabled;
+                    save_and_broadcast_config(&socket_path, &cfg).await?;
+                    println!(
+                        "Password manager protection updated: {} ({})",
+                        if enabled { "ENABLED" } else { "DISABLED" },
+                        if enabled {
+                            "copies from KeePassXC/Bitwarden/1Password will be ignored"
+                        } else {
+                            "copies from password managers will be saved"
+                        }
+                    );
+                }
+                ConfigAction::SetIncognito { enabled } => {
+                    cfg.security.ignore_incognito_windows = enabled;
+                    save_and_broadcast_config(&socket_path, &cfg).await?;
+                    println!(
+                        "Incognito window protection updated: {} ({})",
+                        if enabled { "ENABLED" } else { "DISABLED" },
+                        if enabled {
+                            "copies from incognito/private browsing windows will be ignored"
+                        } else {
+                            "copies from incognito/private windows will be saved"
+                        }
+                    );
+                }
+                ConfigAction::SetAutoPaste { enabled } => {
+                    cfg.paste.auto_paste = enabled;
+                    save_and_broadcast_config(&socket_path, &cfg).await?;
+                    println!(
+                        "Direct keystroke auto-paste updated: {}",
+                        if enabled { "ENABLED" } else { "DISABLED" }
+                    );
+                }
+                ConfigAction::SetMaxEntries { limit } => {
+                    cfg.general.max_entries = limit;
+                    save_and_broadcast_config(&socket_path, &cfg).await?;
+                    println!("Maximum history entries limit updated to: {}", limit);
+                }
+                ConfigAction::SetRetention { days } => {
+                    cfg.general.retention_days = days;
+                    save_and_broadcast_config(&socket_path, &cfg).await?;
+                    println!("Retention duration updated to: {} days", days);
+                }
+            }
+        }
     }
 
+    Ok(())
+}
+
+async fn save_and_broadcast_config(
+    socket_path: &std::path::Path,
+    cfg: &AppConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    cfg.save(AppConfig::config_path())?;
+    let req = IpcRequest::UpdateConfig {
+        config: Box::new(cfg.clone()),
+    };
+    if let Ok(IpcResponse::Error(e)) = IpcClient::send_request(socket_path, &req).await {
+        eprintln!("Warning: Daemon reported error applying config: {}", e);
+    }
     Ok(())
 }
 

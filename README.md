@@ -196,13 +196,19 @@ clipboard-history resume
 
 # Inspect daemon health & metrics
 clipboard-history status
+
+# View and update configuration (takes effect immediately)
+clipboard-history config show
+clipboard-history config set-passwords false   # Allow or block password manager copies
+clipboard-history config set-incognito false   # Allow or block incognito/private window copies
+clipboard-history config set-auto-paste false  # Toggle direct keystroke paste
 ```
 
 ---
 
 ## ⚙️ Configuration Reference
 
-Settings are stored in human-readable TOML at `~/.config/clipboard-history/config.toml`:
+Settings can be changed visually via the **Preferences** button in the popup header, via the CLI `clipboard-history config`, or by editing `~/.config/clipboard-history/config.toml`:
 
 ```toml
 [general]
@@ -213,16 +219,27 @@ poll_interval_ms = 300           # Debounce interval
 rate_limit_per_second = 10       # Circuit breaker threshold
 
 [security]
-ignore_password_managers = true  # Rejects KeePassXC, 1Password, Bitwarden copies
+ignore_password_managers = true  # Rejects KeePassXC, 1Password, Bitwarden copies (Default: true)
+ignore_incognito_windows = true  # Rejects copies made in private/incognito windows (Default: true)
 secret_policy = "reject"         # "reject", "mask", or "allow"
+encryption_enabled = false       # Pure-Rust AES-256-GCM envelope encryption at rest
 custom_secret_patterns = []      # Additional custom regex filters
 ignored_window_classes = ["keepassxc", "1password", "bitwarden"]
+incognito_window_patterns = [
+    "*incognito*",
+    "*private browsing*",
+    "*tor browser*",
+    "*keepass*",
+    "*1password*",
+    "*bitwarden*"
+]
 
 [ui]
 theme = "system"                 # "system", "dark", or "light"
 window_width = 440
 window_height = 580
 show_preview_thumbnails = true
+tray_icon_enabled = true         # Freedesktop StatusNotifierItem tray icon
 
 [paste]
 auto_paste = true                # Directly synthesizes Ctrl+V after selection

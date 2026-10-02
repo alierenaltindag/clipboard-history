@@ -89,9 +89,22 @@ impl ClipboardWindow {
         title_box.append(&title_label);
         header.set_title_widget(Some(&title_box));
 
+        let settings_btn = Button::from_icon_name("preferences-system-symbolic");
+        settings_btn.set_tooltip_text(Some("Preferences"));
+        header.pack_end(&settings_btn);
+
         let clear_btn = Button::from_icon_name("edit-clear-all-symbolic");
         clear_btn.set_tooltip_text(Some("Clear unpinned history"));
         header.pack_end(&clear_btn);
+
+        let win_for_settings = window.clone();
+        let cfg_for_settings = config.clone();
+        settings_btn.connect_clicked(move |_| {
+            crate::settings_dialog::SettingsDialog::show(
+                &win_for_settings,
+                cfg_for_settings.clone(),
+            );
+        });
 
         main_box.append(&header);
 

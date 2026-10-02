@@ -175,24 +175,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        // 1. Incognito & Private Browsing Window Check
-        if window_focus_detector.is_incognito_active(&config.security.incognito_window_patterns) {
+        let current_cfg = config_arc.read().await.clone();
+
+        // 1. Incognito & Private Browsing Window Check (adjustable in settings)
+        if current_cfg.security.ignore_incognito_windows
+            && window_focus_detector
+                .is_incognito_active(&current_cfg.security.incognito_window_patterns)
+        {
             info!("Ignored clipboard copy originating while incognito/private browsing window was active");
             continue;
         }
 
-        // 2. Password Manager & Sensitive MIME check
-        if config.security.ignore_password_managers
+        // 2. Password Manager & Sensitive MIME check (adjustable in settings)
+        if current_cfg.security.ignore_password_managers
             && PasswordManagerGuard::is_sensitive_mime(&event.mime_types)
         {
             info!("Ignored clipboard entry flagged by password manager");
             continue;
         }
 
-        // 2. Window Class Blacklist check
+        // 3. Window Class Blacklist check
         if let Some(source) = &event.source_app {
             let lower_src = source.to_lowercase();
-            if config
+            if current_cfg
                 .security
                 .ignored_window_classes
                 .iter()
@@ -206,7 +211,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // 3. Process Text / HTML / UriList
+        // 4. Process Text / HTML / UriList
         if let Some(mut text) = event.text {
             if text.trim().is_empty() {
                 continue;
@@ -218,7 +223,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Sensitive data check
             if secret_filter.contains_secret(&text) {
-                match config.security.secret_policy {
+                match current_cfg.security.secret_policy {
                     SecretHandlingPolicy::Reject => {
                         info!("Ignored clipboard entry containing sensitive secret / private key");
                         continue;

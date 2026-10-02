@@ -31,6 +31,7 @@ impl Default for GeneralConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityConfig {
     pub ignore_password_managers: bool,
+    pub ignore_incognito_windows: bool,
     pub secret_policy: SecretHandlingPolicy,
     pub custom_secret_patterns: Vec<String>,
     pub ignored_window_classes: Vec<String>,
@@ -42,6 +43,7 @@ impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
             ignore_password_managers: true,
+            ignore_incognito_windows: true,
             secret_policy: SecretHandlingPolicy::Reject,
             custom_secret_patterns: Vec::new(),
             ignored_window_classes: vec![
