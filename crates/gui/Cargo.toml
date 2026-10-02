@@ -1,0 +1,25 @@
+[package]
+name = "clipboard-history-gui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = []
+gtk = ["dep:gtk4", "dep:libadwaita"]
+
+[dependencies]
+clipboard-history-core = { path = "../core" }
+fuzzy-matcher = "0.3"
+which = "7.0"
+async-trait = "0.1"
+x11rb = { version = "0.13", features = ["xtest", "allow-unsafe-code"] }
+tokio = { version = "1.40", features = ["full"] }
+clap = { version = "4.5", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+gtk4 = { version = "0.9", optional = true }
+libadwaita = { version = "0.7", optional = true }

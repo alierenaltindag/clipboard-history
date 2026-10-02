@@ -1,0 +1,34 @@
+# Maintainer: Antigravity Contributors <contributors@example.com>
+pkgname=clipboard-history
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="High-performance Universal Clipboard History utility for Linux (Win+V alternative)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/example/clipboard-history"
+license=('MIT' 'Apache-2.0')
+depends=('libx11' 'libxtst')
+optdepends=(
+    'wl-clipboard: Wayland clipboard support'
+    'wtype: Wayland paste simulation on wlroots'
+    'ydotool: Generic Wayland paste simulation'
+    'xdotool: X11 paste simulation fallback'
+)
+makedepends=('cargo' 'rust' 'pkgconf')
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$pkgname-$pkgver"
+    cargo build --release --workspace --locked
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    install -Dm755 target/release/clipboard-history "$pkgdir/usr/bin/clipboard-history"
+    install -Dm755 target/release/clipboard-history-daemon "$pkgdir/usr/bin/clipboard-history-daemon"
+    install -Dm755 target/release/clipboard-history-gui "$pkgdir/usr/bin/clipboard-history-gui"
+
+    install -Dm644 packaging/desktop/clipboard-history.desktop "$pkgdir/usr/share/applications/clipboard-history.desktop"
+    install -Dm644 packaging/desktop/icons/clipboard-history.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/clipboard-history.svg"
+    install -Dm644 packaging/systemd/clipboard-history.service "$pkgdir/usr/lib/systemd/user/clipboard-history.service"
+}

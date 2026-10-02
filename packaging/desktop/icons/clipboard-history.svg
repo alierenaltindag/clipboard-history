@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="gradBoard" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3B82F6"/>
+      <stop offset="100%" stop-color="#1D4ED8"/>
+    </linearGradient>
+    <linearGradient id="gradPaper" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#F1F5F9"/>
+    </linearGradient>
+    <linearGradient id="gradClip" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#94A3B8"/>
+      <stop offset="100%" stop-color="#64748B"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- Clipboard Board -->
+  <rect x="20" y="24" width="88" height="92" rx="14" fill="url(#gradBoard)" filter="url(#shadow)"/>
+
+  <!-- Paper Sheet -->
+  <rect x="30" y="36" width="68" height="72" rx="8" fill="url(#gradPaper)"/>
+
+  <!-- Lines representing history items -->
+  <rect x="40" y="48" width="48" height="4" rx="2" fill="#94A3B8"/>
+  <rect x="40" y="58" width="36" height="4" rx="2" fill="#CBD5E1"/>
+  <rect x="40" y="68" width="44" height="4" rx="2" fill="#CBD5E1"/>
+
+  <!-- History Clock Badge in bottom right -->
+  <circle cx="82" cy="88" r="18" fill="#10B981" filter="url(#shadow)"/>
+  <circle cx="82" cy="88" r="15" fill="#FFFFFF"/>
+  <!-- Clock hands -->
+  <path d="M 82 78 L 82 88 L 89 88" fill="none" stroke="#10B981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Clipboard Top Clip -->
+  <rect x="46" y="16" width="36" height="18" rx="6" fill="url(#gradClip)"/>
+  <rect x="54" y="12" width="20" height="8" rx="3" fill="#E2E8F0"/>
+</svg>

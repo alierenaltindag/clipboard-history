@@ -1,0 +1,17 @@
+[package]
+name = "clipboard-history-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "clipboard-history"
+path = "src/main.rs"
+
+[dependencies]
+clipboard-history-core = { path = "../core" }
+clap = { version = "4.5", features = ["derive"] }
+tokio = { version = "1.40", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

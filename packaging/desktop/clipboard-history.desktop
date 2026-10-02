@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Clipboard History
+GenericName=Clipboard Manager
+Comment=Universal Win+V alternative for Wayland and X11
+Exec=clipboard-history toggle
+Icon=clipboard-history
+Terminal=false
+Type=Application
+Categories=Utility;System;
+Keywords=clipboard;history;paste;win+v;copy;
+StartupNotify=false
+X-GNOME-Autostart-enabled=false

@@ -1,0 +1,21 @@
+[package]
+name = "clipboard-history-daemon"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+clipboard-history-core = { path = "../core" }
+tokio = { version = "1.40", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4.5", features = ["derive"] }
+which = "7.0"
+futures-util = "0.3"
+async-trait = "0.1"
+x11rb = { version = "0.13", features = ["xfixes", "allow-unsafe-code"] }
+tempfile = "3.13"
+chrono = "0.4"
+uuid = { version = "1.10", features = ["v4"] }
+toml = "0.8"
