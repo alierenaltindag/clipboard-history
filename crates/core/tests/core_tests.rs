@@ -102,7 +102,7 @@ fn test_blob_store_and_orphan_cleanup() {
     let dummy_hash = store.save(b"Another Blob").expect("Save 2 failed");
     // Only pass first hash as active
     let cleaned = store
-        .cleanup_orphans(&[hash.clone()])
+        .cleanup_orphans(std::slice::from_ref(&hash))
         .expect("Cleanup failed");
     assert_eq!(cleaned, 1);
     assert!(store.exists(&hash));

@@ -13,7 +13,12 @@ edition = "2021"
 authors = ["Antigravity Contributors"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/example/clipboard-history"
+homepage = "https://github.com/example/clipboard-history"
+readme = "README.md"
 rust-version = "1.80"
+description = "Universal Linux Clipboard History utility (Windows Win+V alternative) for Wayland and X11"
+keywords = ["clipboard", "wayland", "x11", "history", "linux"]
+categories = ["command-line-utilities", "gui"]
 
 [profile.release]
 opt-level = 3
