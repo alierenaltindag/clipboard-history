@@ -29,6 +29,7 @@ package() {
     install -Dm755 target/release/clipboard-history-gui "$pkgdir/usr/bin/clipboard-history-gui"
 
     install -Dm644 packaging/desktop/clipboard-history.desktop "$pkgdir/usr/share/applications/clipboard-history.desktop"
+    install -Dm644 packaging/desktop/clipboard-history.metainfo.xml "$pkgdir/usr/share/metainfo/clipboard-history.metainfo.xml"
     install -Dm644 packaging/desktop/icons/clipboard-history.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/clipboard-history.svg"
     mkdir -p "$pkgdir/usr/share/icons/hicolor"
     cp -r packaging/desktop/icons/hicolor/* "$pkgdir/usr/share/icons/hicolor/"

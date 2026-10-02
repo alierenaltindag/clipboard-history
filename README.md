@@ -251,4 +251,4 @@ To also delete all stored clipboard history and settings:
 
 ## 📄 License
 
-This project is dual-licensed under either the [MIT License](LICENSE) or the Apache License (Version 2.0).
+This project is dual-licensed under either the [MIT License](LICENSE-MIT) or the [Apache License 2.0](LICENSE-APACHE).

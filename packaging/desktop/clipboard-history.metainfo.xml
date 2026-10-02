@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.alierenaltindag.clipboard-history</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+  <name>Clipboard History</name>
+  <summary>High-performance Universal Clipboard History utility for Linux</summary>
+  <description>
+    <p>
+      Clipboard History is a modern, high-performance, and privacy-conscious clipboard manager
+      for Linux desktop environments, serving as a drop-in replacement and upgrade to Windows Win+V.
+    </p>
+    <p>Features include:</p>
+    <ul>
+      <li>Wayland and X11 native clipboard tracking</li>
+      <li>Rich text, plain text, images (with low-res thumbnails), and file lists</li>
+      <li>SQLite WAL embedded database with SHA-256 content-addressable blob deduplication</li>
+      <li>Instant fuzzy search and category filtering</li>
+      <li>Password manager detection and configurable secret filters</li>
+      <li>Adaptive paste injection cascade (XTest, xdotool, wtype, ydotool)</li>
+      <li>Pinning, configurable retention TTL, and idle memory usage under 10 MB</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">clipboard-history.desktop</launchable>
+  <url type="homepage">https://github.com/alierenaltindag/clipboard-history</url>
+  <url type="bugtracker">https://github.com/alierenaltindag/clipboard-history/issues</url>
+  <url type="vcs-browser">https://github.com/alierenaltindag/clipboard-history</url>
+  <developer_name>Ali Eren Altındağ</developer_name>
+  <provides>
+    <binary>clipboard-history</binary>
+    <binary>clipboard-history-daemon</binary>
+    <binary>clipboard-history-gui</binary>
+  </provides>
+  <releases>
+    <release version="0.1.0" date="2026-10-02">
+      <description>
+        <p>Initial public release of Linux Universal Clipboard History utility.</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1" />
+</component>

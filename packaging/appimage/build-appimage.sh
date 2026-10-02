@@ -21,6 +21,8 @@ cp -f "${PROJECT_ROOT}/target/release/clipboard-history-gui" "${APP_DIR}/usr/bin
 
 cp -f "${PROJECT_ROOT}/packaging/desktop/clipboard-history.desktop" "${APP_DIR}/"
 cp -f "${PROJECT_ROOT}/packaging/desktop/clipboard-history.desktop" "${APP_DIR}/usr/share/applications/"
+mkdir -p "${APP_DIR}/usr/share/metainfo"
+cp -f "${PROJECT_ROOT}/packaging/desktop/clipboard-history.metainfo.xml" "${APP_DIR}/usr/share/metainfo/"
 cp -f "${PROJECT_ROOT}/packaging/desktop/icons/clipboard-history.svg" "${APP_DIR}/clipboard-history.svg"
 cp -f "${PROJECT_ROOT}/packaging/desktop/icons/clipboard-history.svg" "${APP_DIR}/usr/share/icons/hicolor/scalable/apps/"
 cp -f "${PROJECT_ROOT}/packaging/desktop/icons/clipboard-history.png" "${APP_DIR}/clipboard-history.png"

@@ -13,6 +13,7 @@ success() { echo -e "${GREEN}${BOLD}[SUCCESS]${NC} $*"; }
 
 BIN_DIR="${HOME}/.local/bin"
 DESKTOP_DIR="${HOME}/.local/share/applications"
+METAINFO_DIR="${HOME}/.local/share/metainfo"
 ICON_DIR="${HOME}/.local/share/icons/hicolor/scalable/apps"
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
 DATA_DIR="${HOME}/.local/share/clipboard-history"
@@ -37,9 +38,10 @@ rm -f "${BIN_DIR}/clipboard-history"
 rm -f "${BIN_DIR}/clipboard-history-daemon"
 rm -f "${BIN_DIR}/clipboard-history-gui"
 
-# 3. Remove Desktop Entry & Icons
-info "Removing desktop entry and application icons..."
+# 3. Remove Desktop Entry, Metainfo & Icons
+info "Removing desktop entry, AppStream metadata, and application icons..."
 rm -f "${DESKTOP_DIR}/clipboard-history.desktop"
+rm -f "${METAINFO_DIR}/clipboard-history.metainfo.xml"
 rm -f "${ICON_DIR}/clipboard-history.svg"
 rm -f "${HOME}/.local/share/icons/hicolor/"*/apps/clipboard-history.png
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then

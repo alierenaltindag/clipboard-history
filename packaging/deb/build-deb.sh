@@ -14,6 +14,7 @@ rm -rf "${BUILD_ROOT}"
 mkdir -p "${BUILD_ROOT}/DEBIAN"
 mkdir -p "${BUILD_ROOT}/usr/bin"
 mkdir -p "${BUILD_ROOT}/usr/share/applications"
+mkdir -p "${BUILD_ROOT}/usr/share/metainfo"
 mkdir -p "${BUILD_ROOT}/usr/share/icons/hicolor/scalable/apps"
 mkdir -p "${BUILD_ROOT}/usr/lib/systemd/user"
 
@@ -52,8 +53,9 @@ cp -f "${PROJECT_ROOT}/target/release/clipboard-history-daemon" "${BUILD_ROOT}/u
 cp -f "${PROJECT_ROOT}/target/release/clipboard-history-gui" "${BUILD_ROOT}/usr/bin/"
 chmod 755 "${BUILD_ROOT}/usr/bin/"*
 
-# Desktop, Icon, Systemd
+# Desktop, Metainfo, Icon, Systemd
 cp -f "${PROJECT_ROOT}/packaging/desktop/clipboard-history.desktop" "${BUILD_ROOT}/usr/share/applications/"
+cp -f "${PROJECT_ROOT}/packaging/desktop/clipboard-history.metainfo.xml" "${BUILD_ROOT}/usr/share/metainfo/"
 cp -f "${PROJECT_ROOT}/packaging/desktop/icons/clipboard-history.svg" "${BUILD_ROOT}/usr/share/icons/hicolor/scalable/apps/"
 
 for size in 16 24 32 48 64 128 256 512; do

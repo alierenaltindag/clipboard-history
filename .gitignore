@@ -3,3 +3,19 @@
 *.swp
 *~
 .DS_Store
+
+# Local SQLite databases & blobs
+*.db
+*.db-wal
+*.db-shm
+*.blob
+*.sock
+*.log
+
+# Editor & IDE configs
+.vscode/
+.idea/
+*.iml
+*.sublime-project
+*.sublime-workspace
+

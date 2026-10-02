@@ -19,6 +19,7 @@ error() { echo -e "${RED}${BOLD}[ERROR]${NC} $*" >&2; }
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN_DIR="${HOME}/.local/bin"
 DESKTOP_DIR="${HOME}/.local/share/applications"
+METAINFO_DIR="${HOME}/.local/share/metainfo"
 ICON_DIR="${HOME}/.local/share/icons/hicolor/scalable/apps"
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
 
@@ -65,7 +66,7 @@ else
 fi
 
 # 3. Create Target Directories
-mkdir -p "${BIN_DIR}" "${DESKTOP_DIR}" "${ICON_DIR}" "${SYSTEMD_USER_DIR}"
+mkdir -p "${BIN_DIR}" "${DESKTOP_DIR}" "${METAINFO_DIR}" "${ICON_DIR}" "${SYSTEMD_USER_DIR}"
 
 # 4. Install Binaries
 info "Installing binaries to ${BIN_DIR}..."
@@ -79,9 +80,10 @@ if [[ ":$PATH:" != *":${BIN_DIR}:"* ]]; then
     warn "${BIN_DIR} is not in your PATH. Add 'export PATH=\"\$HOME/.local/bin:\$PATH\"' to your ~/.bashrc or ~/.zshrc."
 fi
 
-# 5. Install Desktop Entry and Icons
-info "Installing desktop entry and icons..."
+# 5. Install Desktop Entry, Metainfo, and Icons
+info "Installing desktop entry, AppStream metadata, and icons..."
 cp -f "${PROJECT_ROOT}/packaging/desktop/clipboard-history.desktop" "${DESKTOP_DIR}/"
+cp -f "${PROJECT_ROOT}/packaging/desktop/clipboard-history.metainfo.xml" "${METAINFO_DIR}/"
 cp -f "${PROJECT_ROOT}/packaging/desktop/icons/clipboard-history.svg" "${ICON_DIR}/"
 
 for size in 16 24 32 48 64 128 256 512; do
