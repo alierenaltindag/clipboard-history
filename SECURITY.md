@@ -8,10 +8,10 @@
 
 ## Reporting a Vulnerability
 
-We take the security and privacy of user clipboard data extremely seriously. If you discover a security vulnerability, please report it privately:
+Please report security vulnerabilities privately using [GitHub Private Vulnerability Reporting](https://github.com/alierenaltindag/protect-eye/security/advisories/new). This ensures that the issue can be discussed, triaged, and resolved before any public disclosure.
 
 1. **Do NOT report security issues via public GitHub issues.**
-2. Send an email with a detailed description, reproduction steps, and proof-of-concept to `security@example.com` (or submit a Private Vulnerability Advisory on GitHub).
+2. Submitting through the private advisory link allows us to safely collaborate on a fix.
 3. You will receive an initial response acknowledging receipt within 48 hours.
 4. We will coordinate a fix, release a patch version, and publish a security advisory giving appropriate credit.
 
