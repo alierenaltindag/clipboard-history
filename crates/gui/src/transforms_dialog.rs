@@ -42,23 +42,41 @@ pub fn show_transforms_popover(
         color_box.set_margin_top(4);
         color_box.set_margin_bottom(4);
 
-        let chip = Label::new(Some("    "));
-        let clean_hex = color.hex.trim_start_matches('#').to_lowercase();
-        let swatch_class = format!("swatch-{clean_hex}");
-        chip.add_css_class(&swatch_class);
-        let chip_css = gtk4::CssProvider::new();
-        chip_css.load_from_string(&format!(
-            ".{swatch_class} {{ background-color: {}; border-radius: 4px; border: 1px solid rgba(0,0,0,0.2); }}",
-            color.hex
-        ));
-        if let Some(display) = gtk4::gdk::Display::default() {
-            gtk4::style_context_add_provider_for_display(
-                &display,
-                &chip_css,
-                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        let swatch = gtk4::DrawingArea::new();
+        swatch.set_content_width(24);
+        swatch.set_content_height(18);
+        let r = color.r as f64 / 255.0;
+        let g = color.g as f64 / 255.0;
+        let b = color.b as f64 / 255.0;
+        swatch.set_draw_func(move |_, cr, width, height| {
+            let w = width as f64;
+            let h = height as f64;
+            let rad = 4.0;
+            cr.new_sub_path();
+            cr.arc(w - rad, rad, rad, -std::f64::consts::FRAC_PI_2, 0.0);
+            cr.arc(w - rad, h - rad, rad, 0.0, std::f64::consts::FRAC_PI_2);
+            cr.arc(
+                rad,
+                h - rad,
+                rad,
+                std::f64::consts::FRAC_PI_2,
+                std::f64::consts::PI,
             );
-        }
-        color_box.append(&chip);
+            cr.arc(
+                rad,
+                rad,
+                rad,
+                std::f64::consts::PI,
+                3.0 * std::f64::consts::FRAC_PI_2,
+            );
+            cr.close_path();
+            cr.set_source_rgb(r, g, b);
+            let _ = cr.fill_preserve();
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.3);
+            cr.set_line_width(1.0);
+            let _ = cr.stroke();
+        });
+        color_box.append(&swatch);
 
         let label = Label::new(Some(&format!(
             "{} (RGB: {}, {}, {})",

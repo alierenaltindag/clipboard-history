@@ -1,36 +1,37 @@
-#[cfg(feature = "gtk")]
+#![cfg(feature = "gtk")]
+
 use clipboard_history_core::config::AppConfig;
-#[cfg(feature = "gtk")]
 use clipboard_history_core::ipc::{IpcClient, IpcRequest};
-#[cfg(feature = "gtk")]
 use gtk4::prelude::*;
-#[cfg(feature = "gtk")]
 use libadwaita::prelude::*;
-#[cfg(feature = "gtk")]
 use std::cell::RefCell;
-#[cfg(feature = "gtk")]
 use std::rc::Rc;
-#[cfg(feature = "gtk")]
 use tracing::info;
 
-#[cfg(feature = "gtk")]
 pub struct SettingsDialog;
 
-#[cfg(feature = "gtk")]
 impl SettingsDialog {
     pub fn show(parent: &gtk4::Window, config: AppConfig) {
         let dialog = libadwaita::PreferencesWindow::new();
         dialog.set_transient_for(Some(parent));
         dialog.set_modal(true);
         dialog.set_title(Some("Clipboard Preferences"));
+        dialog.set_default_width(620);
+        dialog.set_default_height(540);
 
-        let page = libadwaita::PreferencesPage::new();
-        page.set_title("General");
-        page.set_icon_name(Some("preferences-system-symbolic"));
+        // ==========================================
+        // PAGE 1: General
+        // ==========================================
+        let general_page = libadwaita::PreferencesPage::new();
+        general_page.set_title("General");
+        general_page.set_icon_name(Some("preferences-system-symbolic"));
 
-        // General Group
+        // Retention & Capacity Group
         let general_group = libadwaita::PreferencesGroup::new();
         general_group.set_title("Retention & Capacity");
+        general_group.set_description(Some(
+            "Manage how many entries to preserve in local encrypted storage",
+        ));
 
         let max_entries_row = libadwaita::SpinRow::new(
             Some(&gtk4::Adjustment::new(
@@ -45,7 +46,8 @@ impl SettingsDialog {
             0,
         );
         max_entries_row.set_title("Max History Entries");
-        max_entries_row.set_subtitle("Older unpinned entries are evicted when limit is reached");
+        max_entries_row
+            .set_subtitle("Older unpinned entries are automatically evicted when limit is reached");
         general_group.add(&max_entries_row);
 
         let retention_row = libadwaita::SpinRow::new(
@@ -64,53 +66,67 @@ impl SettingsDialog {
         retention_row.set_subtitle("Automatically delete entries older than this duration");
         general_group.add(&retention_row);
 
-        page.add(&general_group);
+        general_page.add(&general_group);
 
-        // Security & Privacy Group
+        // Pasting Group
+        let paste_group = libadwaita::PreferencesGroup::new();
+        paste_group.set_title("Pasting Behavior");
+        paste_group.set_description(Some(
+            "Configure how selected entries are injected into active apps",
+        ));
+
+        let auto_paste_row = libadwaita::SwitchRow::new();
+        auto_paste_row.set_title("Direct Keystroke Auto-Paste");
+        auto_paste_row
+            .set_subtitle("Automatically synthesize Ctrl+V keystrokes when an item is chosen");
+        auto_paste_row.set_active(config.paste.auto_paste);
+        paste_group.add(&auto_paste_row);
+
+        general_page.add(&paste_group);
+        dialog.add(&general_page);
+
+        // ==========================================
+        // PAGE 2: Privacy & Security
+        // ==========================================
+        let security_page = libadwaita::PreferencesPage::new();
+        security_page.set_title("Privacy & Security");
+        security_page.set_icon_name(Some("security-high-symbolic"));
+
+        // Protection Rules Group
         let security_group = libadwaita::PreferencesGroup::new();
-        security_group.set_title("Privacy & Security");
+        security_group.set_title("Protection Rules");
+        security_group.set_description(Some(
+            "Prevent sensitive passwords and private browsing data from leaking",
+        ));
 
-        // 1. Password manager protection toggle (default: true)
         let pwd_row = libadwaita::SwitchRow::new();
         pwd_row.set_title("Protect Password Managers");
-        pwd_row.set_subtitle(
-            "Do not save copies from KeePassXC, 1Password, and Bitwarden (Default: On)",
-        );
+        pwd_row.set_subtitle("Ignore clipboard captures from KeePassXC, 1Password, and Bitwarden");
         pwd_row.set_active(config.security.ignore_password_managers);
         security_group.add(&pwd_row);
 
-        // 2. Incognito / Private Browsing protection toggle (default: true)
         let incognito_row = libadwaita::SwitchRow::new();
-        incognito_row.set_title("Ignore Incognito & Private Windows");
-        incognito_row.set_subtitle(
-            "Do not save copies while in private browsing or incognito tabs (Default: On)",
-        );
+        incognito_row.set_title("Ignore Private & Incognito Browsing");
+        incognito_row
+            .set_subtitle("Do not record copies made inside incognito or private browsing windows");
         incognito_row.set_active(config.security.ignore_incognito_windows);
         security_group.add(&incognito_row);
 
-        // 3. URL De-tracker toggle
         let clean_urls_row = libadwaita::SwitchRow::new();
-        clean_urls_row.set_title("🛡️ URL De-Tracker & Privacy Cleaner");
+        clean_urls_row.set_title("URL De-Tracker & Privacy Cleaner");
         clean_urls_row.set_subtitle(
-            "Automatically strip tracking query parameters (utm_*, fbclid, gclid, etc.) from copied links",
+            "Strip tracking query parameters (utm_*, fbclid, gclid) from copied links",
         );
         clean_urls_row.set_active(config.security.auto_clean_tracking_urls);
         security_group.add(&clean_urls_row);
 
-        // 4. Direct keystroke auto-paste toggle
-        let auto_paste_row = libadwaita::SwitchRow::new();
-        auto_paste_row.set_title("Direct Keystroke Paste");
-        auto_paste_row.set_subtitle("Automatically synthesize Ctrl+V when an entry is selected");
-        auto_paste_row.set_active(config.paste.auto_paste);
-        security_group.add(&auto_paste_row);
+        security_page.add(&security_group);
 
-        page.add(&security_group);
-
-        // Application Filter Group (Blacklist / Whitelist)
+        // Application Filter Group
         let filter_group = libadwaita::PreferencesGroup::new();
         filter_group.set_title("Application Filtering");
         filter_group.set_description(Some(
-            "Filter clipboard history capture based on application name or window class",
+            "Control which desktop applications are monitored for clipboard events",
         ));
 
         let mode_row = libadwaita::ComboRow::new();
@@ -131,16 +147,26 @@ impl SettingsDialog {
         list_row.set_text(&config.security.app_filter_list.join(", "));
         filter_group.add(&list_row);
 
-        page.add(&filter_group);
+        security_page.add(&filter_group);
+        dialog.add(&security_page);
 
-        // Network Sync Group
+        // ==========================================
+        // PAGE 3: Network Sync
+        // ==========================================
+        let sync_page = libadwaita::PreferencesPage::new();
+        sync_page.set_title("Network Sync");
+        sync_page.set_icon_name(Some("network-wireless-symbolic"));
+
         let sync_group = libadwaita::PreferencesGroup::new();
         sync_group.set_title("P2P Local Network Sync");
+        sync_group.set_description(Some(
+            "Synchronize clipboard items securely across LAN devices using AES-256-GCM",
+        ));
 
         let sync_toggle_row = libadwaita::SwitchRow::new();
         sync_toggle_row.set_title("Enable LAN Clipboard Sync");
         sync_toggle_row
-            .set_subtitle("Synchronize clipboard end-to-end encrypted with other devices on LAN");
+            .set_subtitle("Automatically discover and sync clipboard with trusted devices on LAN");
         sync_toggle_row.set_active(config.sync.enabled);
         sync_group.add(&sync_toggle_row);
 
@@ -149,8 +175,8 @@ impl SettingsDialog {
         pin_row.set_text(&config.sync.pairing_pin);
         sync_group.add(&pin_row);
 
-        page.add(&sync_group);
-        dialog.add(&page);
+        sync_page.add(&sync_group);
+        dialog.add(&sync_page);
 
         // Connect setting listeners to save to config.toml and sync with daemon via IPC
         let cfg_cell = Rc::new(RefCell::new(config));

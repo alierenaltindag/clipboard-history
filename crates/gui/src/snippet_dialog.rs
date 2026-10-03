@@ -1,8 +1,8 @@
 #![cfg(feature = "gtk")]
 
 use clipboard_history_core::ipc::{IpcClient, IpcRequest, IpcResponse};
-use gtk4::prelude::*;
-use gtk4::{Align, Box as GtkBox, Button, Entry, Label, Orientation, TextView, Window};
+use gtk4::{Box as GtkBox, Button, HeaderBar, Orientation, TextView, Window};
+use libadwaita::prelude::*;
 use tracing::info;
 
 pub struct SnippetDialog;
@@ -13,67 +13,71 @@ impl SnippetDialog {
             .title("New Canned Snippet")
             .transient_for(parent)
             .modal(true)
-            .default_width(380)
-            .default_height(420)
+            .default_width(440)
+            .default_height(480)
             .build();
 
-        let root = GtkBox::new(Orientation::Vertical, 10);
+        let header = HeaderBar::new();
+        header.set_show_title_buttons(true);
+        let window_title = libadwaita::WindowTitle::new("New Canned Snippet", "Reusable Template");
+        header.set_title_widget(Some(&window_title));
+
+        let cancel_btn = Button::with_label("Cancel");
+        cancel_btn.add_css_class("flat");
+        header.pack_start(&cancel_btn);
+
+        let save_btn = Button::with_label("Save");
+        save_btn.add_css_class("suggested-action");
+        header.pack_end(&save_btn);
+
+        dialog.set_titlebar(Some(&header));
+
+        let root = GtkBox::new(Orientation::Vertical, 12);
         root.set_margin_start(16);
         root.set_margin_end(16);
         root.set_margin_top(16);
         root.set_margin_bottom(16);
 
-        let title = Label::new(Some("📝 Add Permanent Snippet"));
-        title.add_css_class("heading");
-        root.append(&title);
+        // Group 1: Metadata
+        let meta_group = libadwaita::PreferencesGroup::new();
+        meta_group.set_title("Snippet Details");
 
-        let desc = Label::new(Some(
-            "Supports placeholders: {date}, {time}, {uuid}, {clipboard}",
+        let label_row = libadwaita::EntryRow::new();
+        label_row.set_title("Label / Title");
+        meta_group.add(&label_row);
+
+        let cat_row = libadwaita::EntryRow::new();
+        cat_row.set_title("Category");
+        cat_row.set_text("General");
+        meta_group.add(&cat_row);
+
+        root.append(&meta_group);
+
+        // Group 2: Content Template
+        let content_group = libadwaita::PreferencesGroup::new();
+        content_group.set_title("Snippet Content");
+        content_group.set_description(Some(
+            "Supports dynamic placeholders: {date}, {time}, {uuid}, {clipboard}",
         ));
-        desc.add_css_class("caption");
-        desc.add_css_class("dim-label");
-        root.append(&desc);
 
-        // Label input
-        let label_header = Label::new(Some("Snippet Label / Title:"));
-        label_header.set_halign(Align::Start);
-        root.append(&label_header);
-
-        let label_entry = Entry::new();
-        label_entry.set_placeholder_text(Some("e.g., Work Email Signature, Docker Cleanup"));
-        root.append(&label_entry);
-
-        // Category input
-        let cat_header = Label::new(Some("Category:"));
-        cat_header.set_halign(Align::Start);
-        root.append(&cat_header);
-
-        let cat_entry = Entry::new();
-        cat_entry.set_text("General");
-        root.append(&cat_entry);
-
-        // Content input
-        let content_header = Label::new(Some("Content / Template:"));
-        content_header.set_halign(Align::Start);
-        root.append(&content_header);
+        let text_scrolled = gtk4::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk4::PolicyType::Never)
+            .vscrollbar_policy(gtk4::PolicyType::Automatic)
+            .vexpand(true)
+            .min_content_height(140)
+            .build();
+        text_scrolled.add_css_class("card");
 
         let text_view = TextView::new();
-        text_view.set_vexpand(true);
         text_view.set_wrap_mode(gtk4::WrapMode::Word);
-        text_view.add_css_class("card");
-        root.append(&text_view);
+        text_view.set_left_margin(10);
+        text_view.set_right_margin(10);
+        text_view.set_top_margin(8);
+        text_view.set_bottom_margin(8);
+        text_scrolled.set_child(Some(&text_view));
+        content_group.add(&text_scrolled);
 
-        // Buttons
-        let btn_box = GtkBox::new(Orientation::Horizontal, 8);
-        btn_box.set_halign(Align::End);
-
-        let cancel_btn = Button::with_label("Cancel");
-        let save_btn = Button::with_label("Save Snippet");
-        save_btn.add_css_class("suggested-action");
-
-        btn_box.append(&cancel_btn);
-        btn_box.append(&save_btn);
-        root.append(&btn_box);
+        root.append(&content_group);
 
         let d_cancel = dialog.clone();
         cancel_btn.connect_clicked(move |_| {
@@ -82,9 +86,11 @@ impl SnippetDialog {
 
         let on_created = std::rc::Rc::new(on_created);
         let d_save = dialog.clone();
+        let label_ref = label_row.clone();
+        let cat_ref = cat_row.clone();
         save_btn.connect_clicked(move |_| {
-            let label_val = label_entry.text().to_string();
-            let cat_val = cat_entry.text().to_string();
+            let label_val = label_ref.text().to_string();
+            let cat_val = cat_ref.text().to_string();
             let buffer = text_view.buffer();
             let start = buffer.start_iter();
             let end = buffer.end_iter();

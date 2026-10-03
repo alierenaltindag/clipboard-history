@@ -2,7 +2,9 @@
 
 use clipboard_history_core::transforms::{DiffEngine, DiffResult, DiffTag};
 use gtk4::prelude::*;
-use gtk4::{Align, Box as GtkBox, Button, Label, Orientation, ScrolledWindow, TextView, Window};
+use gtk4::{
+    Box as GtkBox, Button, HeaderBar, Label, Orientation, ScrolledWindow, TextView, Window,
+};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -20,53 +22,49 @@ impl DiffDialog {
             .title("Clipboard Diff Viewer")
             .transient_for(parent)
             .modal(true)
-            .default_width(620)
-            .default_height(540)
+            .default_width(680)
+            .default_height(560)
             .build();
+
+        let header = HeaderBar::new();
+        header.set_show_title_buttons(true);
+
+        let window_title =
+            libadwaita::WindowTitle::new("Clipboard Diff Comparison", "Comparing 2 items");
+        header.set_title_widget(Some(&window_title));
+
+        let swap_btn = Button::with_label("⇄ Swap A / B");
+        swap_btn.add_css_class("flat");
+        header.pack_end(&swap_btn);
+
+        let copy_btn = Button::with_label("📋 Copy Diff");
+        copy_btn.add_css_class("suggested-action");
+        header.pack_end(&copy_btn);
+
+        dialog.set_titlebar(Some(&header));
 
         let root = GtkBox::new(Orientation::Vertical, 10);
         root.set_margin_start(16);
         root.set_margin_end(16);
-        root.set_margin_top(16);
-        root.set_margin_bottom(16);
-
-        // Header section
-        let header_box = GtkBox::new(Orientation::Horizontal, 12);
-        let title_box = GtkBox::new(Orientation::Vertical, 2);
-
-        let title = Label::new(Some("🔀 Clipboard Diff Comparison"));
-        title.add_css_class("heading");
-        title.set_halign(Align::Start);
-        title_box.append(&title);
-
-        let stats_label = Label::new(None);
-        stats_label.add_css_class("caption");
-        stats_label.add_css_class("dim-label");
-        stats_label.set_halign(Align::Start);
-        title_box.append(&stats_label);
-
-        header_box.append(&title_box);
-
-        let spacer = GtkBox::new(Orientation::Horizontal, 0);
-        spacer.set_hexpand(true);
-        header_box.append(&spacer);
-
-        let swap_btn = Button::with_label("⇄ Swap A / B");
-        swap_btn.add_css_class("flat");
-        header_box.append(&swap_btn);
-
-        let copy_btn = Button::with_label("📋 Copy Diff");
-        copy_btn.add_css_class("suggested-action");
-        header_box.append(&copy_btn);
-
-        root.append(&header_box);
+        root.set_margin_top(12);
+        root.set_margin_bottom(12);
 
         // Legend / Context Info
         let legend_box = GtkBox::new(Orientation::Horizontal, 12);
         let lbl_orig = Label::new(Some(&format!("🔴 Original (A): {}", label_a)));
-        lbl_orig.add_css_class("caption");
+        lbl_orig.add_css_class("badge-type");
+        lbl_orig.add_css_class("badge-files");
+        lbl_orig.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        lbl_orig.set_hexpand(true);
+        lbl_orig.set_xalign(0.0);
+
         let lbl_mod = Label::new(Some(&format!("🟢 Modified (B): {}", label_b)));
-        lbl_mod.add_css_class("caption");
+        lbl_mod.add_css_class("badge-type");
+        lbl_mod.add_css_class("badge-image");
+        lbl_mod.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        lbl_mod.set_hexpand(true);
+        lbl_mod.set_xalign(0.0);
+
         legend_box.append(&lbl_orig);
         legend_box.append(&lbl_mod);
         root.append(&legend_box);
@@ -90,26 +88,6 @@ impl DiffDialog {
         text_view.set_bottom_margin(8);
         scrolled.set_child(Some(&text_view));
         root.append(&scrolled);
-
-        // Bottom Bar
-        let bottom_box = GtkBox::new(Orientation::Horizontal, 8);
-        let hint_label = Label::new(Some("Press Esc to close"));
-        hint_label.add_css_class("dim-label");
-        hint_label.add_css_class("caption");
-        hint_label.set_halign(Align::Start);
-        bottom_box.append(&hint_label);
-
-        let b_spacer = GtkBox::new(Orientation::Horizontal, 0);
-        b_spacer.set_hexpand(true);
-        bottom_box.append(&b_spacer);
-
-        let close_btn = Button::with_label("Close");
-        let d_close = dialog.clone();
-        close_btn.connect_clicked(move |_| {
-            d_close.close();
-        });
-        bottom_box.append(&close_btn);
-        root.append(&bottom_box);
 
         // State holder
         let state = Rc::new(RefCell::new((
@@ -145,13 +123,13 @@ impl DiffDialog {
 
         // Helper render function
         let buffer_clone = buffer.clone();
-        let stats_clone = stats_label.clone();
+        let window_title_clone = window_title.clone();
         let state_clone = state.clone();
 
         let render_diff = move || {
             let mut st = state_clone.borrow_mut();
             let res = DiffEngine::compute_diff(&st.0, &st.1);
-            stats_clone.set_text(&format!(
+            window_title_clone.set_subtitle(&format!(
                 "+{} additions, -{} deletions ({} total lines)",
                 res.additions,
                 res.deletions,

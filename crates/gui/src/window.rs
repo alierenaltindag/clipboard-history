@@ -22,18 +22,24 @@ use tracing::info;
 pub struct ClipboardWindow {
     pub window: Window,
     config: AppConfig,
+    #[allow(dead_code)]
     list_box: ListBox,
     entries: Rc<RefCell<Vec<ClipboardEntry>>>,
+    #[allow(dead_code)]
     filtered_entries: Rc<RefCell<Vec<ClipboardEntry>>>,
     #[allow(dead_code)]
     current_filter: Rc<RefCell<CategoryFilter>>,
     #[allow(dead_code)]
     current_query: Rc<RefCell<String>>,
+    filter_and_render: Rc<dyn Fn()>,
+    daemon_connected: Rc<RefCell<bool>>,
+    #[allow(dead_code)]
+    toast_overlay: libadwaita::ToastOverlay,
 }
 
 #[cfg(feature = "gtk")]
 impl ClipboardWindow {
-    pub fn new(app: &gtk4::Application, config: AppConfig) -> Self {
+    pub fn new(app: &impl IsA<gtk4::Application>, config: AppConfig) -> Self {
         let window = Window::builder()
             .application(app)
             .title("Clipboard History")
@@ -42,44 +48,46 @@ impl ClipboardWindow {
             .default_height(config.ui.window_height as i32)
             .hide_on_close(true)
             .build();
+        window.add_css_class("clipboard-window");
 
-        // Apply modern acrylic card CSS styles from style module
+        // Apply modern CSS styles
         crate::style::apply_application_styles();
 
-        let main_box = GtkBox::new(Orientation::Vertical, 6);
+        let main_box = GtkBox::new(Orientation::Vertical, 4);
 
-        // Header Bar
+        // Header Bar (Window Titlebar)
         let header = HeaderBar::new();
-        header.set_show_title_buttons(false);
+        header.set_show_title_buttons(true);
 
-        let title_box = GtkBox::new(Orientation::Horizontal, 8);
-        let app_icon = gtk4::Image::from_icon_name("clipboard-history");
-        app_icon.set_pixel_size(20);
-        let title_label = gtk4::Label::new(Some("Clipboard History"));
-        title_label.add_css_class("heading");
-        title_box.append(&app_icon);
-        title_box.append(&title_label);
-        header.set_title_widget(Some(&title_box));
+        let window_title = libadwaita::WindowTitle::new("Clipboard History", "Win+V");
+        header.set_title_widget(Some(&window_title));
 
         let select_mode_btn = Button::from_icon_name("selection-mode-symbolic");
+        select_mode_btn.add_css_class("flat");
         select_mode_btn.set_tooltip_text(Some("Toggle Multi-Selection Mode (Ctrl+M)"));
         header.pack_start(&select_mode_btn);
 
         let add_snippet_btn = Button::from_icon_name("list-add-symbolic");
+        add_snippet_btn.add_css_class("flat");
         add_snippet_btn.set_tooltip_text(Some("Add Canned Snippet"));
         header.pack_end(&add_snippet_btn);
 
         let queue_hud_btn = Button::from_icon_name("media-playlist-consecutive-symbolic");
-        queue_hud_btn.set_tooltip_text(Some("Paste Next Item from Queue"));
+        queue_hud_btn.add_css_class("flat");
+        queue_hud_btn.set_tooltip_text(Some("Paste Next Item from Queue (Q)"));
         header.pack_end(&queue_hud_btn);
 
         let settings_btn = Button::from_icon_name("preferences-system-symbolic");
+        settings_btn.add_css_class("flat");
         settings_btn.set_tooltip_text(Some("Preferences"));
         header.pack_end(&settings_btn);
 
         let clear_btn = Button::from_icon_name("edit-clear-all-symbolic");
+        clear_btn.add_css_class("flat");
         clear_btn.set_tooltip_text(Some("Clear unpinned history"));
         header.pack_end(&clear_btn);
+
+        window.set_titlebar(Some(&header));
 
         let win_for_settings = window.clone();
         let cfg_for_settings = config.clone();
@@ -90,36 +98,35 @@ impl ClipboardWindow {
             );
         });
 
-        main_box.append(&header);
-
         // Search Entry
         let search_entry = SearchEntry::new();
-        search_entry.set_margin_start(10);
-        search_entry.set_margin_end(10);
-        search_entry.set_placeholder_text(Some("Type to search history (Win+V)..."));
+        search_entry.add_css_class("search-bar");
+        search_entry.set_placeholder_text(Some(
+            "Search clipboard history, snippets, or apps (Win+V)...",
+        ));
         main_box.append(&search_entry);
 
         // Filter Bar (Categories)
         let filter_box = GtkBox::new(Orientation::Horizontal, 4);
+        filter_box.add_css_class("filter-bar");
         filter_box.set_halign(Align::Center);
-        filter_box.set_margin_top(4);
-        filter_box.set_margin_bottom(4);
 
-        let all_btn = Button::with_label("All");
-        let text_btn = Button::with_label("Text");
-        let img_btn = Button::with_label("Images");
-        let files_btn = Button::with_label("Files");
-        let code_btn = Button::with_label("Code");
+        let all_btn = Button::with_label("📋 All");
+        let text_btn = Button::with_label("📝 Text");
+        let img_btn = Button::with_label("🖼️ Images");
+        let files_btn = Button::with_label("📁 Files");
+        let code_btn = Button::with_label("💻 Code");
         let pinned_btn = Button::with_label("📌 Pinned");
-        let snippets_btn = Button::with_label("📝 Snippets");
+        let snippets_btn = Button::with_label("⚡ Snippets");
 
+        all_btn.add_css_class("filter-pill");
         all_btn.add_css_class("filter-active");
-        text_btn.add_css_class("flat");
-        img_btn.add_css_class("flat");
-        files_btn.add_css_class("flat");
-        code_btn.add_css_class("flat");
-        pinned_btn.add_css_class("flat");
-        snippets_btn.add_css_class("flat");
+        text_btn.add_css_class("filter-pill");
+        img_btn.add_css_class("filter-pill");
+        files_btn.add_css_class("filter-pill");
+        code_btn.add_css_class("filter-pill");
+        pinned_btn.add_css_class("filter-pill");
+        snippets_btn.add_css_class("filter-pill");
 
         filter_box.append(&all_btn);
         filter_box.append(&text_btn);
@@ -131,6 +138,13 @@ impl ClipboardWindow {
 
         main_box.append(&filter_box);
 
+        // View Stack: smooth crossfade between list of items and empty state
+        let view_stack = gtk4::Stack::new();
+        view_stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
+        view_stack.set_transition_duration(180);
+        view_stack.set_vexpand(true);
+        view_stack.set_hexpand(true);
+
         // Scrolled List
         let scrolled = ScrolledWindow::new();
         scrolled.set_vexpand(true);
@@ -138,8 +152,23 @@ impl ClipboardWindow {
 
         let list_box = ListBox::new();
         list_box.set_selection_mode(gtk4::SelectionMode::Single);
-        list_box.add_css_class("navigation-sidebar");
         scrolled.set_child(Some(&list_box));
+
+        // Empty State StatusPage
+        let empty_status = libadwaita::StatusPage::new();
+        empty_status.set_icon_name(Some("edit-copy-symbolic"));
+        empty_status.set_title("No Clipboard History Yet");
+        empty_status.set_description(Some(
+            "Items you copy with Ctrl+C will appear here.\nPress Win+V anytime to reopen.",
+        ));
+        empty_status.set_vexpand(true);
+        empty_status.set_hexpand(true);
+
+        view_stack.add_named(&scrolled, Some("list"));
+        view_stack.add_named(&empty_status, Some("empty"));
+        view_stack.set_visible_child_name("empty");
+
+        main_box.append(&view_stack);
 
         // Multi-Selection Action Bar
         let action_bar = gtk4::ActionBar::new();
@@ -169,14 +198,18 @@ impl ClipboardWindow {
         delete_selected_btn.add_css_class("destructive-action");
         action_bar.pack_end(&delete_selected_btn);
 
-        main_box.append(&scrolled);
         main_box.append(&action_bar);
-        window.set_child(Some(&main_box));
+
+        // Wrap content inside ToastOverlay
+        let toast_overlay = libadwaita::ToastOverlay::new();
+        toast_overlay.set_child(Some(&main_box));
+        window.set_child(Some(&toast_overlay));
 
         let entries: Rc<RefCell<Vec<ClipboardEntry>>> = Rc::new(RefCell::new(Vec::new()));
         let filtered_entries: Rc<RefCell<Vec<ClipboardEntry>>> = Rc::new(RefCell::new(Vec::new()));
         let current_filter = Rc::new(RefCell::new(CategoryFilter::All));
         let current_query = Rc::new(RefCell::new(String::new()));
+        let daemon_connected = Rc::new(RefCell::new(true));
 
         // Helper to update list rows
         let populate_rows = {
@@ -184,6 +217,12 @@ impl ClipboardWindow {
             let filtered_clone = Rc::clone(&filtered_entries);
             let win_clone = window.clone();
             let config_clone = config.clone();
+            let stack_clone = view_stack.clone();
+            let empty_clone = empty_status.clone();
+            let current_query_clone = Rc::clone(&current_query);
+            let current_filter_clone = Rc::clone(&current_filter);
+            let window_title_clone = window_title.clone();
+            let daemon_conn_clone = Rc::clone(&daemon_connected);
 
             Rc::new(move || {
                 // Clear existing
@@ -192,10 +231,55 @@ impl ClipboardWindow {
                 }
 
                 let items = filtered_clone.borrow();
-                for (idx, entry) in items.iter().enumerate() {
-                    let entry_row =
-                        create_configured_entry_row(entry, idx, &win_clone, &config_clone);
-                    list_box_clone.append(&entry_row.row);
+                let count = items.len();
+
+                // Update subtitle with count
+                if count == 0 {
+                    window_title_clone.set_subtitle("Win+V");
+                } else {
+                    window_title_clone.set_subtitle(&format!("{} items", count));
+                }
+
+                if items.is_empty() {
+                    if !*daemon_conn_clone.borrow() {
+                        empty_clone.set_icon_name(Some("network-error-symbolic"));
+                        empty_clone.set_title("Clipboard Daemon Offline");
+                        empty_clone.set_description(Some(
+                            "The background service is not running.\nStart it with 'clipboard-history daemon' to record copies.",
+                        ));
+                    } else {
+                        let q = current_query_clone.borrow();
+                        let filter = *current_filter_clone.borrow();
+                        if !q.trim().is_empty() {
+                            empty_clone.set_icon_name(Some("system-search-symbolic"));
+                            empty_clone.set_title("No Matches Found");
+                            empty_clone.set_description(Some(&format!(
+                                "No clipboard items match \"{}\".\nTry searching something else or clearing filters.",
+                                q.trim()
+                            )));
+                        } else if filter != CategoryFilter::All {
+                            empty_clone.set_icon_name(Some("edit-find-symbolic"));
+                            empty_clone.set_title("No Items in Category");
+                            empty_clone.set_description(Some(
+                                "Try switching to 'All' to view all copied items.",
+                            ));
+                        } else {
+                            empty_clone.set_icon_name(Some("edit-copy-symbolic"));
+                            empty_clone.set_title("No Clipboard History Yet");
+                            empty_clone.set_description(Some(
+                                "Items you copy with Ctrl+C will appear here automatically.\nPress Win+V anytime to open this window.",
+                            ));
+                        }
+                    }
+                    stack_clone.set_visible_child_name("empty");
+                } else {
+                    stack_clone.set_visible_child_name("list");
+                    // Performance optimization: Take up to 50 items for instant rendering
+                    for (idx, entry) in items.iter().take(50).enumerate() {
+                        let entry_row =
+                            create_configured_entry_row(entry, idx, &win_clone, &config_clone);
+                        list_box_clone.append(&entry_row.row);
+                    }
                 }
             })
         };
@@ -229,10 +313,8 @@ impl ClipboardWindow {
                     let mut child = filter_box_ref.first_child();
                     while let Some(c) = child {
                         c.remove_css_class("filter-active");
-                        c.add_css_class("flat");
                         child = c.next_sibling();
                     }
-                    btn.remove_css_class("flat");
                     btn.add_css_class("filter-active");
                     fn_ref();
                 }
@@ -283,16 +365,21 @@ impl ClipboardWindow {
 
         let win_for_snip = window.clone();
         let fn_for_snip = Rc::clone(&filter_and_render);
+        let toast_for_snip = toast_overlay.clone();
         add_snippet_btn.connect_clicked(move |_| {
             let tr = Rc::clone(&fn_for_snip);
+            let toast = toast_for_snip.clone();
             crate::snippet_dialog::SnippetDialog::show(&win_for_snip, move || {
                 tr();
+                toast.add_toast(libadwaita::Toast::new("Saved canned snippet"));
             });
         });
 
         let win_for_q = window.clone();
+        let toast_for_q = toast_overlay.clone();
         queue_hud_btn.connect_clicked(move |_| {
             let win = win_for_q.clone();
+            let toast = toast_for_q.clone();
             glib::MainContext::default().spawn_local(async move {
                 if let Ok(client) = IpcClient::connect().await {
                     if let Ok(IpcResponse::QueuePopped {
@@ -312,13 +399,19 @@ impl ClipboardWindow {
                             let cascade = InjectorCascade::new();
                             let _ = cascade.execute_paste().await;
                             info!("Pasted sequential item, {} remaining", remaining_count);
+                            toast.add_toast(libadwaita::Toast::new(&format!(
+                                "Pasted sequential item ({} remaining)",
+                                remaining_count
+                            )));
+                        } else {
+                            toast.add_toast(libadwaita::Toast::new("Paste queue is empty"));
                         }
                     }
                 }
             });
         });
 
-        // Search entry live typing with 150ms debounce (HIGH-10)
+        // Search entry live typing with 100ms debounce
         let fn_for_search = Rc::clone(&filter_and_render);
         let q_ref = Rc::clone(&current_query);
         let debounce_source: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
@@ -331,7 +424,7 @@ impl ClipboardWindow {
             let fn_call = Rc::clone(&fn_for_search);
             let deb_ref = Rc::clone(&debounce_clone);
             let source_id =
-                glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
+                glib::timeout_add_local_once(std::time::Duration::from_millis(100), move || {
                     deb_ref.borrow_mut().take();
                     fn_call();
                 });
@@ -340,8 +433,10 @@ impl ClipboardWindow {
 
         // Clear button
         let fn_for_clear = Rc::clone(&filter_and_render);
+        let toast_for_clear = toast_overlay.clone();
         clear_btn.connect_clicked(move |_| {
             let fn_call = Rc::clone(&fn_for_clear);
+            let toast = toast_for_clear.clone();
             glib::MainContext::default().spawn_local(async move {
                 if let Ok(client) = IpcClient::connect().await {
                     let _ = client
@@ -350,6 +445,7 @@ impl ClipboardWindow {
                         })
                         .await;
                     fn_call();
+                    toast.add_toast(libadwaita::Toast::new("Cleared unpinned clipboard history"));
                 }
             });
         });
@@ -556,6 +652,7 @@ impl ClipboardWindow {
         let list_for_enq = list_box.clone();
         let filtered_for_enq = filtered_entries.clone();
         let toggle_for_enq = toggle_selection_mode.clone();
+        let toast_for_enq = toast_overlay.clone();
         enqueue_all_btn.connect_clicked(move |_| {
             let rows = list_for_enq.selected_rows();
             let items = filtered_for_enq.borrow();
@@ -565,10 +662,15 @@ impl ClipboardWindow {
                 .collect();
             if !ids.is_empty() {
                 let count = ids.len();
+                let toast = toast_for_enq.clone();
                 glib::MainContext::default().spawn_local(async move {
                     if let Ok(client) = IpcClient::connect().await {
                         let _ = client.send(&IpcRequest::EnqueueItems { ids }).await;
                         info!("Enqueued {} batch items into paste queue", count);
+                        toast.add_toast(libadwaita::Toast::new(&format!(
+                            "Enqueued {} items into paste queue",
+                            count
+                        )));
                     }
                 });
                 toggle_for_enq();
@@ -580,6 +682,7 @@ impl ClipboardWindow {
         let filtered_for_pin = filtered_entries.clone();
         let fn_refresh_for_pin = Rc::clone(&filter_and_render);
         let toggle_for_pin = toggle_selection_mode.clone();
+        let toast_for_pin = toast_overlay.clone();
         pin_all_btn.connect_clicked(move |_| {
             let rows = list_for_pin.selected_rows();
             let items = filtered_for_pin.borrow();
@@ -597,6 +700,7 @@ impl ClipboardWindow {
                 let refresh = fn_refresh_for_pin.clone();
                 let pin_flag = any_unpinned;
                 let toggle_exit = toggle_for_pin.clone();
+                let toast = toast_for_pin.clone();
                 glib::MainContext::default().spawn_local(async move {
                     if let Ok(client) = IpcClient::connect().await {
                         let _ = client
@@ -606,6 +710,11 @@ impl ClipboardWindow {
                             })
                             .await;
                         refresh();
+                        toast.add_toast(libadwaita::Toast::new(if pin_flag {
+                            "Pinned selected entries"
+                        } else {
+                            "Unpinned selected entries"
+                        }));
                     }
                 });
                 toggle_exit();
@@ -617,6 +726,7 @@ impl ClipboardWindow {
         let filtered_for_del = filtered_entries.clone();
         let fn_refresh_for_del = Rc::clone(&filter_and_render);
         let toggle_for_del = toggle_selection_mode.clone();
+        let toast_for_del = toast_overlay.clone();
         delete_selected_btn.connect_clicked(move |_| {
             let rows = list_for_del.selected_rows();
             let items = filtered_for_del.borrow();
@@ -625,12 +735,16 @@ impl ClipboardWindow {
                 .filter_map(|r| items.get(r.index() as usize).map(|e| e.id.clone()))
                 .collect();
             if !ids.is_empty() {
+                let count = ids.len();
                 let refresh = fn_refresh_for_del.clone();
                 let toggle_exit = toggle_for_del.clone();
+                let toast = toast_for_del.clone();
                 glib::MainContext::default().spawn_local(async move {
                     if let Ok(client) = IpcClient::connect().await {
                         let _ = client.send(&IpcRequest::BatchDelete { ids }).await;
                         refresh();
+                        toast
+                            .add_toast(libadwaita::Toast::new(&format!("Deleted {} items", count)));
                     }
                 });
                 toggle_exit();
@@ -821,10 +935,13 @@ impl ClipboardWindow {
             filtered_entries,
             current_filter,
             current_query,
+            filter_and_render,
+            daemon_connected,
+            toast_overlay,
         }
     }
 
-    /// Fetches the latest clipboard entries from daemon via IPC and clamps window within active monitor workarea
+    /// Fetches latest clipboard entries from daemon via IPC and clamps window within active monitor workarea
     pub fn present_near_cursor(&self) {
         // Multi-Monitor Geometry Clamping
         if let Some(display) = gdk4::Display::default() {
@@ -844,55 +961,52 @@ impl ClipboardWindow {
 
         // Fetch latest entries via IPC
         let entries_cell = Rc::clone(&self.entries);
-        let filtered_cell = Rc::clone(&self.filtered_entries);
-        let list_box = self.list_box.clone();
-        let win = self.window.clone();
-        let cfg = self.config.clone();
+        let daemon_connected_cell = Rc::clone(&self.daemon_connected);
+        let fn_refresh = Rc::clone(&self.filter_and_render);
 
         glib::MainContext::default().spawn_local(async move {
-            if let Ok(client) = IpcClient::connect().await {
-                let req = IpcRequest::GetEntries {
-                    limit: 100,
-                    offset: 0,
-                    filter: None,
-                    pinned_only: false,
-                };
-                if let Ok(IpcResponse::Entries(mut items)) = client.send(&req).await {
-                    if let Ok(IpcResponse::Snippets(snippets)) = client
-                        .send(&IpcRequest::ListSnippets { category: None })
-                        .await
-                    {
-                        for s in snippets {
-                            items.push(ClipboardEntry {
-                                id: s.id,
-                                content_hash: format!("snippet_{}", s.label),
-                                entry_type: clipboard_history_core::domain::EntryType::Text,
-                                preview: format!("📝 {} — {}", s.label, s.content),
-                                text_content: Some(s.content),
-                                html_content: None,
-                                blob_hash: None,
-                                thumbnail_blob_hash: None,
-                                mime_types: vec!["text/plain".to_string()],
-                                size_bytes: s.label.len(),
-                                created_at: s.created_at,
-                                last_used_at: s.last_used_at,
-                                is_pinned: true,
-                                source_app: Some("Snippet".to_string()),
-                            });
+            match IpcClient::connect().await {
+                Ok(client) => {
+                    *daemon_connected_cell.borrow_mut() = true;
+                    let req = IpcRequest::GetEntries {
+                        limit: 100,
+                        offset: 0,
+                        filter: None,
+                        pinned_only: false,
+                    };
+                    if let Ok(IpcResponse::Entries(mut items)) = client.send(&req).await {
+                        if let Ok(IpcResponse::Snippets(snippets)) = client
+                            .send(&IpcRequest::ListSnippets { category: None })
+                            .await
+                        {
+                            for s in snippets {
+                                items.push(ClipboardEntry {
+                                    id: s.id,
+                                    content_hash: format!("snippet_{}", s.label),
+                                    entry_type: clipboard_history_core::domain::EntryType::Text,
+                                    preview: format!("📝 {} — {}", s.label, s.content),
+                                    text_content: Some(s.content),
+                                    html_content: None,
+                                    blob_hash: None,
+                                    thumbnail_blob_hash: None,
+                                    mime_types: vec!["text/plain".to_string()],
+                                    size_bytes: s.label.len(),
+                                    created_at: s.created_at,
+                                    last_used_at: s.last_used_at,
+                                    is_pinned: true,
+                                    source_app: Some("Snippet".to_string()),
+                                });
+                            }
                         }
-                    }
 
-                    *entries_cell.borrow_mut() = items.clone();
-                    *filtered_cell.borrow_mut() = items.clone();
-
-                    while let Some(child) = list_box.first_child() {
-                        list_box.remove(&child);
+                        *entries_cell.borrow_mut() = items;
+                        fn_refresh();
                     }
-
-                    for (idx, entry) in items.iter().enumerate() {
-                        let entry_row = create_configured_entry_row(entry, idx, &win, &cfg);
-                        list_box.append(&entry_row.row);
-                    }
+                }
+                Err(_) => {
+                    *daemon_connected_cell.borrow_mut() = false;
+                    *entries_cell.borrow_mut() = Vec::new();
+                    fn_refresh();
                 }
             }
         });

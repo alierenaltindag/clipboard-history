@@ -52,6 +52,24 @@ fn test_fuzzy_search_filtering() {
 
     let code_matches = engine.filter_entries(&entries, "", CategoryFilter::Code);
     assert_eq!(code_matches.len(), 1);
+
+    // 4. Test Snippet and Pinned filtering
+    let mut snippet_entry = ClipboardEntry::new_text(
+        "Hello {clipboard}".to_string(),
+        BlobStore::compute_hash(b"Hello {clipboard}"),
+        vec!["text/plain".to_string()],
+        Some("Snippet".to_string()),
+    );
+    snippet_entry.is_pinned = true;
+
+    let entries_with_snippet = vec![entry1, entry2, entry3, snippet_entry];
+    let snippet_matches =
+        engine.filter_entries(&entries_with_snippet, "", CategoryFilter::Snippets);
+    assert_eq!(snippet_matches.len(), 1);
+    assert_eq!(snippet_matches[0].source_app.as_deref(), Some("Snippet"));
+
+    let pinned_matches = engine.filter_entries(&entries_with_snippet, "", CategoryFilter::Pinned);
+    assert_eq!(pinned_matches.len(), 1);
 }
 
 #[tokio::test]

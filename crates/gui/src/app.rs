@@ -13,13 +13,13 @@ use tracing::info;
 
 #[cfg(feature = "gtk")]
 pub struct ClipboardApp {
-    app: gtk4::Application,
+    app: libadwaita::Application,
 }
 
 #[cfg(feature = "gtk")]
 impl ClipboardApp {
     pub fn new() -> Self {
-        let app = gtk4::Application::builder()
+        let app = libadwaita::Application::builder()
             .application_id("com.antigravity.ClipboardHistory")
             .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
             .build();

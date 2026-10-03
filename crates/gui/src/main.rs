@@ -37,6 +37,7 @@ fn main() {
 
     #[cfg(feature = "gtk")]
     {
+        let _ = libadwaita::init();
         info!("Launching native GTK4/Libadwaita Clipboard History popup");
         let app = app::ClipboardApp::new();
         std::process::exit(app.run());

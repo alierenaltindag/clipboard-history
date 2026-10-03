@@ -529,6 +529,7 @@ name = "clipboard-history-gui"
 version = "0.5.1"
 dependencies = [
  "async-trait",
+ "chrono",
  "clap",
  "clipboard-history-core",
  "fuzzy-matcher",
