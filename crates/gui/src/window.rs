@@ -11,8 +11,8 @@ use clipboard_history_core::transforms::TextTransforms;
 use gdk4::Key;
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, Button, EventControllerKey, HeaderBar, Label, ListBox,
-    Orientation, ScrolledWindow, SearchEntry, Window,
+    Align, Box as GtkBox, Button, EventControllerKey, HeaderBar, Label, ListBox, Orientation,
+    ScrolledWindow, SearchEntry, Window,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -193,7 +193,8 @@ impl ClipboardWindow {
 
                 let items = filtered_clone.borrow();
                 for (idx, entry) in items.iter().enumerate() {
-                    let entry_row = create_configured_entry_row(entry, idx, &win_clone, &config_clone);
+                    let entry_row =
+                        create_configured_entry_row(entry, idx, &win_clone, &config_clone);
                     list_box_clone.append(&entry_row.row);
                 }
             })
@@ -329,10 +330,11 @@ impl ClipboardWindow {
             }
             let fn_call = Rc::clone(&fn_for_search);
             let deb_ref = Rc::clone(&debounce_clone);
-            let source_id = glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
-                deb_ref.borrow_mut().take();
-                fn_call();
-            });
+            let source_id =
+                glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
+                    deb_ref.borrow_mut().take();
+                    fn_call();
+                });
             *debounce_clone.borrow_mut() = Some(source_id);
         });
 
@@ -647,7 +649,10 @@ impl ClipboardWindow {
             let idx = row.index() as usize;
             let items = filtered_for_act.borrow();
             if let Some(entry) = items.get(idx) {
-                let mut text = entry.text_content.clone().unwrap_or_else(|| entry.preview.clone());
+                let mut text = entry
+                    .text_content
+                    .clone()
+                    .unwrap_or_else(|| entry.preview.clone());
                 if entry.source_app.as_deref() == Some("Snippet") {
                     let current_clip = items
                         .iter()
@@ -783,7 +788,10 @@ impl ClipboardWindow {
                 if let Some(digit) = digit_opt {
                     let items = filtered_key.borrow();
                     if let Some(entry) = items.get(digit) {
-                        let text = entry.text_content.clone().unwrap_or_else(|| entry.preview.clone());
+                        let text = entry
+                            .text_content
+                            .clone()
+                            .unwrap_or_else(|| entry.preview.clone());
                         if let Some(display) = gdk4::Display::default() {
                             display.clipboard().set_text(&text);
                         }
@@ -907,12 +915,7 @@ fn create_configured_entry_row(
     let win_for_pop = window.clone();
     let cfg_for_pop = config.clone();
     entry_row.actions_btn.connect_clicked(move |btn| {
-        show_transforms_popover(
-            btn,
-            &entry_for_popover,
-            &win_for_pop,
-            &cfg_for_pop,
-        );
+        show_transforms_popover(btn, &entry_for_popover, &win_for_pop, &cfg_for_pop);
     });
 
     // Pin button

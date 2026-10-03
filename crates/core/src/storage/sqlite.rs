@@ -140,10 +140,17 @@ impl SqliteRepository {
         }
 
         let conn = self.conn();
-        let is_prefix = trimmed.len() >= 6 && trimmed.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+        let is_prefix =
+            trimmed.len() >= 6 && trimmed.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
 
         let mut stmt = if is_prefix {
-            let pattern = format!("{}%", trimmed.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+            let pattern = format!(
+                "{}%",
+                trimmed
+                    .replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            );
             let mut s = conn.prepare(
                 r#"
                 SELECT id, content_hash, entry_type, preview, text_content, html_content,
@@ -312,11 +319,18 @@ impl SqliteRepository {
             return Err(CoreError::NotFound("Empty ID".to_string()));
         }
         let conn = self.conn();
-        let is_prefix = trimmed.len() >= 6 && trimmed.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+        let is_prefix =
+            trimmed.len() >= 6 && trimmed.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
         let flag = if pinned { 1 } else { 0 };
 
         let affected = if is_prefix {
-            let pattern = format!("{}%", trimmed.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+            let pattern = format!(
+                "{}%",
+                trimmed
+                    .replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            );
             conn.execute(
                 "UPDATE entries SET is_pinned = ?1 WHERE id = ?2 OR id LIKE ?3 ESCAPE '\\'",
                 params![flag, trimmed, pattern],
@@ -341,19 +355,23 @@ impl SqliteRepository {
             return Err(CoreError::NotFound("Empty ID".to_string()));
         }
         let conn = self.conn();
-        let is_prefix = trimmed.len() >= 6 && trimmed.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+        let is_prefix =
+            trimmed.len() >= 6 && trimmed.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
 
         let affected = if is_prefix {
-            let pattern = format!("{}%", trimmed.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+            let pattern = format!(
+                "{}%",
+                trimmed
+                    .replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            );
             conn.execute(
                 "DELETE FROM entries WHERE id = ?1 OR id LIKE ?2 ESCAPE '\\'",
                 params![trimmed, pattern],
             )?
         } else {
-            conn.execute(
-                "DELETE FROM entries WHERE id = ?1",
-                params![trimmed],
-            )?
+            conn.execute("DELETE FROM entries WHERE id = ?1", params![trimmed])?
         };
 
         if affected == 0 {
@@ -372,16 +390,24 @@ impl SqliteRepository {
         let mut deleted = 0;
         {
             let mut exact_stmt = tx.prepare_cached("DELETE FROM entries WHERE id = ?1")?;
-            let mut prefix_stmt = tx.prepare_cached("DELETE FROM entries WHERE id = ?1 OR id LIKE ?2 ESCAPE '\\'")?;
+            let mut prefix_stmt =
+                tx.prepare_cached("DELETE FROM entries WHERE id = ?1 OR id LIKE ?2 ESCAPE '\\'")?;
 
             for id in ids {
                 let trimmed = id.trim();
                 if trimmed.is_empty() {
                     continue;
                 }
-                let is_prefix = trimmed.len() >= 6 && trimmed.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+                let is_prefix = trimmed.len() >= 6
+                    && trimmed.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
                 if is_prefix {
-                    let pattern = format!("{}%", trimmed.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+                    let pattern = format!(
+                        "{}%",
+                        trimmed
+                            .replace('\\', "\\\\")
+                            .replace('%', "\\%")
+                            .replace('_', "\\_")
+                    );
                     deleted += prefix_stmt.execute(params![trimmed, pattern])?;
                 } else {
                     deleted += exact_stmt.execute(params![trimmed])?;
@@ -401,17 +427,27 @@ impl SqliteRepository {
         let mut updated = 0;
         let flag = if pinned { 1 } else { 0 };
         {
-            let mut exact_stmt = tx.prepare_cached("UPDATE entries SET is_pinned = ?1 WHERE id = ?2")?;
-            let mut prefix_stmt = tx.prepare_cached("UPDATE entries SET is_pinned = ?1 WHERE id = ?2 OR id LIKE ?3 ESCAPE '\\'")?;
+            let mut exact_stmt =
+                tx.prepare_cached("UPDATE entries SET is_pinned = ?1 WHERE id = ?2")?;
+            let mut prefix_stmt = tx.prepare_cached(
+                "UPDATE entries SET is_pinned = ?1 WHERE id = ?2 OR id LIKE ?3 ESCAPE '\\'",
+            )?;
 
             for id in ids {
                 let trimmed = id.trim();
                 if trimmed.is_empty() {
                     continue;
                 }
-                let is_prefix = trimmed.len() >= 6 && trimmed.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+                let is_prefix = trimmed.len() >= 6
+                    && trimmed.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
                 if is_prefix {
-                    let pattern = format!("{}%", trimmed.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+                    let pattern = format!(
+                        "{}%",
+                        trimmed
+                            .replace('\\', "\\\\")
+                            .replace('%', "\\%")
+                            .replace('_', "\\_")
+                    );
                     updated += prefix_stmt.execute(params![flag, trimmed, pattern])?;
                 } else {
                     updated += exact_stmt.execute(params![flag, trimmed])?;
@@ -763,10 +799,15 @@ mod tests {
         assert!(conn_arc.is_poisoned(), "Mutex must be poisoned");
 
         // SqliteRepository operations must recover and succeed
-        let count = repo.count().expect("repo.count() must recover from poisoned mutex");
+        let count = repo
+            .count()
+            .expect("repo.count() must recover from poisoned mutex");
         assert_eq!(count, 0);
 
         let vacuum = repo.vacuum();
-        assert!(vacuum.is_ok(), "repo.vacuum() must recover from poisoned mutex");
+        assert!(
+            vacuum.is_ok(),
+            "repo.vacuum() must recover from poisoned mutex"
+        );
     }
 }

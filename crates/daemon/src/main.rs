@@ -241,7 +241,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     "Received synced clipboard entry from peer {} ({})",
                                     origin_device, peer_addr
                                 );
-                                if let (Some(bytes), Some(_hash)) = (blob_payload, &entry.blob_hash) {
+                                if let (Some(bytes), Some(_hash)) = (blob_payload, &entry.blob_hash)
+                                {
                                     let _ = sync_blob_store.save(&bytes);
                                 }
                                 let _ = sync_repo.insert_or_update(&entry);
@@ -364,7 +365,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (final_text, final_html) = if current_cfg.security.encryption_enabled {
                 (
                     crypto.encrypt_str(&text).unwrap_or(text),
-                    cleaned_html.as_ref().and_then(|h| crypto.encrypt_str(h).ok()),
+                    cleaned_html
+                        .as_ref()
+                        .and_then(|h| crypto.encrypt_str(h).ok()),
                 )
             } else {
                 (text, cleaned_html)
@@ -397,10 +400,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Offload database write to spawn_blocking (HIGH-06)
             let repo_clone = repo.clone();
             let entry_clone = entry.clone();
-            let insert_res = tokio::task::spawn_blocking(move || {
-                repo_clone.insert_or_update(&entry_clone)
-            })
-            .await;
+            let insert_res =
+                tokio::task::spawn_blocking(move || repo_clone.insert_or_update(&entry_clone))
+                    .await;
 
             match insert_res {
                 Ok(Ok(_)) => {

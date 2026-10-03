@@ -68,10 +68,7 @@ impl WaylandWatcher {
 
         // Fetch text with explicit text type to avoid reading raw binary images as utf-8
         if let Some(text_mime) = mime_types.iter().find(|m| {
-            m.starts_with("text/plain")
-                || *m == "UTF8_STRING"
-                || *m == "STRING"
-                || *m == "text"
+            m.starts_with("text/plain") || *m == "UTF8_STRING" || *m == "STRING" || *m == "text"
         }) {
             if let Ok(output) = Command::new("wl-paste")
                 .args(["--type", text_mime, "--no-newline"])

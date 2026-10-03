@@ -4,4 +4,3 @@ pub mod traits;
 
 pub use sqlite::SqliteRepository;
 pub use traits::Storage;
-

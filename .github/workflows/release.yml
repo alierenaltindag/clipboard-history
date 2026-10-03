@@ -15,6 +15,9 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: write
+
 jobs:
   build-packages:
     name: Build Multi-Distro Packages (${{ matrix.target }})

@@ -242,10 +242,7 @@ impl WindowFocusDetector {
                         let class = extract_gdbus_string(dict_str, "wm-class")
                             .or_else(|| extract_gdbus_string(dict_str, "app-id"));
                         if title.is_some() || class.is_some() {
-                            return Some((
-                                title.unwrap_or_default(),
-                                class.unwrap_or_default(),
-                            ));
+                            return Some((title.unwrap_or_default(), class.unwrap_or_default()));
                         }
                     }
                 }

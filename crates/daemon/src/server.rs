@@ -71,7 +71,9 @@ impl DaemonServer {
         let old_umask = unsafe { libc::umask(0o077) };
         let listener_res = UnixListener::bind(&self.socket_path);
         #[cfg(unix)]
-        unsafe { libc::umask(old_umask) };
+        unsafe {
+            libc::umask(old_umask)
+        };
         let listener = listener_res?;
         let _ = fs::set_permissions(&self.socket_path, fs::Permissions::from_mode(0o600));
 
@@ -136,6 +138,7 @@ impl DaemonServer {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_client(
         stream: UnixStream,
         repo: SqliteRepository,
@@ -243,7 +246,9 @@ impl DaemonServer {
 
                 IpcRequest::GetBlob { hash } => {
                     let res = if config.read().await.security.encryption_enabled {
-                        blob_store.read_decrypted(&hash, &crypto).or_else(|_| blob_store.read(&hash))
+                        blob_store
+                            .read_decrypted(&hash, &crypto)
+                            .or_else(|_| blob_store.read(&hash))
                     } else {
                         blob_store.read(&hash)
                     };
@@ -435,10 +440,7 @@ impl DaemonServer {
                     }
                 }
 
-                IpcRequest::HideWindow
-                | IpcRequest::SelectAndPaste { .. } => {
-                    IpcResponse::Success
-                }
+                IpcRequest::HideWindow | IpcRequest::SelectAndPaste { .. } => IpcResponse::Success,
             };
 
             write_message(&mut writer, &response).await?;

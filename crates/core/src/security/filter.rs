@@ -38,8 +38,11 @@ impl SecretFilter {
         let github_token_regex =
             Regex::new(r"\b(?:ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82})\b").unwrap();
         let aws_key_regex = Regex::new(r"\b(?:AKIA[0-9A-Z]{16})\b").unwrap();
-        let jwt_regex = Regex::new(r"\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b").unwrap();
-        let stripe_key_regex = Regex::new(r"\b(?:sk|pk|rk)_(?:live|test)_[0-9a-zA-Z]{24,99}\b").unwrap();
+        let jwt_regex =
+            Regex::new(r"\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b")
+                .unwrap();
+        let stripe_key_regex =
+            Regex::new(r"\b(?:sk|pk|rk)_(?:live|test)_[0-9a-zA-Z]{24,99}\b").unwrap();
         let google_key_regex = Regex::new(r"\bAIza[0-9A-Za-z\-_]{35,36}\b").unwrap();
 
         let mut custom_patterns = Vec::new();

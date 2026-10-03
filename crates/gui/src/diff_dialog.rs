@@ -2,9 +2,7 @@
 
 use clipboard_history_core::transforms::{DiffEngine, DiffResult, DiffTag};
 use gtk4::prelude::*;
-use gtk4::{
-    Align, Box as GtkBox, Button, Label, Orientation, ScrolledWindow, TextView, Window,
-};
+use gtk4::{Align, Box as GtkBox, Button, Label, Orientation, ScrolledWindow, TextView, Window};
 use std::cell::RefCell;
 use std::rc::Rc;
 

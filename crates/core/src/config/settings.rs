@@ -241,7 +241,9 @@ impl AppConfig {
         } else if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
             PathBuf::from(xdg).join("clipboard-history")
         } else if let Ok(home) = std::env::var("HOME") {
-            PathBuf::from(home).join(".config").join("clipboard-history")
+            PathBuf::from(home)
+                .join(".config")
+                .join("clipboard-history")
         } else {
             PathBuf::from("/tmp/clipboard-history/config")
         }
@@ -261,7 +263,10 @@ impl AppConfig {
         } else if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
             PathBuf::from(xdg).join("clipboard-history")
         } else if let Ok(home) = std::env::var("HOME") {
-            PathBuf::from(home).join(".local").join("share").join("clipboard-history")
+            PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("clipboard-history")
         } else {
             PathBuf::from("/tmp/clipboard-history/data")
         }

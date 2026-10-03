@@ -190,7 +190,10 @@ fn test_crypto_engine_minimum_ciphertext_length() {
         let err = engine.decrypt(&dummy).unwrap_err();
         match err {
             CryptoError::CiphertextTooShort => {}
-            other => panic!("Expected CiphertextTooShort for payload len {}, got: {:?}", len, other),
+            other => panic!(
+                "Expected CiphertextTooShort for payload len {}, got: {:?}",
+                len, other
+            ),
         }
     }
 
@@ -851,7 +854,9 @@ fn test_sqlite_prefix_wipeout_prevention() {
     assert_eq!(repo.count().unwrap(), 5);
 
     // 2. Batch delete with empty string or spaces must not delete records
-    let deleted = repo.batch_delete(&["".to_string(), "  ".to_string()]).unwrap();
+    let deleted = repo
+        .batch_delete(&["".to_string(), "  ".to_string()])
+        .unwrap();
     assert_eq!(deleted, 0);
     assert_eq!(repo.count().unwrap(), 5);
 
@@ -879,7 +884,9 @@ fn test_preview_generation_performance_and_accuracy() {
     use clipboard_history_core::domain::ClipboardEntry;
 
     // Create a 50KB payload
-    let large_text = "fn compute_something() -> Result<()> {\n    let x = 42;\n    println!(\"Hello\");\n}\n".repeat(1000);
+    let large_text =
+        "fn compute_something() -> Result<()> {\n    let x = 42;\n    println!(\"Hello\");\n}\n"
+            .repeat(1000);
     let hash = BlobStore::compute_hash(large_text.as_bytes());
     let entry = ClipboardEntry::new_text(large_text, hash, vec!["text/plain".to_string()], None);
 
@@ -1037,16 +1044,24 @@ fn test_storage_trait_abstraction() {
         Some("TestRunner".to_string()),
     );
 
-    let inserted = storage.insert_or_update(&entry).expect("Insert via trait failed");
+    let inserted = storage
+        .insert_or_update(&entry)
+        .expect("Insert via trait failed");
     assert_eq!(storage.count().unwrap(), 1);
 
-    let fetched = storage.get_by_id(&inserted.id).expect("Get by ID via trait failed");
+    let fetched = storage
+        .get_by_id(&inserted.id)
+        .expect("Get by ID via trait failed");
     assert_eq!(fetched.preview, "Trait test payload");
 
-    let results = storage.search("Trait", 10, 0).expect("Search via trait failed");
+    let results = storage
+        .search("Trait", 10, 0)
+        .expect("Search via trait failed");
     assert_eq!(results.len(), 1);
 
-    storage.delete(&inserted.id).expect("Delete via trait failed");
+    storage
+        .delete(&inserted.id)
+        .expect("Delete via trait failed");
     assert_eq!(storage.count().unwrap(), 0);
 }
 
@@ -1070,5 +1085,3 @@ fn test_app_config_dirs_safe_fallbacks() {
     let socket_path = AppConfig::socket_path();
     assert!(socket_path.to_str().unwrap().contains("sock"));
 }
-
-

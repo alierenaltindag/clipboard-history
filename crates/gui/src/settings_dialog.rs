@@ -230,11 +230,12 @@ impl SettingsDialog {
             let new_pin = row.text().to_string();
             let cfg_ref = Rc::clone(&cfg_pin);
             let deb_ref = Rc::clone(&deb_clone);
-            let source_id = glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
-                deb_ref.borrow_mut().take();
-                cfg_ref.borrow_mut().sync.pairing_pin = new_pin;
-                Self::save_and_sync(&cfg_ref.borrow());
-            });
+            let source_id =
+                glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+                    deb_ref.borrow_mut().take();
+                    cfg_ref.borrow_mut().sync.pairing_pin = new_pin;
+                    Self::save_and_sync(&cfg_ref.borrow());
+                });
             *deb_clone.borrow_mut() = Some(source_id);
         });
 
