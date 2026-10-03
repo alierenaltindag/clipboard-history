@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-10-03
+
+### Added
+- **Modern Libadwaita GUI & High-Performance Rendering**:
+  - Full Libadwaita styling and theme alignment (`adw::Application`, `adw::WindowTitle`, `adw::StatusPage`, `adw::ToastOverlay`).
+  - Zero-allocation Cairo `DrawingArea` rendering for instant color preview swatches, eliminating dynamic CSS provider allocations.
+  - Smooth acrylic CSS transitions (`180ms cubic-bezier(0.2, 0, 0, 1)`) and modern rounded surface design.
+  - Search performance optimization capping rendered entries to the top 50 matches for 60 FPS fluid interaction.
+  - Reorganized Settings dialog with 3 dedicated `adw::PreferencesPage` tabs (General, Privacy & Security, Network Sync).
+  - Rich item rows with keyboard `<kbd>` badges, content type tags, relative human-readable timestamps, and image previews.
+- **Universal Remote Installer**:
+  - Direct one-line remote execution via `curl -fsSL https://raw.githubusercontent.com/alierenaltindag/clipboard-history/main/scripts/install.sh | bash` without needing to clone the repository manually.
+  - Cross-distribution dependency detection and package management support for Debian/Ubuntu (`apt`), Fedora/RHEL (`dnf`), Arch Linux (`pacman`), and openSUSE (`zypper`).
+  - Automatic Rust compiler bootstrapping via `rustup` when missing.
+  - Automated GNOME `Super+V` shortcut configuration.
+
+### Changed
+- **GUI-First Configuration**:
+  - Removed CLI `config` subcommands in favor of centralized GUI preferences dialog.
+  - Cleaned and streamlined `README.md` to highlight quick installation, uninstallation, general features, and complete keyboard shortcuts.
+
 ## [0.1.0] - 2026-10-02
 
 ### Added

@@ -1,11 +1,9 @@
-pub mod config_ctrl;
 pub mod daemon_ctrl;
 pub mod entries;
 pub mod queue;
 pub mod snippets;
 pub mod transforms;
 
-pub use config_ctrl::{handle_config, ConfigAction};
 pub use daemon_ctrl::{handle_pause, handle_resume, handle_status, handle_toggle};
 pub use entries::{
     handle_add, handle_batch_delete, handle_batch_pin, handle_clear, handle_delete, handle_list,

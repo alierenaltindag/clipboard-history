@@ -32,6 +32,11 @@
     <binary>clipboard-history-gui</binary>
   </provides>
   <releases>
+    <release version="0.6.0" date="2026-10-03">
+      <description>
+        <p>Major GUI visual and performance overhaul: native Libadwaita styling, hardware-accelerated Cairo swatches, image thumbnails, smooth animations, empty state diagnostics, remote curl installation, and fully GUI-first settings management.</p>
+      </description>
+    </release>
     <release version="0.5.1" date="2026-10-03">
       <description>
         <p>Comprehensive stability, security, and performance hardening release resolving 45 audit findings across all workspace crates.</p>

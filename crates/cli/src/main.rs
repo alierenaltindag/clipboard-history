@@ -153,12 +153,6 @@ enum Commands {
         #[arg(help = "URL string or clipboard entry ID")]
         target: String,
     },
-
-    #[command(about = "Manage clipboard history configuration settings")]
-    Config {
-        #[command(subcommand)]
-        action: Option<ConfigAction>,
-    },
 }
 
 #[tokio::main]
@@ -200,7 +194,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::BatchDelete { ids } => handle_batch_delete(&socket_path, ids).await,
         Commands::BatchPin { unpin, ids } => handle_batch_pin(&socket_path, unpin, ids).await,
         Commands::CleanUrl { target } => handle_clean_url(&socket_path, target).await,
-        Commands::Config { action } => handle_config(&socket_path, action).await?,
     }
 
     Ok(())
