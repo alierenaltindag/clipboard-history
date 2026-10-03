@@ -52,14 +52,21 @@ impl EntryRow {
         // Color swatch chip if color detected in text
         if let Some(color) = TextTransforms::detect_color(&entry.preview) {
             let color_chip = Label::new(Some("   "));
+            let clean_hex = color.hex.trim_start_matches('#').to_lowercase();
+            let swatch_class = format!("swatch-{clean_hex}");
+            color_chip.add_css_class(&swatch_class);
             let provider = gtk4::CssProvider::new();
-            provider.load_from_data(&format!(
-                "label {{ background-color: {}; border-radius: 4px; border: 1px solid rgba(0,0,0,0.3); }}",
+            provider.load_from_string(&format!(
+                ".{swatch_class} {{ background-color: {}; border-radius: 4px; border: 1px solid rgba(0,0,0,0.3); }}",
                 color.hex
             ));
-            color_chip
-                .style_context()
-                .add_provider(&provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
+            if let Some(display) = gtk4::gdk::Display::default() {
+                gtk4::style_context_add_provider_for_display(
+                    &display,
+                    &provider,
+                    gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                );
+            }
             color_chip.set_tooltip_text(Some(&format!("Color: {}", color.hex)));
             header.append(&color_chip);
         }

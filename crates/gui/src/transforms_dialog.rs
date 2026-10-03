@@ -43,13 +43,21 @@ pub fn show_transforms_popover(
         color_box.set_margin_bottom(4);
 
         let chip = Label::new(Some("    "));
+        let clean_hex = color.hex.trim_start_matches('#').to_lowercase();
+        let swatch_class = format!("swatch-{clean_hex}");
+        chip.add_css_class(&swatch_class);
         let chip_css = gtk4::CssProvider::new();
-        chip_css.load_from_data(&format!(
-            "label {{ background-color: {}; border-radius: 4px; border: 1px solid rgba(0,0,0,0.2); }}",
+        chip_css.load_from_string(&format!(
+            ".{swatch_class} {{ background-color: {}; border-radius: 4px; border: 1px solid rgba(0,0,0,0.2); }}",
             color.hex
         ));
-        chip.style_context()
-            .add_provider(&chip_css, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
+        if let Some(display) = gtk4::gdk::Display::default() {
+            gtk4::style_context_add_provider_for_display(
+                &display,
+                &chip_css,
+                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
         color_box.append(&chip);
 
         let label = Label::new(Some(&format!(
