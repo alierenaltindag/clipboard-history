@@ -5,11 +5,11 @@ mod list_row;
 mod search;
 mod settings_dialog;
 mod snippet_dialog;
+mod style;
 mod transforms_dialog;
 mod window;
 
 use clap::Parser;
-use injector::InjectorCascade;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 

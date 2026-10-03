@@ -8,7 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
-pub const MAX_MESSAGE_SIZE: u32 = 64 * 1024 * 1024; // 64 MB guard
+pub const MAX_MESSAGE_SIZE: u32 = 32 * 1024 * 1024; // 32 MB guard
 
 pub async fn write_message<W: AsyncWriteExt + Unpin, T: Serialize>(
     writer: &mut W,
@@ -37,22 +37,52 @@ pub async fn read_message<R: AsyncReadExt + Unpin, T: DeserializeOwned>(
         )));
     }
 
-    let mut buf = vec![0u8; length as usize];
-    reader.read_exact(&mut buf).await?;
+    let mut buf = Vec::with_capacity((length as usize).min(64 * 1024));
+    let read_count = reader.take(length as u64).read_to_end(&mut buf).await?;
+    if read_count != length as usize {
+        return Err(CoreError::Ipc(format!(
+            "Incomplete IPC payload: expected {} bytes, received {}",
+            length, read_count
+        )));
+    }
 
     let message: T = serde_json::from_slice(&buf)?;
     Ok(message)
 }
 
-pub struct IpcClient;
+#[derive(Clone, Debug)]
+pub struct IpcClient {
+    socket_path: std::path::PathBuf,
+}
 
 impl IpcClient {
+    pub async fn connect() -> Result<Self> {
+        let socket_path = crate::config::AppConfig::socket_path();
+        if !socket_path.exists() {
+            return Err(CoreError::Ipc(format!(
+                "Daemon socket not found at {}",
+                socket_path.display()
+            )));
+        }
+        Ok(Self { socket_path })
+    }
+
+    pub fn new<P: Into<std::path::PathBuf>>(socket_path: P) -> Self {
+        Self {
+            socket_path: socket_path.into(),
+        }
+    }
+
+    pub async fn send(&self, request: &IpcRequest) -> Result<IpcResponse> {
+        Self::send_request(&self.socket_path, request).await
+    }
+
     pub async fn send_request<P: AsRef<Path>>(
         socket_path: P,
         request: &IpcRequest,
     ) -> Result<IpcResponse> {
         let stream = timeout(
-            Duration::from_millis(1500),
+            Duration::from_millis(3000),
             UnixStream::connect(socket_path.as_ref()),
         )
         .await
@@ -61,9 +91,12 @@ impl IpcClient {
 
         let (mut reader, mut writer) = stream.into_split();
 
-        write_message(&mut writer, request).await?;
-        let response: IpcResponse = read_message(&mut reader).await?;
-
-        Ok(response)
+        timeout(Duration::from_millis(3000), async {
+            write_message(&mut writer, request).await?;
+            let response: IpcResponse = read_message(&mut reader).await?;
+            Ok(response)
+        })
+        .await
+        .map_err(|_| CoreError::Ipc("IPC transaction timed out after 3000ms".to_string()))?
     }
 }

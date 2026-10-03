@@ -16,7 +16,9 @@ use clap::Parser;
 use clipboard_history_core::blob::{BlobStore, ThumbnailGenerator};
 use clipboard_history_core::config::AppConfig;
 use clipboard_history_core::domain::ClipboardEntry;
-use clipboard_history_core::security::{PasswordManagerGuard, SecretFilter, SecretHandlingPolicy};
+use clipboard_history_core::security::{
+    CryptoEngine, PasswordManagerGuard, SecretFilter, SecretHandlingPolicy,
+};
 use clipboard_history_core::storage::SqliteRepository;
 use clipboard_history_core::transforms::UrlCleaner;
 use std::path::PathBuf;
@@ -94,11 +96,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eviction_worker.run_loop().await;
     });
 
+    // Initialize Crypto Engine
+    let crypto = Arc::new(
+        CryptoEngine::load_or_create(AppConfig::secret_key_path())
+            .expect("Failed to initialize or load CryptoEngine"),
+    );
+
     // Spawn IPC Socket Server
     let socket_path = AppConfig::socket_path();
     let server = DaemonServer::new(
         repo.clone(),
         blob_store.clone(),
+        Arc::clone(&crypto),
         Arc::clone(&config_arc),
         Arc::clone(&is_paused),
         socket_path.clone(),
@@ -166,6 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Spawn P2P LAN Encrypted Sync Service
     let sync_cfg_arc = config_arc.clone();
     let sync_repo = repo.clone();
+    let sync_blob_store_base = blob_store.clone();
     let listen_port = config.sync.listen_port;
     tokio::spawn(async move {
         let addr = format!("0.0.0.0:{}", listen_port);
@@ -179,41 +189,67 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let pin = current_sync.pairing_pin.clone();
                 let dev_name = current_sync.device_name.clone();
                 let sync_repo = sync_repo.clone();
+                let sync_blob_store = sync_blob_store_base.clone();
                 tokio::spawn(async move {
                     use clipboard_history_core::sync::{
                         read_sync_message, send_sync_message, SyncMessage,
                     };
                     let (mut reader, mut writer) = socket.split();
+                    let mut authenticated = false;
                     while let Ok(msg) = read_sync_message(&mut reader, &pin).await {
                         match msg {
                             SyncMessage::AuthRequest { pairing_pin, .. } => {
-                                let success = pairing_pin == pin;
-                                let _ = send_sync_message(
-                                    &mut writer,
-                                    &pin,
-                                    &SyncMessage::AuthResponse {
-                                        success,
-                                        device_name: dev_name.clone(),
-                                        message: if success {
-                                            "Authenticated".to_string()
-                                        } else {
-                                            "Invalid PIN".to_string()
+                                if pairing_pin == pin {
+                                    authenticated = true;
+                                    let _ = send_sync_message(
+                                        &mut writer,
+                                        &pin,
+                                        &SyncMessage::AuthResponse {
+                                            success: true,
+                                            device_name: dev_name.clone(),
+                                            message: "Authenticated".to_string(),
                                         },
-                                    },
-                                )
-                                .await;
+                                    )
+                                    .await;
+                                } else {
+                                    let _ = send_sync_message(
+                                        &mut writer,
+                                        &pin,
+                                        &SyncMessage::AuthResponse {
+                                            success: false,
+                                            device_name: dev_name.clone(),
+                                            message: "Invalid PIN".to_string(),
+                                        },
+                                    )
+                                    .await;
+                                    break;
+                                }
                             }
                             SyncMessage::EntrySync {
                                 origin_device,
                                 entry,
+                                blob_payload,
                             } => {
+                                if !authenticated {
+                                    tracing::warn!(
+                                        "Rejected unauthenticated EntrySync from {}",
+                                        peer_addr
+                                    );
+                                    break;
+                                }
                                 info!(
                                     "Received synced clipboard entry from peer {} ({})",
                                     origin_device, peer_addr
                                 );
+                                if let (Some(bytes), Some(_hash)) = (blob_payload, &entry.blob_hash) {
+                                    let _ = sync_blob_store.save(&bytes);
+                                }
                                 let _ = sync_repo.insert_or_update(&entry);
                             }
                             SyncMessage::Ping => {
+                                if !authenticated {
+                                    break;
+                                }
                                 let _ =
                                     send_sync_message(&mut writer, &pin, &SyncMessage::Pong).await;
                             }
@@ -242,13 +278,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let current_cfg = config_arc.read().await.clone();
 
-        // 1. Incognito & Private Browsing Window Check (adjustable in settings)
-        if current_cfg.security.ignore_incognito_windows
-            && window_focus_detector
-                .is_incognito_active(&current_cfg.security.incognito_window_patterns)
-        {
-            info!("Ignored clipboard copy originating while incognito/private browsing window was active");
-            continue;
+        // 1. Query active window once per event (Deduplicated: HIGH-05)
+        let active_win = window_focus_detector.get_active_window_info();
+        let active_class = active_win.as_ref().map(|(_, c)| c.as_str());
+
+        // Incognito & Private Browsing Window Check (adjustable in settings)
+        if current_cfg.security.ignore_incognito_windows {
+            if let Some((ref title, ref class)) = active_win {
+                if WindowFocusDetector::matches_incognito_pattern(
+                    title,
+                    class,
+                    &current_cfg.security.incognito_window_patterns,
+                ) {
+                    info!(
+                        "Ignored clipboard copy originating while incognito/private browsing window was active ('{}')",
+                        title
+                    );
+                    continue;
+                }
+            }
         }
 
         // 2. Password Manager & Sensitive MIME check (adjustable in settings)
@@ -260,9 +308,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // 3. Application Filter check (Blacklist or Whitelist)
-        let active_win = window_focus_detector.get_active_window_info();
-        let active_class = active_win.as_ref().map(|(_, c)| c.as_str());
-        let source_app = event.source_app.as_deref();
+        let source_app = event.source_app.as_deref().or(active_class);
 
         if !current_cfg
             .security
@@ -314,59 +360,127 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
 
-            let entry = if event.mime_types.iter().any(|m| m == "text/uri-list") {
-                ClipboardEntry::new_uri_list(text, hash, event.mime_types, event.source_app)
-            } else if let Some(html) = cleaned_html {
-                ClipboardEntry::new_html(text, html, hash, event.mime_types, event.source_app)
+            // Storage encryption at rest (HIGH-01)
+            let (final_text, final_html) = if current_cfg.security.encryption_enabled {
+                (
+                    crypto.encrypt_str(&text).unwrap_or(text),
+                    cleaned_html.as_ref().and_then(|h| crypto.encrypt_str(h).ok()),
+                )
             } else {
-                ClipboardEntry::new_text(text, hash, event.mime_types, event.source_app)
+                (text, cleaned_html)
             };
 
-            if let Err(e) = repo.insert_or_update(&entry) {
-                error!("Failed to save clipboard entry: {}", e);
+            let entry = if event.mime_types.iter().any(|m| m == "text/uri-list") {
+                ClipboardEntry::new_uri_list(
+                    final_text,
+                    hash,
+                    event.mime_types,
+                    source_app.map(|s| s.to_string()),
+                )
+            } else if let Some(html) = final_html {
+                ClipboardEntry::new_html(
+                    final_text,
+                    html,
+                    hash,
+                    event.mime_types,
+                    source_app.map(|s| s.to_string()),
+                )
             } else {
-                debug!(
-                    "Captured clipboard entry: [{}] {}",
-                    entry.entry_type, entry.preview
-                );
-                broadcast_to_peers(&current_cfg.sync, &entry);
+                ClipboardEntry::new_text(
+                    final_text,
+                    hash,
+                    event.mime_types,
+                    source_app.map(|s| s.to_string()),
+                )
+            };
+
+            // Offload database write to spawn_blocking (HIGH-06)
+            let repo_clone = repo.clone();
+            let entry_clone = entry.clone();
+            let insert_res = tokio::task::spawn_blocking(move || {
+                repo_clone.insert_or_update(&entry_clone)
+            })
+            .await;
+
+            match insert_res {
+                Ok(Ok(_)) => {
+                    debug!(
+                        "Captured clipboard entry: [{}] {}",
+                        entry.entry_type, entry.preview
+                    );
+                    broadcast_to_peers(&current_cfg.sync, &entry, &blob_store);
+                }
+                Ok(Err(e)) => error!("Failed to save clipboard entry: {}", e),
+                Err(e) => error!("Tokio spawn_blocking error saving entry: {}", e),
             }
         } else if let Some(image_bytes) = event.image_data {
             if !circuit_breaker.allow_payload_size(image_bytes.len()) {
                 continue;
             }
 
-            let blob_hash = match blob_store.save(&image_bytes) {
-                Ok(h) => h,
-                Err(e) => {
-                    error!("Failed to store image blob: {}", e);
-                    continue;
+            let blob_store_clone = blob_store.clone();
+            let crypto_clone = Arc::clone(&crypto);
+            let encryption_enabled = current_cfg.security.encryption_enabled;
+            let image_bytes_clone = image_bytes.clone();
+            let mime_types = event.mime_types.clone();
+            let src_app = source_app.map(|s| s.to_string());
+
+            // Offload thumbnail generation & blob storage to spawn_blocking (HIGH-06)
+            let process_res = tokio::task::spawn_blocking(move || {
+                let blob_hash = if encryption_enabled {
+                    blob_store_clone.save_encrypted(&image_bytes_clone, &crypto_clone)?
+                } else {
+                    blob_store_clone.save(&image_bytes_clone)?
+                };
+
+                // Generate thumbnail
+                let (dimensions, thumb_hash) =
+                    match ThumbnailGenerator::generate(&image_bytes_clone) {
+                        Ok((dims, thumb_bytes)) => {
+                            let th = if encryption_enabled {
+                                blob_store_clone
+                                    .save_encrypted(&thumb_bytes, &crypto_clone)
+                                    .ok()
+                            } else {
+                                blob_store_clone.save(&thumb_bytes).ok()
+                            };
+                            (dims, th)
+                        }
+                        Err(_) => ((0, 0), None),
+                    };
+
+                let entry = ClipboardEntry::new_image(
+                    blob_hash,
+                    thumb_hash,
+                    image_bytes_clone.len(),
+                    dimensions,
+                    mime_types,
+                    src_app,
+                );
+                Ok::<_, clipboard_history_core::error::CoreError>(entry)
+            })
+            .await;
+
+            match process_res {
+                Ok(Ok(entry)) => {
+                    let repo_clone = repo.clone();
+                    let entry_clone = entry.clone();
+                    let insert_res = tokio::task::spawn_blocking(move || {
+                        repo_clone.insert_or_update(&entry_clone)
+                    })
+                    .await;
+
+                    match insert_res {
+                        Ok(Ok(_)) => {
+                            debug!("Captured clipboard image entry: {}", entry.preview);
+                            broadcast_to_peers(&current_cfg.sync, &entry, &blob_store);
+                        }
+                        Ok(Err(e)) => error!("Failed to save image entry: {}", e),
+                        Err(e) => error!("Tokio spawn_blocking error saving image entry: {}", e),
+                    }
                 }
-            };
-
-            // Generate thumbnail
-            let (dimensions, thumb_hash) = match ThumbnailGenerator::generate(&image_bytes) {
-                Ok((dims, thumb_bytes)) => {
-                    let th = blob_store.save(&thumb_bytes).ok();
-                    (dims, th)
-                }
-                Err(_) => ((0, 0), None),
-            };
-
-            let entry = ClipboardEntry::new_image(
-                blob_hash,
-                thumb_hash,
-                image_bytes.len(),
-                dimensions,
-                event.mime_types,
-                event.source_app,
-            );
-
-            if let Err(e) = repo.insert_or_update(&entry) {
-                error!("Failed to save image entry: {}", e);
-            } else {
-                debug!("Captured clipboard image entry: {}", entry.preview);
-                broadcast_to_peers(&current_cfg.sync, &entry);
+                Ok(Err(e)) => error!("Failed to process image blob: {}", e),
+                Err(e) => error!("Tokio spawn_blocking error processing image: {}", e),
             }
         }
     }
@@ -374,14 +488,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn broadcast_to_peers(cfg: &clipboard_history_core::config::SyncConfig, entry: &ClipboardEntry) {
+fn broadcast_to_peers(
+    cfg: &clipboard_history_core::config::SyncConfig,
+    entry: &ClipboardEntry,
+    blob_store: &BlobStore,
+) {
     if !cfg.enabled || cfg.peer_addresses.is_empty() {
         return;
     }
     use clipboard_history_core::sync::{send_sync_message, SyncMessage};
+    let blob_payload = if let Some(ref hash) = entry.blob_hash {
+        blob_store.read(hash).ok()
+    } else {
+        None
+    };
     let msg = SyncMessage::EntrySync {
         origin_device: cfg.device_name.clone(),
         entry: Box::new(entry.clone()),
+        blob_payload,
     };
     for peer in cfg.peer_addresses.clone() {
         let pin = cfg.pairing_pin.clone();

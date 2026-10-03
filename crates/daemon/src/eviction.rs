@@ -39,10 +39,12 @@ impl EvictionWorker {
 
             // Trigger SQLite vacuum once every 24 hours (96 * 15min)
             if loop_count.is_multiple_of(96) {
-                if let Err(e) = self.repo.vacuum() {
-                    error!("Scheduled database vacuum failed: {}", e);
-                } else {
-                    info!("Scheduled database vacuum completed successfully");
+                let repo_clone = self.repo.clone();
+                let vacuum_res = tokio::task::spawn_blocking(move || repo_clone.vacuum()).await;
+                match vacuum_res {
+                    Ok(Err(e)) => error!("Scheduled database vacuum failed: {}", e),
+                    Ok(Ok(_)) => info!("Scheduled database vacuum completed successfully"),
+                    Err(e) => error!("Vacuum task spawn error: {}", e),
                 }
             }
         }
@@ -54,45 +56,51 @@ impl EvictionWorker {
             (cfg.general.max_entries, cfg.general.retention_days)
         };
 
-        // 1. Evict expired entries by TTL
-        let cutoff = Utc::now() - Duration::days(retention_days as i64);
-        match self.repo.evict_expired(cutoff) {
-            Ok(count) if count > 0 => {
-                info!(
-                    "Evicted {} expired clipboard entries (>{} days old)",
-                    count, retention_days
-                );
-            }
-            Ok(_) => {}
-            Err(e) => {
-                error!("Failed to evict expired clipboard entries: {}", e);
-            }
-        }
+        let repo_clone = self.repo.clone();
+        let blob_clone = self.blob_store.clone();
 
-        // 2. Evict capacity excess
-        match self.repo.evict_capacity(max_entries) {
-            Ok(count) if count > 0 => {
-                info!(
-                    "Evicted {} excess clipboard entries (capacity limit {})",
-                    count, max_entries
-                );
-            }
-            Ok(_) => {}
-            Err(e) => {
-                error!("Failed to evict excess clipboard entries: {}", e);
-            }
-        }
-
-        // 3. Clean up orphaned blobs
-        match self.repo.get_all_blob_hashes() {
-            Ok(active_hashes) => {
-                if let Err(e) = self.blob_store.cleanup_orphans(&active_hashes) {
-                    error!("Failed to clean up orphaned blobs: {}", e);
+        let _ = tokio::task::spawn_blocking(move || {
+            // 1. Evict expired entries by TTL
+            let cutoff = Utc::now() - Duration::days(retention_days as i64);
+            match repo_clone.evict_expired(cutoff) {
+                Ok(count) if count > 0 => {
+                    info!(
+                        "Evicted {} expired clipboard entries (>{} days old)",
+                        count, retention_days
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    error!("Failed to evict expired clipboard entries: {}", e);
                 }
             }
-            Err(e) => {
-                error!("Failed to get active blob hashes: {}", e);
+
+            // 2. Evict capacity excess
+            match repo_clone.evict_capacity(max_entries) {
+                Ok(count) if count > 0 => {
+                    info!(
+                        "Evicted {} excess clipboard entries (capacity limit {})",
+                        count, max_entries
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    error!("Failed to evict excess clipboard entries: {}", e);
+                }
             }
-        }
+
+            // 3. Clean up orphaned blobs
+            match repo_clone.get_all_blob_hashes() {
+                Ok(active_hashes) => {
+                    if let Err(e) = blob_clone.cleanup_orphans(&active_hashes) {
+                        error!("Failed to clean up orphaned blobs: {}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to get active blob hashes: {}", e);
+                }
+            }
+        })
+        .await;
     }
 }

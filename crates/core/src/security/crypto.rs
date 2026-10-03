@@ -4,7 +4,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
 use thiserror::Error;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Error, Debug)]
 pub enum CryptoError {
@@ -14,7 +14,7 @@ pub enum CryptoError {
     EncryptionFailed(String),
     #[error("Decryption failed: authenticated tag mismatch or corrupted data")]
     DecryptionFailed,
-    #[error("Ciphertext too short: expected at least 12-byte nonce")]
+    #[error("Ciphertext too short: expected at least 28 bytes (12-byte nonce + 16-byte tag)")]
     CiphertextTooShort,
     #[error("Invalid UTF-8 string after decryption: {0}")]
     Utf8Error(#[from] std::string::FromUtf8Error),
@@ -40,9 +40,9 @@ impl CryptoEngine {
         let path = key_path.as_ref();
         if path.exists() {
             let mut file = OpenOptions::new().read(true).open(path)?;
-            let mut key_bytes = [0u8; 32];
-            file.read_exact(&mut key_bytes)?;
-            Ok(Self::new_from_key(key_bytes))
+            let mut key_bytes = Zeroizing::new([0u8; 32]);
+            file.read_exact(key_bytes.as_mut_slice())?;
+            Ok(Self::new_from_key(*key_bytes))
         } else {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
@@ -53,7 +53,7 @@ impl CryptoEngine {
                 }
             }
 
-            let mut key_bytes = [0u8; 32];
+            let mut key_bytes = Zeroizing::new([0u8; 32]);
             let raw_key = Aes256Gcm::generate_key(&mut OsRng);
             key_bytes.copy_from_slice(&raw_key);
 
@@ -65,16 +65,16 @@ impl CryptoEngine {
                     .create_new(true)
                     .mode(0o600)
                     .open(path)?;
-                file.write_all(&key_bytes)?;
+                file.write_all(key_bytes.as_slice())?;
             }
 
             #[cfg(not(unix))]
             {
                 let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
-                file.write_all(&key_bytes)?;
+                file.write_all(key_bytes.as_slice())?;
             }
 
-            Ok(Self::new_from_key(key_bytes))
+            Ok(Self::new_from_key(*key_bytes))
         }
     }
 
@@ -93,9 +93,12 @@ impl CryptoEngine {
         Ok(output)
     }
 
+    /// Minimum valid payload length for AES-256-GCM: 12-byte nonce + 16-byte Poly1305 authentication tag.
+    pub const MIN_CIPHERTEXT_LEN: usize = 12 + 16;
+
     /// Decrypts a buffer structured as `[12-byte Nonce | Ciphertext + 16-byte Tag]`.
     pub fn decrypt(&self, payload: &[u8]) -> Result<Vec<u8>, CryptoError> {
-        if payload.len() < 12 {
+        if payload.len() < Self::MIN_CIPHERTEXT_LEN {
             return Err(CryptoError::CiphertextTooShort);
         }
 

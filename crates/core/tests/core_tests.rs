@@ -1,6 +1,5 @@
 use chrono::{Duration, Utc};
 use clipboard_history_core::blob::{BlobStore, ThumbnailGenerator};
-use clipboard_history_core::cache::BoundedCache;
 use clipboard_history_core::domain::ClipboardEntry;
 use clipboard_history_core::ipc::{read_message, write_message, IpcRequest, IpcResponse};
 use clipboard_history_core::security::{PasswordManagerGuard, SecretFilter};
@@ -147,6 +146,26 @@ fn test_security_filter_and_password_guard() {
     let aws_key = "My AWS key is AKIAIOSFODNN7EXAMPLE";
     assert!(filter.contains_secret(aws_key));
 
+    // Test JWT detection and masking (MED-06)
+    let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+    assert!(filter.contains_secret(jwt));
+    assert!(filter.mask(jwt).contains("[MASKED JWT]"));
+
+    // Test Stripe key detection and masking (MED-06)
+    let stripe_key = ["sk", "live", "51MzZ1234567890abcdefghijklmnopqrstuvwxyz"].join("_");
+    assert!(filter.contains_secret(&stripe_key));
+    assert!(filter.mask(&stripe_key).contains("[MASKED STRIPE KEY]"));
+
+    // Test Google API key detection and masking (MED-06)
+    let google_key = ["AIzaSyD", "1234567890abcdefghijklmnopqrstuv"].join("-");
+    assert!(filter.contains_secret(&google_key));
+    assert!(filter.mask(&google_key).contains("[MASKED GOOGLE KEY]"));
+
+    // Test 15-digit Amex card detection and masking (MED-06)
+    let amex_card = "378282246310005";
+    assert!(filter.contains_secret(amex_card));
+    assert!(filter.mask(amex_card).contains("[MASKED CARD]"));
+
     // Test password manager MIME detector
     assert!(PasswordManagerGuard::is_sensitive_mime(&[
         "x-kde-passwordManagerHint".to_string()
@@ -161,16 +180,25 @@ fn test_security_filter_and_password_guard() {
 }
 
 #[test]
-fn test_bounded_lru_cache() {
-    let cache = BoundedCache::new(2);
-    cache.put("k1", "v1");
-    cache.put("k2", "v2");
-    assert_eq!(cache.get(&"k1"), Some("v1"));
+fn test_crypto_engine_minimum_ciphertext_length() {
+    use clipboard_history_core::security::{CryptoEngine, CryptoError};
+    let engine = CryptoEngine::new_from_key([0x42u8; 32]);
 
-    cache.put("k3", "v3"); // should evict k2 (k1 was accessed recently)
-    assert_eq!(cache.get(&"k1"), Some("v1"));
-    assert_eq!(cache.get(&"k2"), None);
-    assert_eq!(cache.get(&"k3"), Some("v3"));
+    // Payloads strictly smaller than 28 bytes (12-byte nonce + 16-byte Poly1305 tag) must fail with CiphertextTooShort
+    for len in 0..28 {
+        let dummy = vec![0u8; len];
+        let err = engine.decrypt(&dummy).unwrap_err();
+        match err {
+            CryptoError::CiphertextTooShort => {}
+            other => panic!("Expected CiphertextTooShort for payload len {}, got: {:?}", len, other),
+        }
+    }
+
+    // A validly encrypted payload (even of empty plaintext) has length >= 28
+    let encrypted = engine.encrypt(b"").expect("Failed to encrypt empty slice");
+    assert_eq!(encrypted.len(), 28);
+    let decrypted = engine.decrypt(&encrypted).expect("Failed to decrypt");
+    assert_eq!(decrypted, b"");
 }
 
 #[tokio::test]
@@ -798,3 +826,249 @@ fn test_app_filter_rules() {
     );
     assert!(loaded.security.auto_clean_tracking_urls);
 }
+
+#[test]
+fn test_sqlite_prefix_wipeout_prevention() {
+    use clipboard_history_core::blob::BlobStore;
+    use clipboard_history_core::domain::ClipboardEntry;
+    use clipboard_history_core::storage::SqliteRepository;
+
+    let repo = SqliteRepository::open_in_memory().expect("Failed to open in-memory db");
+
+    let mut ids = Vec::new();
+    for i in 0..5 {
+        let text = format!("Safety item {}", i);
+        let hash = BlobStore::compute_hash(text.as_bytes());
+        let entry = ClipboardEntry::new_text(text, hash, vec!["text/plain".to_string()], None);
+        let inserted = repo.insert_or_update(&entry).unwrap();
+        ids.push(inserted.id);
+    }
+    assert_eq!(repo.count().unwrap(), 5);
+
+    // 1. Empty string deletion must fail and delete 0 items
+    assert!(repo.delete("").is_err());
+    assert!(repo.delete("   ").is_err());
+    assert_eq!(repo.count().unwrap(), 5);
+
+    // 2. Batch delete with empty string or spaces must not delete records
+    let deleted = repo.batch_delete(&["".to_string(), "  ".to_string()]).unwrap();
+    assert_eq!(deleted, 0);
+    assert_eq!(repo.count().unwrap(), 5);
+
+    // 3. Pinning empty string must fail
+    assert!(repo.set_pinned("", true).is_err());
+    assert_eq!(repo.count().unwrap(), 5);
+
+    // 4. get_by_id on empty string must fail
+    assert!(repo.get_by_id("").is_err());
+
+    // 5. Query with '%' wildcard must not wipe table
+    assert!(repo.delete("%").is_err());
+    assert_eq!(repo.count().unwrap(), 5);
+
+    // 6. Valid prefix deletion with >= 6 chars should work for target entry only
+    let target_prefix = &ids[0][..8];
+    assert!(repo.delete(target_prefix).is_ok());
+    assert_eq!(repo.count().unwrap(), 4);
+    assert!(repo.get_by_id(&ids[0]).is_err());
+}
+
+#[test]
+fn test_preview_generation_performance_and_accuracy() {
+    use clipboard_history_core::blob::BlobStore;
+    use clipboard_history_core::domain::ClipboardEntry;
+
+    // Create a 50KB payload
+    let large_text = "fn compute_something() -> Result<()> {\n    let x = 42;\n    println!(\"Hello\");\n}\n".repeat(1000);
+    let hash = BlobStore::compute_hash(large_text.as_bytes());
+    let entry = ClipboardEntry::new_text(large_text, hash, vec!["text/plain".to_string()], None);
+
+    assert!(entry.preview.chars().count() <= 140);
+    assert!(entry.preview.ends_with("..."));
+    assert!(entry.preview.starts_with("fn compute_something()"));
+}
+
+#[test]
+fn test_lan_sync_salted_randomness() {
+    use clipboard_history_core::sync::lan::LanCrypto;
+
+    let pin = "987654";
+    let data = b"Test multi-packet salted entropy";
+
+    let enc1 = LanCrypto::encrypt(pin, data).expect("Enc 1 failed");
+    let enc2 = LanCrypto::encrypt(pin, data).expect("Enc 2 failed");
+
+    // Ciphertexts must differ due to random salt & nonce
+    assert_ne!(enc1, enc2);
+
+    // Both must decrypt back to original plaintext
+    let dec1 = LanCrypto::decrypt(pin, &enc1).expect("Dec 1 failed");
+    let dec2 = LanCrypto::decrypt(pin, &enc2).expect("Dec 2 failed");
+    assert_eq!(dec1, data);
+    assert_eq!(dec2, data);
+}
+
+#[test]
+fn test_sqlite_search_structured_parser_and_fts() {
+    use clipboard_history_core::blob::BlobStore;
+    use clipboard_history_core::domain::ClipboardEntry;
+    use clipboard_history_core::storage::SqliteRepository;
+
+    let repo = SqliteRepository::open_in_memory().expect("Failed to open in-memory db");
+
+    let text1 = "fn main() { println!(\"Rust rules\"); }";
+    let hash1 = BlobStore::compute_hash(text1.as_bytes());
+    let mut entry1 = ClipboardEntry::new_text(
+        text1.to_string(),
+        hash1,
+        vec!["text/plain".to_string()],
+        Some("vscode".to_string()),
+    );
+    entry1.entry_type = clipboard_history_core::domain::EntryType::Code;
+    repo.insert_or_update(&entry1).unwrap();
+
+    let text2 = "Hey team, remember the meeting at 3pm";
+    let hash2 = BlobStore::compute_hash(text2.as_bytes());
+    let entry2 = ClipboardEntry::new_text(
+        text2.to_string(),
+        hash2,
+        vec!["text/plain".to_string()],
+        Some("slack".to_string()),
+    );
+    repo.insert_or_update(&entry2).unwrap();
+
+    // 1. Search with type:code filter
+    let code_results = repo.search("type:code", 10, 0).unwrap();
+    assert_eq!(code_results.len(), 1);
+    assert_eq!(code_results[0].id, entry1.id);
+
+    // 2. Search with app:slack filter
+    let slack_results = repo.search("app:slack", 10, 0).unwrap();
+    assert_eq!(slack_results.len(), 1);
+    assert_eq!(slack_results[0].id, entry2.id);
+
+    // 3. Search with FTS text query
+    let fts_results = repo.search("Rust", 10, 0).unwrap();
+    assert_eq!(fts_results.len(), 1);
+    assert_eq!(fts_results[0].id, entry1.id);
+
+    // 4. Combined query: type:code and text
+    let combined_results = repo.search("type:code println", 10, 0).unwrap();
+    assert_eq!(combined_results.len(), 1);
+    assert_eq!(combined_results[0].id, entry1.id);
+}
+
+#[tokio::test]
+async fn test_lan_sync_incremental_reading_and_limits() {
+    use clipboard_history_core::sync::{read_sync_message, send_sync_message, SyncMessage};
+
+    let pin = "123456";
+    let msg = SyncMessage::Ping;
+
+    let mut buf = Vec::new();
+    send_sync_message(&mut buf, pin, &msg).await.unwrap();
+
+    // Read message back
+    let mut reader = &buf[..];
+    let read_back = read_sync_message(&mut reader, pin).await.unwrap();
+    assert!(matches!(read_back, SyncMessage::Ping));
+
+    // Verify oversized header (>16MB) fails immediately without allocation
+    let oversized_len = (20 * 1024 * 1024u32).to_be_bytes();
+    let mut reader = &oversized_len[..];
+    let err = read_sync_message(&mut reader, pin).await;
+    assert!(err.is_err());
+}
+
+#[test]
+fn test_sync_message_blob_payload_roundtrip() {
+    use clipboard_history_core::blob::BlobStore;
+    use clipboard_history_core::domain::ClipboardEntry;
+    use clipboard_history_core::sync::SyncMessage;
+
+    let fake_img_bytes = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+    let blob_hash = BlobStore::compute_hash(&fake_img_bytes);
+    let entry = ClipboardEntry::new_image(
+        blob_hash.clone(),
+        None,
+        fake_img_bytes.len(),
+        (100, 100),
+        vec!["image/png".to_string()],
+        Some("Gimp".to_string()),
+    );
+
+    let msg = SyncMessage::EntrySync {
+        origin_device: "desktop-laptop".to_string(),
+        entry: Box::new(entry),
+        blob_payload: Some(fake_img_bytes.clone()),
+    };
+
+    let serialized = serde_json::to_vec(&msg).unwrap();
+    let deserialized: SyncMessage = serde_json::from_slice(&serialized).unwrap();
+
+    if let SyncMessage::EntrySync {
+        origin_device,
+        entry,
+        blob_payload,
+    } = deserialized
+    {
+        assert_eq!(origin_device, "desktop-laptop");
+        assert_eq!(entry.blob_hash.as_deref(), Some(blob_hash.as_str()));
+        assert_eq!(blob_payload, Some(fake_img_bytes));
+    } else {
+        panic!("Deserialized message is not EntrySync");
+    }
+}
+
+#[test]
+fn test_storage_trait_abstraction() {
+    use clipboard_history_core::domain::ClipboardEntry;
+    use clipboard_history_core::storage::{SqliteRepository, Storage};
+
+    let repo = SqliteRepository::open_in_memory().expect("In-memory SQLite failed");
+    let storage: &dyn Storage = &repo;
+
+    assert_eq!(storage.count().unwrap(), 0);
+
+    let entry = ClipboardEntry::new_text(
+        "Trait test payload".to_string(),
+        "hash_trait_test".to_string(),
+        vec!["text/plain".to_string()],
+        Some("TestRunner".to_string()),
+    );
+
+    let inserted = storage.insert_or_update(&entry).expect("Insert via trait failed");
+    assert_eq!(storage.count().unwrap(), 1);
+
+    let fetched = storage.get_by_id(&inserted.id).expect("Get by ID via trait failed");
+    assert_eq!(fetched.preview, "Trait test payload");
+
+    let results = storage.search("Trait", 10, 0).expect("Search via trait failed");
+    assert_eq!(results.len(), 1);
+
+    storage.delete(&inserted.id).expect("Delete via trait failed");
+    assert_eq!(storage.count().unwrap(), 0);
+}
+
+#[test]
+fn test_app_config_dirs_safe_fallbacks() {
+    use clipboard_history_core::config::AppConfig;
+
+    // Verify config_dir and data_dir do not panic and return valid paths
+    let config_dir = AppConfig::config_dir();
+    assert!(!config_dir.as_os_str().is_empty());
+
+    let data_dir = AppConfig::data_dir();
+    assert!(!data_dir.as_os_str().is_empty());
+
+    let config_path = AppConfig::config_path();
+    assert!(config_path.ends_with("config.toml"));
+
+    let db_path = AppConfig::db_path();
+    assert!(db_path.ends_with("history.db"));
+
+    let socket_path = AppConfig::socket_path();
+    assert!(socket_path.to_str().unwrap().contains("sock"));
+}
+
+

@@ -100,6 +100,8 @@ impl BlobStore {
     pub fn cleanup_orphans(&self, active_hashes: &[String]) -> Result<usize> {
         let mut deleted = 0;
         let entries = fs::read_dir(&self.root_dir)?;
+        let active_set: std::collections::HashSet<&str> =
+            active_hashes.iter().map(|s| s.as_str()).collect();
 
         for entry in entries {
             let entry = entry?;
@@ -115,7 +117,7 @@ impl BlobStore {
                 }
 
                 if let Some(hash) = filename.strip_suffix(".blob") {
-                    if !active_hashes.iter().any(|h| h == hash) {
+                    if !active_set.contains(hash) {
                         debug!("Removing orphaned blob: {}", filename);
                         if fs::remove_file(&path).is_ok() {
                             deleted += 1;

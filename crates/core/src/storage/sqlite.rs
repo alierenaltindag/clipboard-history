@@ -1,5 +1,6 @@
 use crate::domain::{ClipboardEntry, EntryType, Snippet};
 use crate::error::{CoreError, Result};
+use crate::search::parser::ParsedSearchQuery;
 use crate::storage::schema::INITIAL_SCHEMA;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
@@ -35,7 +36,7 @@ impl SqliteRepository {
             }
         }
 
-        conn.execute_batch(INITIAL_SCHEMA)?;
+        Self::init_connection(&conn)?;
         info!("Initialized SQLite database at {}", path.display());
 
         Ok(Self {
@@ -50,15 +51,33 @@ impl SqliteRepository {
 
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        conn.execute_batch(INITIAL_SCHEMA)?;
+        Self::init_connection(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             db_path: PathBuf::from(":memory:"),
         })
     }
 
+    fn init_connection(conn: &Connection) -> Result<()> {
+        let _ = conn.pragma_update(None, "journal_mode", "WAL");
+        let _ = conn.pragma_update(None, "synchronous", "NORMAL");
+        let _ = conn.pragma_update(None, "mmap_size", 268435456i64);
+        let _ = conn.pragma_update(None, "temp_store", "MEMORY");
+        let _ = conn.pragma_update(None, "foreign_keys", "ON");
+        conn.execute_batch(INITIAL_SCHEMA)?;
+        Ok(())
+    }
+
+    #[inline]
+    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(|poisoned| {
+            tracing::warn!("Recovered from poisoned SQLite connection mutex");
+            poisoned.into_inner()
+        })
+    }
+
     pub fn insert_or_update(&self, entry: &ClipboardEntry) -> Result<ClipboardEntry> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
 
         // Check if content_hash already exists
         let existing_id: Option<String> = conn
@@ -115,22 +134,46 @@ impl SqliteRepository {
     }
 
     pub fn get_by_id(&self, id: &str) -> Result<ClipboardEntry> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            r#"
-            SELECT id, content_hash, entry_type, preview, text_content, html_content,
-                   blob_hash, thumbnail_blob_hash, mime_types, size_bytes,
-                   created_at, last_used_at, is_pinned, source_app
-            FROM entries WHERE id = ?1 OR id LIKE ?1 || '%' LIMIT 1
-            "#,
-        )?;
+        let trimmed = id.trim();
+        if trimmed.is_empty() {
+            return Err(CoreError::NotFound("Empty ID".to_string()));
+        }
 
-        let entry = stmt.query_row(params![id], Self::map_row)?;
+        let conn = self.conn();
+        let is_prefix = trimmed.len() >= 6 && trimmed.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+
+        let mut stmt = if is_prefix {
+            let pattern = format!("{}%", trimmed.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+            let mut s = conn.prepare(
+                r#"
+                SELECT id, content_hash, entry_type, preview, text_content, html_content,
+                       blob_hash, thumbnail_blob_hash, mime_types, size_bytes,
+                       created_at, last_used_at, is_pinned, source_app
+                FROM entries
+                WHERE id = ?1 OR id LIKE ?2 ESCAPE '\'
+                ORDER BY last_used_at DESC
+                LIMIT 1
+                "#,
+            )?;
+            let entry = s.query_row(params![trimmed, pattern], Self::map_row)?;
+            return Ok(entry);
+        } else {
+            conn.prepare(
+                r#"
+                SELECT id, content_hash, entry_type, preview, text_content, html_content,
+                       blob_hash, thumbnail_blob_hash, mime_types, size_bytes,
+                       created_at, last_used_at, is_pinned, source_app
+                FROM entries WHERE id = ?1 LIMIT 1
+                "#,
+            )?
+        };
+
+        let entry = stmt.query_row(params![trimmed], Self::map_row)?;
         Ok(entry)
     }
 
     pub fn get_by_hash(&self, content_hash: &str) -> Result<Option<ClipboardEntry>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             r#"
             SELECT id, content_hash, entry_type, preview, text_content, html_content,
@@ -154,7 +197,7 @@ impl SqliteRepository {
         entry_type_filter: Option<EntryType>,
         pinned_only: bool,
     ) -> Result<Vec<ClipboardEntry>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut query = String::from(
             r#"
             SELECT id, content_hash, entry_type, preview, text_content, html_content,
@@ -199,22 +242,61 @@ impl SqliteRepository {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<ClipboardEntry>> {
-        let conn = self.conn.lock().unwrap();
-        let pattern = format!("%{}%", query_text);
+        let parsed = ParsedSearchQuery::parse(query_text);
+        let conn = self.conn();
 
-        let mut stmt = conn.prepare(
+        let mut query = String::from(
             r#"
             SELECT id, content_hash, entry_type, preview, text_content, html_content,
                    blob_hash, thumbnail_blob_hash, mime_types, size_bytes,
                    created_at, last_used_at, is_pinned, source_app
             FROM entries
-            WHERE preview LIKE ?1 OR text_content LIKE ?1 OR source_app LIKE ?1
-            ORDER BY is_pinned DESC, last_used_at DESC
-            LIMIT ?2 OFFSET ?3
+            WHERE 1=1
             "#,
-        )?;
+        );
+        let mut param_values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
-        let rows = stmt.query_map(params![pattern, limit as i64, offset as i64], Self::map_row)?;
+        if let Some(et) = parsed.entry_type {
+            query.push_str(" AND entry_type = ?");
+            param_values.push(Box::new(et.to_string()));
+        }
+
+        if let Some(app) = parsed.source_app {
+            query.push_str(" AND LOWER(coalesce(source_app, '')) LIKE ?");
+            param_values.push(Box::new(format!("%{}%", app.to_lowercase())));
+        }
+
+        if let Some(pinned) = parsed.is_pinned {
+            query.push_str(" AND is_pinned = ?");
+            param_values.push(Box::new(if pinned { 1 } else { 0 }));
+        }
+
+        if parsed.is_snippet {
+            query.push_str(" AND source_app = 'Snippet'");
+        }
+
+        let text = parsed.text_query.trim();
+        if !text.is_empty() {
+            let fts_token = format!("\"{}\"*", text.replace('"', "\"\""));
+            let pattern = format!("%{}%", text);
+            query.push_str(
+                " AND (id IN (SELECT id FROM entries_fts WHERE entries_fts MATCH ?) OR preview LIKE ? OR text_content LIKE ? OR source_app LIKE ?)"
+            );
+            param_values.push(Box::new(fts_token));
+            param_values.push(Box::new(pattern.clone()));
+            param_values.push(Box::new(pattern.clone()));
+            param_values.push(Box::new(pattern));
+        }
+
+        query.push_str(" ORDER BY is_pinned DESC, last_used_at DESC LIMIT ? OFFSET ?");
+        param_values.push(Box::new(limit as i64));
+        param_values.push(Box::new(offset as i64));
+
+        let mut stmt = conn.prepare(&query)?;
+        let params_slice: Vec<&dyn rusqlite::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
+
+        let rows = stmt.query_map(&params_slice[..], Self::map_row)?;
 
         let mut results = Vec::new();
         for r in rows {
@@ -225,11 +307,26 @@ impl SqliteRepository {
     }
 
     pub fn set_pinned(&self, id: &str, pinned: bool) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        let affected = conn.execute(
-            "UPDATE entries SET is_pinned = ?1 WHERE id = ?2 OR id LIKE ?2 || '%'",
-            params![if pinned { 1 } else { 0 }, id],
-        )?;
+        let trimmed = id.trim();
+        if trimmed.is_empty() {
+            return Err(CoreError::NotFound("Empty ID".to_string()));
+        }
+        let conn = self.conn();
+        let is_prefix = trimmed.len() >= 6 && trimmed.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+        let flag = if pinned { 1 } else { 0 };
+
+        let affected = if is_prefix {
+            let pattern = format!("{}%", trimmed.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+            conn.execute(
+                "UPDATE entries SET is_pinned = ?1 WHERE id = ?2 OR id LIKE ?3 ESCAPE '\\'",
+                params![flag, trimmed, pattern],
+            )?
+        } else {
+            conn.execute(
+                "UPDATE entries SET is_pinned = ?1 WHERE id = ?2",
+                params![flag, trimmed],
+            )?
+        };
 
         if affected == 0 {
             Err(CoreError::NotFound(id.to_string()))
@@ -239,11 +336,26 @@ impl SqliteRepository {
     }
 
     pub fn delete(&self, id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        let affected = conn.execute(
-            "DELETE FROM entries WHERE id = ?1 OR id LIKE ?1 || '%'",
-            params![id],
-        )?;
+        let trimmed = id.trim();
+        if trimmed.is_empty() {
+            return Err(CoreError::NotFound("Empty ID".to_string()));
+        }
+        let conn = self.conn();
+        let is_prefix = trimmed.len() >= 6 && trimmed.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+
+        let affected = if is_prefix {
+            let pattern = format!("{}%", trimmed.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+            conn.execute(
+                "DELETE FROM entries WHERE id = ?1 OR id LIKE ?2 ESCAPE '\\'",
+                params![trimmed, pattern],
+            )?
+        } else {
+            conn.execute(
+                "DELETE FROM entries WHERE id = ?1",
+                params![trimmed],
+            )?
+        };
+
         if affected == 0 {
             Err(CoreError::NotFound(id.to_string()))
         } else {
@@ -252,34 +364,66 @@ impl SqliteRepository {
     }
 
     pub fn batch_delete(&self, ids: &[String]) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
-        let mut deleted = 0;
-        for id in ids {
-            let affected = conn.execute(
-                "DELETE FROM entries WHERE id = ?1 OR id LIKE ?1 || '%'",
-                params![id],
-            )?;
-            deleted += affected;
+        if ids.is_empty() {
+            return Ok(0);
         }
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let mut deleted = 0;
+        {
+            let mut exact_stmt = tx.prepare_cached("DELETE FROM entries WHERE id = ?1")?;
+            let mut prefix_stmt = tx.prepare_cached("DELETE FROM entries WHERE id = ?1 OR id LIKE ?2 ESCAPE '\\'")?;
+
+            for id in ids {
+                let trimmed = id.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let is_prefix = trimmed.len() >= 6 && trimmed.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+                if is_prefix {
+                    let pattern = format!("{}%", trimmed.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+                    deleted += prefix_stmt.execute(params![trimmed, pattern])?;
+                } else {
+                    deleted += exact_stmt.execute(params![trimmed])?;
+                }
+            }
+        }
+        tx.commit()?;
         Ok(deleted)
     }
 
     pub fn batch_set_pinned(&self, ids: &[String], pinned: bool) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
         let mut updated = 0;
         let flag = if pinned { 1 } else { 0 };
-        for id in ids {
-            let affected = conn.execute(
-                "UPDATE entries SET is_pinned = ?1 WHERE id = ?2 OR id LIKE ?2 || '%'",
-                params![flag, id],
-            )?;
-            updated += affected;
+        {
+            let mut exact_stmt = tx.prepare_cached("UPDATE entries SET is_pinned = ?1 WHERE id = ?2")?;
+            let mut prefix_stmt = tx.prepare_cached("UPDATE entries SET is_pinned = ?1 WHERE id = ?2 OR id LIKE ?3 ESCAPE '\\'")?;
+
+            for id in ids {
+                let trimmed = id.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let is_prefix = trimmed.len() >= 6 && trimmed.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+                if is_prefix {
+                    let pattern = format!("{}%", trimmed.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+                    updated += prefix_stmt.execute(params![flag, trimmed, pattern])?;
+                } else {
+                    updated += exact_stmt.execute(params![flag, trimmed])?;
+                }
+            }
         }
+        tx.commit()?;
         Ok(updated)
     }
 
     pub fn clear(&self, include_pinned: bool) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let affected = if include_pinned {
             conn.execute("DELETE FROM entries", [])?
         } else {
@@ -289,13 +433,13 @@ impl SqliteRepository {
     }
 
     pub fn count(&self) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))?;
         Ok(count as usize)
     }
 
     pub fn evict_expired(&self, cutoff_date: DateTime<Utc>) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let affected = conn.execute(
             "DELETE FROM entries WHERE is_pinned = 0 AND last_used_at < ?1",
             params![cutoff_date.to_rfc3339()],
@@ -304,7 +448,7 @@ impl SqliteRepository {
     }
 
     pub fn evict_capacity(&self, max_capacity: usize) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let total_unpinned: i64 = conn.query_row(
             "SELECT COUNT(*) FROM entries WHERE is_pinned = 0",
             [],
@@ -333,7 +477,7 @@ impl SqliteRepository {
     }
 
     pub fn get_all_blob_hashes(&self) -> Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             r#"
             SELECT blob_hash FROM entries WHERE blob_hash IS NOT NULL
@@ -351,13 +495,13 @@ impl SqliteRepository {
     }
 
     pub fn vacuum(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute("VACUUM", [])?;
         Ok(())
     }
 
     pub fn insert_snippet(&self, snippet: &Snippet) -> Result<Snippet> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute(
             "INSERT INTO snippets (id, label, content, category, created_at, last_used_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -374,7 +518,7 @@ impl SqliteRepository {
     }
 
     pub fn update_snippet(&self, snippet: &Snippet) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute(
             "UPDATE snippets SET label = ?1, content = ?2, category = ?3, last_used_at = ?4 WHERE id = ?5",
             params![
@@ -389,13 +533,13 @@ impl SqliteRepository {
     }
 
     pub fn delete_snippet(&self, id: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let rows = conn.execute("DELETE FROM snippets WHERE id = ?1", params![id])?;
         Ok(rows > 0)
     }
 
     pub fn get_snippet(&self, id: &str) -> Result<Option<Snippet>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, label, content, category, created_at, last_used_at FROM snippets WHERE id = ?1",
         )?;
@@ -408,7 +552,7 @@ impl SqliteRepository {
     }
 
     pub fn list_snippets(&self, category: Option<&str>) -> Result<Vec<Snippet>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut snippets = Vec::new();
         if let Some(cat) = category {
             let mut stmt = conn.prepare(
@@ -431,7 +575,7 @@ impl SqliteRepository {
     }
 
     pub fn touch_snippet(&self, id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "UPDATE snippets SET last_used_at = ?1 WHERE id = ?2",
@@ -506,5 +650,123 @@ impl SqliteRepository {
             is_pinned: is_pinned_int != 0,
             source_app,
         })
+    }
+}
+
+impl crate::storage::Storage for SqliteRepository {
+    fn insert_or_update(&self, entry: &ClipboardEntry) -> Result<ClipboardEntry> {
+        self.insert_or_update(entry)
+    }
+
+    fn get_by_id(&self, id: &str) -> Result<ClipboardEntry> {
+        self.get_by_id(id)
+    }
+
+    fn get_by_hash(&self, content_hash: &str) -> Result<Option<ClipboardEntry>> {
+        self.get_by_hash(content_hash)
+    }
+
+    fn list(
+        &self,
+        limit: usize,
+        offset: usize,
+        filter: Option<EntryType>,
+        pinned_only: bool,
+    ) -> Result<Vec<ClipboardEntry>> {
+        self.list(limit, offset, filter, pinned_only)
+    }
+
+    fn search(&self, query: &str, limit: usize, offset: usize) -> Result<Vec<ClipboardEntry>> {
+        self.search(query, limit, offset)
+    }
+
+    fn set_pinned(&self, id: &str, pinned: bool) -> Result<()> {
+        self.set_pinned(id, pinned)
+    }
+
+    fn delete(&self, id: &str) -> Result<()> {
+        self.delete(id)
+    }
+
+    fn batch_delete(&self, ids: &[String]) -> Result<usize> {
+        self.batch_delete(ids)
+    }
+
+    fn batch_set_pinned(&self, ids: &[String], pinned: bool) -> Result<usize> {
+        self.batch_set_pinned(ids, pinned)
+    }
+
+    fn clear(&self, include_pinned: bool) -> Result<usize> {
+        self.clear(include_pinned)
+    }
+
+    fn count(&self) -> Result<usize> {
+        self.count()
+    }
+
+    fn evict_expired(&self, cutoff_date: chrono::DateTime<chrono::Utc>) -> Result<usize> {
+        self.evict_expired(cutoff_date)
+    }
+
+    fn evict_capacity(&self, max_capacity: usize) -> Result<usize> {
+        self.evict_capacity(max_capacity)
+    }
+
+    fn get_all_blob_hashes(&self) -> Result<Vec<String>> {
+        self.get_all_blob_hashes()
+    }
+
+    fn vacuum(&self) -> Result<()> {
+        self.vacuum()
+    }
+
+    fn insert_snippet(&self, snippet: &Snippet) -> Result<Snippet> {
+        self.insert_snippet(snippet)
+    }
+
+    fn update_snippet(&self, snippet: &Snippet) -> Result<()> {
+        self.update_snippet(snippet)
+    }
+
+    fn delete_snippet(&self, id: &str) -> Result<bool> {
+        self.delete_snippet(id)
+    }
+
+    fn get_snippet(&self, id: &str) -> Result<Option<Snippet>> {
+        self.get_snippet(id)
+    }
+
+    fn list_snippets(&self, category: Option<&str>) -> Result<Vec<Snippet>> {
+        self.list_snippets(category)
+    }
+
+    fn touch_snippet(&self, id: &str) -> Result<()> {
+        self.touch_snippet(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sqlite_mutex_poison_recovery() {
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        let conn_arc = repo.conn.clone();
+
+        // Deliberately poison the mutex
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = conn_arc.lock().unwrap();
+            panic!("Intentional test panic while holding connection lock");
+        }));
+
+        assert!(conn_arc.is_poisoned(), "Mutex must be poisoned");
+
+        // SqliteRepository operations must recover and succeed
+        let count = repo.count().expect("repo.count() must recover from poisoned mutex");
+        assert_eq!(count, 0);
+
+        let vacuum = repo.vacuum();
+        assert!(vacuum.is_ok(), "repo.vacuum() must recover from poisoned mutex");
     }
 }

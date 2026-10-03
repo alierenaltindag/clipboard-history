@@ -18,6 +18,8 @@ pub enum SyncMessage {
     EntrySync {
         origin_device: String,
         entry: Box<ClipboardEntry>,
+        #[serde(default)]
+        blob_payload: Option<Vec<u8>>,
     },
     /// Ping/pong heartbeat
     Ping,

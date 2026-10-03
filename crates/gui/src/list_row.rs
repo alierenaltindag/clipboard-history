@@ -8,6 +8,7 @@ use gtk4::{Box as GtkBox, Button, Image, Label, ListBoxRow, Orientation};
 #[cfg(feature = "gtk")]
 pub struct EntryRow {
     pub row: ListBoxRow,
+    #[allow(dead_code)]
     pub entry: ClipboardEntry,
     pub pin_btn: Button,
     pub delete_btn: Button,

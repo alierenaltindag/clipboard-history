@@ -67,5 +67,6 @@ impl ClipboardApp {
     pub fn run(&self) -> i32 {
         self.app
             .run_with_args(&std::env::args().collect::<Vec<_>>())
+            .into()
     }
 }

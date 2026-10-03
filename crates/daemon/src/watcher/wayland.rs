@@ -39,10 +39,14 @@ impl WaylandWatcher {
         let mut html = None;
         let mut image_data = None;
 
-        if mime_types.iter().any(|m| m.starts_with("image/")) {
-            // Fetch image bytes
-            if let Ok(output) = Command::new("wl-paste").arg("--no-newline").output().await {
-                if !output.stdout.is_empty() {
+        if let Some(img_mime) = mime_types.iter().find(|m| m.starts_with("image/")) {
+            // Fetch image bytes with explicit MIME type
+            if let Ok(output) = Command::new("wl-paste")
+                .args(["--type", img_mime, "--no-newline"])
+                .output()
+                .await
+            {
+                if output.status.success() && !output.stdout.is_empty() {
                     image_data = Some(output.stdout);
                 }
             }
@@ -54,17 +58,43 @@ impl WaylandWatcher {
                 .output()
                 .await
             {
-                if let Ok(s) = String::from_utf8(output.stdout) {
-                    html = Some(s);
+                if output.status.success() {
+                    if let Ok(s) = String::from_utf8(output.stdout) {
+                        html = Some(s);
+                    }
                 }
             }
         }
 
-        // Fetch text
-        if let Ok(output) = Command::new("wl-paste").arg("--no-newline").output().await {
-            if let Ok(s) = String::from_utf8(output.stdout) {
-                if !s.is_empty() {
-                    text = Some(s);
+        // Fetch text with explicit text type to avoid reading raw binary images as utf-8
+        if let Some(text_mime) = mime_types.iter().find(|m| {
+            m.starts_with("text/plain")
+                || *m == "UTF8_STRING"
+                || *m == "STRING"
+                || *m == "text"
+        }) {
+            if let Ok(output) = Command::new("wl-paste")
+                .args(["--type", text_mime, "--no-newline"])
+                .output()
+                .await
+            {
+                if output.status.success() {
+                    if let Ok(s) = String::from_utf8(output.stdout) {
+                        if !s.is_empty() {
+                            text = Some(s);
+                        }
+                    }
+                }
+            }
+        } else if image_data.is_none() && html.is_none() {
+            // Fallback for generic text if no image or html
+            if let Ok(output) = Command::new("wl-paste").arg("--no-newline").output().await {
+                if output.status.success() {
+                    if let Ok(s) = String::from_utf8(output.stdout) {
+                        if !s.is_empty() {
+                            text = Some(s);
+                        }
+                    }
                 }
             }
         }
@@ -124,6 +154,7 @@ impl ClipboardWatcher for WaylandWatcher {
             }
 
             let _ = child.kill().await;
+            let _ = child.wait().await;
             warn!("`wl-paste --watch` exited unexpectedly. Restarting in 1s...");
             sleep(Duration::from_secs(1)).await;
         }

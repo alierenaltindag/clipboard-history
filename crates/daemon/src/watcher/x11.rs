@@ -84,21 +84,47 @@ impl ClipboardWatcher for X11Watcher {
     async fn run(&mut self, sender: Sender<RawClipboardEvent>) -> Result<()> {
         info!("Starting native X11 XFixes clipboard watcher");
 
-        let (conn, screen_num) = RustConnection::connect(None).map_err(x11_err)?;
+        loop {
+            let (conn, screen_num) = match RustConnection::connect(None) {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("Failed to connect to X11 server: {}. Retrying in 2s...", e);
+                    sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
 
-        let root = conn.setup().roots[screen_num].root;
-        let root_depth = conn.setup().roots[screen_num].root_depth;
-        let root_visual = conn.setup().roots[screen_num].root_visual;
+            let screen = match conn.setup().roots.get(screen_num).or_else(|| conn.setup().roots.first()) {
+                Some(s) => s,
+                None => {
+                    error!("No valid X11 screens found. Retrying in 2s...");
+                    sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
 
-        let version = conn.xfixes_query_version(5, 0).map_err(x11_err)?;
-        let _ = version.reply();
+            let root = screen.root;
+            let root_depth = screen.root_depth;
+            let root_visual = screen.root_visual;
 
-        let clipboard_atom = conn
-            .intern_atom(false, b"CLIPBOARD")
-            .map_err(x11_err)?
-            .reply()
-            .map_err(x11_err)?
-            .atom;
+            let version = match conn.xfixes_query_version(5, 0) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("XFixes query failed: {}. Retrying in 2s...", e);
+                    sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
+            let _ = version.reply();
+
+            let clipboard_atom = match conn.intern_atom(false, b"CLIPBOARD").map_err(x11_err).and_then(|r| r.reply().map_err(x11_err)) {
+                Ok(reply) => reply.atom,
+                Err(e) => {
+                    warn!("Failed to intern CLIPBOARD atom: {}. Retrying in 2s...", e);
+                    sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
 
         let targets_atom = conn
             .intern_atom(false, b"TARGETS")
@@ -166,21 +192,26 @@ impl ClipboardWatcher for X11Watcher {
 
         debug!("XFixes clipboard listener successfully registered");
 
-        // Spawn blocking loop in tokio task to prevent blocking async runtime
+        // Spawn blocking loop in tokio task to prevent blocking async runtime and allow clean tracking/joining
         let (x_tx, mut x_rx) = tokio::sync::mpsc::channel::<()>(16);
 
-        std::thread::spawn(move || loop {
-            match conn.wait_for_event() {
-                Ok(Event::XfixesSelectionNotify(notify)) => {
-                    if notify.selection == clipboard_atom {
-                        debug!("XFixes SelectionNotify received");
-                        let _ = x_tx.blocking_send(());
+        let listener_handle = tokio::task::spawn_blocking(move || {
+            loop {
+                match conn.wait_for_event() {
+                    Ok(Event::XfixesSelectionNotify(notify)) => {
+                        if notify.selection == clipboard_atom {
+                            debug!("XFixes SelectionNotify received");
+                            if x_tx.blocking_send(()).is_err() {
+                                debug!("X11 event receiver dropped, terminating worker thread");
+                                break;
+                            }
+                        }
                     }
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    error!("X11 connection error: {}", e);
-                    break;
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!("X11 connection error: {}", e);
+                        break;
+                    }
                 }
             }
         });
@@ -298,8 +329,10 @@ impl ClipboardWatcher for X11Watcher {
                 };
                 let _ = sender.send(event).await;
             }
+            }
+            listener_handle.abort();
+            warn!("X11 event loop disconnected. Re-establishing connection in 1s...");
+            sleep(Duration::from_secs(1)).await;
         }
-
-        Ok(())
     }
 }

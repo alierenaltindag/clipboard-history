@@ -68,7 +68,13 @@ impl FuzzySearchEngine {
                 let mut best_score = self.matcher.fuzzy_match(&entry.preview, match_target);
 
                 if let Some(text) = &entry.text_content {
-                    let text_score = self.matcher.fuzzy_match(text, match_target);
+                    // Bound the fuzzy match search candidate to the first 1000 characters
+                    // to prevent UI thread freezes on multi-megabyte payloads
+                    let text_candidate = text
+                        .char_indices()
+                        .nth(1000)
+                        .map_or(text.as_str(), |(idx, _)| &text[..idx]);
+                    let text_score = self.matcher.fuzzy_match(text_candidate, match_target);
                     best_score = match (best_score, text_score) {
                         (Some(s1), Some(s2)) => Some(s1.max(s2)),
                         (s1, s2) => s1.or(s2),

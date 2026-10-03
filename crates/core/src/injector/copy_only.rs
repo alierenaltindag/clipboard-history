@@ -10,6 +10,12 @@ impl CopyOnlyInjector {
     }
 }
 
+impl Default for CopyOnlyInjector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl PasteInjector for CopyOnlyInjector {
     fn name(&self) -> &'static str {

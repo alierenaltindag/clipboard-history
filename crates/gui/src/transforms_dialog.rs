@@ -31,7 +31,10 @@ pub fn show_transforms_popover(
     title.add_css_class("heading");
     container.append(&title);
 
-    let text_content = entry.preview.clone();
+    let text_content = entry
+        .text_content
+        .clone()
+        .unwrap_or_else(|| entry.preview.clone());
 
     // 1. Color Swatch Section if applicable
     if let Some(color) = TextTransforms::detect_color(&text_content) {
@@ -80,7 +83,7 @@ pub fn show_transforms_popover(
 
         let col_clone = color.clone();
         let win = main_window.clone();
-        let ap = config.paste.auto_paste;
+        let _ap = config.paste.auto_paste;
         hex_btn.connect_clicked(move |_| {
             if let Some(display) = gdk4::Display::default() {
                 display.clipboard().set_text(&col_clone.to_hex_string());
@@ -142,7 +145,7 @@ pub fn show_transforms_popover(
             let hash = hash_cloned.clone();
             let win = win_ocr.clone();
             glib::MainContext::default().spawn_local(async move {
-                if let Ok(mut client) = clipboard_history_core::ipc::IpcClient::connect().await {
+                if let Ok(client) = clipboard_history_core::ipc::IpcClient::connect().await {
                     match client
                         .send(&clipboard_history_core::ipc::IpcRequest::PerformOcr {
                             blob_hash: hash,
@@ -246,7 +249,7 @@ pub fn show_transforms_popover(
     queue_btn.connect_clicked(move |_| {
         let id = id_for_queue.clone();
         glib::MainContext::default().spawn_local(async move {
-            if let Ok(mut client) = clipboard_history_core::ipc::IpcClient::connect().await {
+            if let Ok(client) = clipboard_history_core::ipc::IpcClient::connect().await {
                 let _ = client
                     .send(&clipboard_history_core::ipc::IpcRequest::EnqueueItems { ids: vec![id] })
                     .await;
@@ -408,12 +411,16 @@ pub fn show_qr_dialog(parent: &Window, text: &str) {
 
     match TextTransforms::generate_qr_svg(text) {
         Ok(svg_data) => {
-            let stream =
-                gio::MemoryInputStream::from_bytes(&glib::Bytes::from(svg_data.as_bytes()));
-            let picture = gtk4::Picture::for_input_stream(&stream);
-            picture.set_can_shrink(true);
-            picture.set_size_request(240, 240);
-            root.append(&picture);
+            let bytes = glib::Bytes::from(svg_data.as_bytes());
+            if let Ok(texture) = gdk4::Texture::from_bytes(&bytes) {
+                let picture = gtk4::Picture::for_paintable(&texture);
+                picture.set_can_shrink(true);
+                picture.set_size_request(240, 240);
+                root.append(&picture);
+            } else {
+                let err_label = Label::new(Some("Failed to render QR SVG paintable"));
+                root.append(&err_label);
+            }
         }
         Err(e) => {
             let err_label = Label::new(Some(&format!("Could not generate QR: {}", e)));

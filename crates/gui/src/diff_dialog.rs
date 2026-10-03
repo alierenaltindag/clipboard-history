@@ -3,7 +3,7 @@
 use clipboard_history_core::transforms::{DiffEngine, DiffResult, DiffTag};
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, Button, Label, Orientation, ScrolledWindow, TextBuffer, TextView, Window,
+    Align, Box as GtkBox, Button, Label, Orientation, ScrolledWindow, TextView, Window,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -165,16 +165,18 @@ impl DiffDialog {
 
             for line in &res.lines {
                 let (prefix, tag_ref) = match line.tag {
-                    DiffTag::Insert => ("+ ", &tag_insert),
-                    DiffTag::Delete => ("- ", &tag_delete),
-                    DiffTag::Equal => ("  ", &tag_equal),
+                    DiffTag::Insert => ("+ ", tag_insert.as_ref()),
+                    DiffTag::Delete => ("- ", tag_delete.as_ref()),
+                    DiffTag::Equal => ("  ", tag_equal.as_ref()),
                 };
 
                 let line_str = format!("{}{}\n", prefix, line.text);
                 let start_offset = iter.offset();
                 buffer_clone.insert(&mut iter, &line_str);
                 let start_iter = buffer_clone.iter_at_offset(start_offset);
-                buffer_clone.apply_tag(tag_ref, &start_iter, &iter);
+                if let Some(tag) = tag_ref {
+                    buffer_clone.apply_tag(tag, &start_iter, &iter);
+                }
             }
 
             st.2 = res;

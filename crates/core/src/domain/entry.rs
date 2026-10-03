@@ -192,18 +192,35 @@ impl ClipboardEntry {
     }
 
     fn generate_text_preview(text: &str) -> String {
-        let single_line = text
-            .lines()
-            .map(|l| l.trim())
-            .filter(|l| !l.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
-        let chars: Vec<char> = single_line.chars().collect();
-        if chars.len() > 140 {
-            let truncated: String = chars[..137].iter().collect();
-            format!("{}...", truncated)
+        let mut preview = String::with_capacity(144);
+        let mut char_count = 0;
+        let mut first_word = true;
+
+        for line in text.lines().take(50) {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if !first_word {
+                preview.push(' ');
+                char_count += 1;
+            }
+            first_word = false;
+
+            for ch in trimmed.chars() {
+                if char_count >= 137 {
+                    preview.push_str("...");
+                    return preview;
+                }
+                preview.push(ch);
+                char_count += 1;
+            }
+        }
+
+        if preview.is_empty() {
+            "Empty".to_string()
         } else {
-            single_line
+            preview
         }
     }
 

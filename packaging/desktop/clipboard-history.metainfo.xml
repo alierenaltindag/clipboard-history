@@ -32,6 +32,11 @@
     <binary>clipboard-history-gui</binary>
   </provides>
   <releases>
+    <release version="0.5.1" date="2026-10-03">
+      <description>
+        <p>Comprehensive stability, security, and performance hardening release resolving 45 audit findings across all workspace crates.</p>
+      </description>
+    </release>
     <release version="0.5.0" date="2026-10-02">
       <description>
         <p>Introduces URL De-Tracker &amp; Privacy Cleaner (auto or on-demand telemetry query stripping) and Per-Application Blacklist &amp; Whitelist Manager.</p>

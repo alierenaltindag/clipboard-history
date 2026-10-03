@@ -80,6 +80,7 @@ impl SnippetDialog {
             d_cancel.close();
         });
 
+        let on_created = std::rc::Rc::new(on_created);
         let d_save = dialog.clone();
         save_btn.connect_clicked(move |_| {
             let label_val = label_entry.text().to_string();
@@ -94,8 +95,9 @@ impl SnippetDialog {
             }
 
             let d = d_save.clone();
+            let on_done = std::rc::Rc::clone(&on_created);
             glib::MainContext::default().spawn_local(async move {
-                if let Ok(mut client) = IpcClient::connect().await {
+                if let Ok(client) = IpcClient::connect().await {
                     let req = IpcRequest::CreateSnippet {
                         label: label_val,
                         content: content_val,
@@ -104,10 +106,10 @@ impl SnippetDialog {
                     if let Ok(IpcResponse::Snippet(_)) = client.send(&req).await {
                         info!("Snippet created successfully");
                         d.close();
+                        on_done();
                     }
                 }
             });
-            on_created();
         });
 
         dialog.set_child(Some(&root));

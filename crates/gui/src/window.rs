@@ -11,7 +11,7 @@ use clipboard_history_core::transforms::TextTransforms;
 use gdk4::Key;
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, Button, CssProvider, EventControllerKey, HeaderBar, Label, ListBox,
+    Align, Box as GtkBox, Button, EventControllerKey, HeaderBar, Label, ListBox,
     Orientation, ScrolledWindow, SearchEntry, Window,
 };
 use std::cell::RefCell;
@@ -25,7 +25,9 @@ pub struct ClipboardWindow {
     list_box: ListBox,
     entries: Rc<RefCell<Vec<ClipboardEntry>>>,
     filtered_entries: Rc<RefCell<Vec<ClipboardEntry>>>,
+    #[allow(dead_code)]
     current_filter: Rc<RefCell<CategoryFilter>>,
+    #[allow(dead_code)]
     current_query: Rc<RefCell<String>>,
 }
 
@@ -41,38 +43,8 @@ impl ClipboardWindow {
             .hide_on_close(true)
             .build();
 
-        // Modern acrylic card CSS styles
-        let provider = CssProvider::new();
-        provider.load_from_data(
-            r#"
-            window {
-                border-radius: 14px;
-                background-color: alpha(@window_bg_color, 0.98);
-                border: 1px solid alpha(@borders, 0.3);
-            }
-            .history-card {
-                border-radius: 8px;
-                padding: 10px 12px;
-                margin: 3px 6px;
-                background-color: alpha(@card_bg_color, 0.6);
-            }
-            .history-card:hover {
-                background-color: alpha(@accent_color, 0.12);
-            }
-            .history-card:selected {
-                background-color: alpha(@accent_color, 0.22);
-            }
-            .filter-active {
-                font-weight: bold;
-                background-color: alpha(@accent_color, 0.2);
-            }
-            "#,
-        );
-        gtk4::style_context_add_provider_for_display(
-            &gdk4::Display::default().unwrap(),
-            &provider,
-            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
+        // Apply modern acrylic card CSS styles from style module
+        crate::style::apply_application_styles();
 
         let main_box = GtkBox::new(Orientation::Vertical, 6);
 
@@ -221,56 +193,14 @@ impl ClipboardWindow {
 
                 let items = filtered_clone.borrow();
                 for (idx, entry) in items.iter().enumerate() {
-                    let entry_row = EntryRow::new(entry, idx);
-
-                    // Actions / Transforms button
-                    let entry_for_popover = entry.clone();
-                    let win_for_pop = win_clone.clone();
-                    let cfg_for_pop = config_clone.clone();
-                    entry_row.actions_btn.connect_clicked(move |btn| {
-                        show_transforms_popover(
-                            btn,
-                            &entry_for_popover,
-                            &win_for_pop,
-                            &cfg_for_pop,
-                        );
-                    });
-
-                    // Pin button
-                    let id_for_pin = entry.id.clone();
-                    let is_pinned = entry.is_pinned;
-                    entry_row.pin_btn.connect_clicked(move |_| {
-                        let id = id_for_pin.clone();
-                        glib::MainContext::default().spawn_local(async move {
-                            if let Ok(mut client) = IpcClient::connect().await {
-                                let req = if is_pinned {
-                                    IpcRequest::UnpinEntry { id }
-                                } else {
-                                    IpcRequest::PinEntry { id }
-                                };
-                                let _ = client.send(&req).await;
-                            }
-                        });
-                    });
-
-                    // Delete button
-                    let id_for_del = entry.id.clone();
-                    entry_row.delete_btn.connect_clicked(move |_| {
-                        let id = id_for_del.clone();
-                        glib::MainContext::default().spawn_local(async move {
-                            if let Ok(mut client) = IpcClient::connect().await {
-                                let _ = client.send(&IpcRequest::DeleteEntry { id }).await;
-                            }
-                        });
-                    });
-
+                    let entry_row = create_configured_entry_row(entry, idx, &win_clone, &config_clone);
                     list_box_clone.append(&entry_row.row);
                 }
             })
         };
 
         // Helper to re-filter and populate
-        let filter_and_render = {
+        let filter_and_render: Rc<dyn Fn()> = {
             let entries_clone = Rc::clone(&entries);
             let filtered_clone = Rc::clone(&filtered_entries);
             let current_filter_clone = Rc::clone(&current_filter);
@@ -292,7 +222,7 @@ impl ClipboardWindow {
         let make_filter_handler =
             |cat: CategoryFilter, btn: Button, filter_box_ref: GtkBox, fn_ref: Rc<dyn Fn()>| {
                 let cur_filt = Rc::clone(&current_filter);
-                move |_| {
+                move |_: &gtk4::Button| {
                     *cur_filt.borrow_mut() = cat;
                     // update CSS classes
                     let mut child = filter_box_ref.first_child();
@@ -363,7 +293,7 @@ impl ClipboardWindow {
         queue_hud_btn.connect_clicked(move |_| {
             let win = win_for_q.clone();
             glib::MainContext::default().spawn_local(async move {
-                if let Ok(mut client) = IpcClient::connect().await {
+                if let Ok(client) = IpcClient::connect().await {
                     if let Ok(IpcResponse::QueuePopped {
                         remaining_count,
                         pasted,
@@ -387,12 +317,23 @@ impl ClipboardWindow {
             });
         });
 
-        // Search entry live typing
+        // Search entry live typing with 150ms debounce (HIGH-10)
         let fn_for_search = Rc::clone(&filter_and_render);
         let q_ref = Rc::clone(&current_query);
+        let debounce_source: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+        let debounce_clone = Rc::clone(&debounce_source);
         search_entry.connect_search_changed(move |entry| {
             *q_ref.borrow_mut() = entry.text().to_string();
-            fn_for_search();
+            if let Some(source) = debounce_clone.borrow_mut().take() {
+                source.remove();
+            }
+            let fn_call = Rc::clone(&fn_for_search);
+            let deb_ref = Rc::clone(&debounce_clone);
+            let source_id = glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
+                deb_ref.borrow_mut().take();
+                fn_call();
+            });
+            *debounce_clone.borrow_mut() = Some(source_id);
         });
 
         // Clear button
@@ -400,7 +341,7 @@ impl ClipboardWindow {
         clear_btn.connect_clicked(move |_| {
             let fn_call = Rc::clone(&fn_for_clear);
             glib::MainContext::default().spawn_local(async move {
-                if let Ok(mut client) = IpcClient::connect().await {
+                if let Ok(client) = IpcClient::connect().await {
                     let _ = client
                         .send(&IpcRequest::ClearHistory {
                             include_pinned: false,
@@ -623,7 +564,7 @@ impl ClipboardWindow {
             if !ids.is_empty() {
                 let count = ids.len();
                 glib::MainContext::default().spawn_local(async move {
-                    if let Ok(mut client) = IpcClient::connect().await {
+                    if let Ok(client) = IpcClient::connect().await {
                         let _ = client.send(&IpcRequest::EnqueueItems { ids }).await;
                         info!("Enqueued {} batch items into paste queue", count);
                     }
@@ -655,7 +596,7 @@ impl ClipboardWindow {
                 let pin_flag = any_unpinned;
                 let toggle_exit = toggle_for_pin.clone();
                 glib::MainContext::default().spawn_local(async move {
-                    if let Ok(mut client) = IpcClient::connect().await {
+                    if let Ok(client) = IpcClient::connect().await {
                         let _ = client
                             .send(&IpcRequest::BatchPin {
                                 ids,
@@ -685,7 +626,7 @@ impl ClipboardWindow {
                 let refresh = fn_refresh_for_del.clone();
                 let toggle_exit = toggle_for_del.clone();
                 glib::MainContext::default().spawn_local(async move {
-                    if let Ok(mut client) = IpcClient::connect().await {
+                    if let Ok(client) = IpcClient::connect().await {
                         let _ = client.send(&IpcRequest::BatchDelete { ids }).await;
                         refresh();
                     }
@@ -706,18 +647,16 @@ impl ClipboardWindow {
             let idx = row.index() as usize;
             let items = filtered_for_act.borrow();
             if let Some(entry) = items.get(idx) {
-                let mut text = entry.preview.clone();
+                let mut text = entry.text_content.clone().unwrap_or_else(|| entry.preview.clone());
                 if entry.source_app.as_deref() == Some("Snippet") {
-                    if let Some(raw) = &entry.text_content {
-                        let current_clip = items
-                            .iter()
-                            .find(|e| e.source_app.as_deref() != Some("Snippet"))
-                            .and_then(|e| e.text_content.as_deref().or(Some(&e.preview)));
-                        text = clipboard_history_core::transforms::SnippetExpander::expand(
-                            raw,
-                            current_clip,
-                        );
-                    }
+                    let current_clip = items
+                        .iter()
+                        .find(|e| e.source_app.as_deref() != Some("Snippet"))
+                        .and_then(|e| e.text_content.as_deref().or(Some(&e.preview)));
+                    text = clipboard_history_core::transforms::SnippetExpander::expand(
+                        &text,
+                        current_clip,
+                    );
                 }
                 if let Some(display) = gdk4::Display::default() {
                     display.clipboard().set_text(&text);
@@ -782,7 +721,8 @@ impl ClipboardWindow {
                     let idx = selected_row.index() as usize;
                     let items = filtered_key.borrow();
                     if let Some(entry) = items.get(idx) {
-                        let plain_text = TextTransforms::strip_formatting(&entry.preview);
+                        let raw_text = entry.text_content.as_deref().unwrap_or(&entry.preview);
+                        let plain_text = TextTransforms::strip_formatting(raw_text);
                         if let Some(display) = gdk4::Display::default() {
                             display.clipboard().set_text(&plain_text);
                         }
@@ -812,7 +752,7 @@ impl ClipboardWindow {
                     if let Some(entry) = items.get(idx) {
                         let id = entry.id.clone();
                         glib::MainContext::default().spawn_local(async move {
-                            if let Ok(mut client) = IpcClient::connect().await {
+                            if let Ok(client) = IpcClient::connect().await {
                                 let _ = client
                                     .send(&IpcRequest::EnqueueItems { ids: vec![id] })
                                     .await;
@@ -843,7 +783,7 @@ impl ClipboardWindow {
                 if let Some(digit) = digit_opt {
                     let items = filtered_key.borrow();
                     if let Some(entry) = items.get(digit) {
-                        let text = entry.preview.clone();
+                        let text = entry.text_content.clone().unwrap_or_else(|| entry.preview.clone());
                         if let Some(display) = gdk4::Display::default() {
                             display.clipboard().set_text(&text);
                         }
@@ -902,7 +842,7 @@ impl ClipboardWindow {
         let cfg = self.config.clone();
 
         glib::MainContext::default().spawn_local(async move {
-            if let Ok(mut client) = IpcClient::connect().await {
+            if let Ok(client) = IpcClient::connect().await {
                 let req = IpcRequest::GetEntries {
                     limit: 100,
                     offset: 0,
@@ -942,15 +882,7 @@ impl ClipboardWindow {
                     }
 
                     for (idx, entry) in items.iter().enumerate() {
-                        let entry_row = EntryRow::new(entry, idx);
-
-                        let e_pop = entry.clone();
-                        let w_pop = win.clone();
-                        let c_pop = cfg.clone();
-                        entry_row.actions_btn.connect_clicked(move |btn| {
-                            show_transforms_popover(btn, &e_pop, &w_pop, &c_pop);
-                        });
-
+                        let entry_row = create_configured_entry_row(entry, idx, &win, &cfg);
                         list_box.append(&entry_row.row);
                     }
                 }
@@ -959,4 +891,57 @@ impl ClipboardWindow {
 
         self.window.present();
     }
+}
+
+/// Helper to construct and configure an EntryRow with full actions, pin, and delete button handlers
+fn create_configured_entry_row(
+    entry: &ClipboardEntry,
+    index: usize,
+    window: &Window,
+    config: &AppConfig,
+) -> EntryRow {
+    let entry_row = EntryRow::new(entry, index);
+
+    // Actions / Transforms button
+    let entry_for_popover = entry.clone();
+    let win_for_pop = window.clone();
+    let cfg_for_pop = config.clone();
+    entry_row.actions_btn.connect_clicked(move |btn| {
+        show_transforms_popover(
+            btn,
+            &entry_for_popover,
+            &win_for_pop,
+            &cfg_for_pop,
+        );
+    });
+
+    // Pin button
+    let id_for_pin = entry.id.clone();
+    let is_pinned = entry.is_pinned;
+    entry_row.pin_btn.connect_clicked(move |_| {
+        let id = id_for_pin.clone();
+        glib::MainContext::default().spawn_local(async move {
+            if let Ok(client) = IpcClient::connect().await {
+                let req = if is_pinned {
+                    IpcRequest::UnpinEntry { id }
+                } else {
+                    IpcRequest::PinEntry { id }
+                };
+                let _ = client.send(&req).await;
+            }
+        });
+    });
+
+    // Delete button
+    let id_for_del = entry.id.clone();
+    entry_row.delete_btn.connect_clicked(move |_| {
+        let id = id_for_del.clone();
+        glib::MainContext::default().spawn_local(async move {
+            if let Ok(client) = IpcClient::connect().await {
+                let _ = client.send(&IpcRequest::DeleteEntry { id }).await;
+            }
+        });
+    });
+
+    entry_row
 }

@@ -23,6 +23,7 @@ impl WindowFocusDetector {
     }
 
     /// Checks if the active window matches any configured incognito/secret pattern.
+    #[allow(dead_code)]
     pub fn is_incognito_active(&self, patterns: &[String]) -> bool {
         if let Some((title, class)) = self.get_active_window_info() {
             Self::matches_incognito_pattern(&title, &class, patterns)
@@ -173,7 +174,86 @@ impl WindowFocusDetector {
             }
         }
 
-        None
+        // 3. Try KDE Plasma via kdotool
+        if which::which("kdotool").is_ok() {
+            if let Ok(output) = Command::new("kdotool").arg("getactivewindow").output() {
+                if output.status.success() {
+                    let win_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    let name = Command::new("kdotool")
+                        .args(["getwindowname", &win_id])
+                        .output()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                        .unwrap_or_default();
+                    let class = Command::new("kdotool")
+                        .args(["getwindowclassname", &win_id])
+                        .output()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                        .unwrap_or_default();
+                    if !name.is_empty() || !class.is_empty() {
+                        return Some((name, class));
+                    }
+                }
+            }
+        }
+
+        // 4. Try KDE Plasma via qdbus
+        if which::which("qdbus").is_ok() {
+            if let Ok(output) = Command::new("qdbus")
+                .args(["org.kde.KWin", "/KWin", "org.kde.KWin.activeWindow"])
+                .output()
+            {
+                if output.status.success() {
+                    let win_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if !win_name.is_empty() {
+                        return Some((win_name.clone(), win_name));
+                    }
+                }
+            }
+        }
+
+        // 5. Try GNOME Shell Introspect via gdbus
+        if which::which("gdbus").is_ok() {
+            if let Ok(output) = Command::new("gdbus")
+                .args([
+                    "call",
+                    "--session",
+                    "--dest",
+                    "org.gnome.Shell.Introspect",
+                    "--object-path",
+                    "/org/gnome/Shell/Introspect",
+                    "--method",
+                    "org.gnome.Shell.Introspect.GetWindows",
+                ])
+                .output()
+            {
+                if output.status.success() {
+                    let out_str = String::from_utf8_lossy(&output.stdout);
+                    if let Some(focus_idx) = out_str
+                        .find("'has-focus': <true>")
+                        .or_else(|| out_str.find("'focus': <true>"))
+                    {
+                        let start = out_str[..focus_idx].rfind('{').unwrap_or(0);
+                        let end = out_str[focus_idx..]
+                            .find('}')
+                            .map(|e| focus_idx + e)
+                            .unwrap_or(out_str.len());
+                        let dict_str = &out_str[start..end];
+                        let title = extract_gdbus_string(dict_str, "title");
+                        let class = extract_gdbus_string(dict_str, "wm-class")
+                            .or_else(|| extract_gdbus_string(dict_str, "app-id"));
+                        if title.is_some() || class.is_some() {
+                            return Some((
+                                title.unwrap_or_default(),
+                                class.unwrap_or_default(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 6. Fallback to Xwayland / xdotool
+        self.get_x11_active_window()
     }
 }
 
@@ -204,6 +284,17 @@ fn find_focused_sway_node(val: &serde_json::Value) -> Option<(String, String)> {
         }
     }
 
+    None
+}
+
+fn extract_gdbus_string(haystack: &str, key: &str) -> Option<String> {
+    let key_pat = format!("'{}': <'", key);
+    if let Some(pos) = haystack.find(&key_pat) {
+        let remainder = &haystack[pos + key_pat.len()..];
+        if let Some(end) = remainder.find('\'') {
+            return Some(remainder[..end].to_string());
+        }
+    }
     None
 }
 

@@ -5,6 +5,7 @@ use clipboard_history_core::error::Result;
 use clipboard_history_core::ipc::{
     read_message, write_message, DaemonStatus, IpcRequest, IpcResponse, QueueStatus,
 };
+use clipboard_history_core::security::CryptoEngine;
 use clipboard_history_core::storage::SqliteRepository;
 use clipboard_history_core::transforms::OcrEngine;
 use std::collections::VecDeque;
@@ -18,9 +19,12 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 
+pub const MAX_PASTE_QUEUE_SIZE: usize = 100;
+
 pub struct DaemonServer {
     repo: SqliteRepository,
     blob_store: BlobStore,
+    crypto: Arc<CryptoEngine>,
     config: Arc<RwLock<AppConfig>>,
     is_paused: Arc<AtomicBool>,
     socket_path: PathBuf,
@@ -32,6 +36,7 @@ impl DaemonServer {
     pub fn new(
         repo: SqliteRepository,
         blob_store: BlobStore,
+        crypto: Arc<CryptoEngine>,
         config: Arc<RwLock<AppConfig>>,
         is_paused: Arc<AtomicBool>,
         socket_path: PathBuf,
@@ -39,6 +44,7 @@ impl DaemonServer {
         Self {
             repo,
             blob_store,
+            crypto,
             config,
             is_paused,
             socket_path,
@@ -55,25 +61,53 @@ impl DaemonServer {
 
         if let Some(parent) = self.socket_path.parent() {
             fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+            }
         }
 
-        let listener = UnixListener::bind(&self.socket_path)?;
+        #[cfg(unix)]
+        let old_umask = unsafe { libc::umask(0o077) };
+        let listener_res = UnixListener::bind(&self.socket_path);
+        #[cfg(unix)]
+        unsafe { libc::umask(old_umask) };
+        let listener = listener_res?;
         let _ = fs::set_permissions(&self.socket_path, fs::Permissions::from_mode(0o600));
 
         info!("IPC daemon listening on {}", self.socket_path.display());
 
         let repo = self.repo;
         let blob_store = self.blob_store;
+        let crypto = self.crypto;
         let config = self.config;
         let is_paused = self.is_paused;
         let start_time = self.start_time;
         let paste_queue = self.paste_queue;
+        let current_uid = unsafe { libc::getuid() };
 
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
+                    match stream.peer_cred() {
+                        Ok(cred) if cred.uid() == current_uid => {}
+                        Ok(cred) => {
+                            tracing::warn!(
+                                "Rejected unauthorized IPC connection from UID {} (expected UID {})",
+                                cred.uid(),
+                                current_uid
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to query IPC peer credentials: {}", e);
+                            continue;
+                        }
+                    }
+
                     let repo_cloned = repo.clone();
                     let blob_cloned = blob_store.clone();
+                    let crypto_cloned = Arc::clone(&crypto);
                     let config_cloned = Arc::clone(&config);
                     let paused_cloned = Arc::clone(&is_paused);
                     let queue_cloned = Arc::clone(&paste_queue);
@@ -83,6 +117,7 @@ impl DaemonServer {
                             stream,
                             repo_cloned,
                             blob_cloned,
+                            crypto_cloned,
                             config_cloned,
                             paused_cloned,
                             start_time,
@@ -105,6 +140,7 @@ impl DaemonServer {
         stream: UnixStream,
         repo: SqliteRepository,
         blob_store: BlobStore,
+        crypto: Arc<CryptoEngine>,
         config: Arc<RwLock<AppConfig>>,
         is_paused: Arc<AtomicBool>,
         start_time: Instant,
@@ -120,7 +156,12 @@ impl DaemonServer {
                     filter,
                     pinned_only,
                 } => match repo.list(limit, offset, filter, pinned_only) {
-                    Ok(entries) => IpcResponse::Entries(entries),
+                    Ok(mut entries) => {
+                        for e in &mut entries {
+                            decrypt_entry(e, &crypto);
+                        }
+                        IpcResponse::Entries(entries)
+                    }
                     Err(e) => IpcResponse::Error(e.to_string()),
                 },
 
@@ -129,12 +170,20 @@ impl DaemonServer {
                     limit,
                     offset,
                 } => match repo.search(&query, limit, offset) {
-                    Ok(entries) => IpcResponse::Entries(entries),
+                    Ok(mut entries) => {
+                        for e in &mut entries {
+                            decrypt_entry(e, &crypto);
+                        }
+                        IpcResponse::Entries(entries)
+                    }
                     Err(e) => IpcResponse::Error(e.to_string()),
                 },
 
                 IpcRequest::GetEntry { id } => match repo.get_by_id(&id) {
-                    Ok(entry) => IpcResponse::Entry(Box::new(Some(entry))),
+                    Ok(mut entry) => {
+                        decrypt_entry(&mut entry, &crypto);
+                        IpcResponse::Entry(Box::new(Some(entry)))
+                    }
                     Err(_) => IpcResponse::Entry(Box::new(None)),
                 },
 
@@ -192,10 +241,17 @@ impl DaemonServer {
                     }
                 }
 
-                IpcRequest::GetBlob { hash } => match blob_store.read(&hash) {
-                    Ok(bytes) => IpcResponse::Blob(bytes),
-                    Err(e) => IpcResponse::Error(e.to_string()),
-                },
+                IpcRequest::GetBlob { hash } => {
+                    let res = if config.read().await.security.encryption_enabled {
+                        blob_store.read_decrypted(&hash, &crypto).or_else(|_| blob_store.read(&hash))
+                    } else {
+                        blob_store.read(&hash)
+                    };
+                    match res {
+                        Ok(bytes) => IpcResponse::Blob(bytes),
+                        Err(e) => IpcResponse::Error(e.to_string()),
+                    }
+                }
 
                 IpcRequest::AddManualEntry { text } => {
                     let hash = BlobStore::compute_hash(text.as_bytes());
@@ -246,9 +302,13 @@ impl DaemonServer {
                 }
 
                 IpcRequest::EnqueueItems { ids } => {
-                    let mut q = paste_queue.lock().unwrap();
+                    let mut q = paste_queue.lock().unwrap_or_else(|p| p.into_inner());
                     for id in ids {
-                        if let Ok(entry) = repo.get_by_id(&id) {
+                        if let Ok(mut entry) = repo.get_by_id(&id) {
+                            decrypt_entry(&mut entry, &crypto);
+                            if q.len() >= MAX_PASTE_QUEUE_SIZE {
+                                q.pop_front();
+                            }
                             q.push_back(entry);
                         }
                     }
@@ -260,14 +320,14 @@ impl DaemonServer {
                 }
 
                 IpcRequest::ClearQueue => {
-                    let mut q = paste_queue.lock().unwrap();
+                    let mut q = paste_queue.lock().unwrap_or_else(|p| p.into_inner());
                     q.clear();
                     info!("Cleared sequential paste queue");
                     IpcResponse::Success
                 }
 
                 IpcRequest::GetQueueStatus => {
-                    let q = paste_queue.lock().unwrap();
+                    let q = paste_queue.lock().unwrap_or_else(|p| p.into_inner());
                     let remaining_count = q.len();
                     let active = !q.is_empty();
                     let next_preview = q.front().map(|e| e.preview.clone());
@@ -279,7 +339,7 @@ impl DaemonServer {
                 }
 
                 IpcRequest::PopAndPasteQueue => {
-                    let mut q = paste_queue.lock().unwrap();
+                    let mut q = paste_queue.lock().unwrap_or_else(|p| p.into_inner());
                     if let Some(entry) = q.pop_front() {
                         let remaining_count = q.len();
                         let text = entry.text_content.unwrap_or(entry.preview);
@@ -356,11 +416,27 @@ impl DaemonServer {
                     IpcResponse::DiffResult(Box::new(diff_res))
                 }
 
-                IpcRequest::ToggleWindow
-                | IpcRequest::ShowWindow
-                | IpcRequest::HideWindow
+                IpcRequest::ToggleWindow => {
+                    info!("Received ToggleWindow request. Spawning GUI with --toggle...");
+                    match std::process::Command::new("clipboard-history-gui")
+                        .arg("--toggle")
+                        .spawn()
+                    {
+                        Ok(_) => IpcResponse::Success,
+                        Err(e) => IpcResponse::Error(format!("Failed to spawn GUI: {}", e)),
+                    }
+                }
+
+                IpcRequest::ShowWindow => {
+                    info!("Received ShowWindow request. Spawning GUI...");
+                    match std::process::Command::new("clipboard-history-gui").spawn() {
+                        Ok(_) => IpcResponse::Success,
+                        Err(e) => IpcResponse::Error(format!("Failed to spawn GUI: {}", e)),
+                    }
+                }
+
+                IpcRequest::HideWindow
                 | IpcRequest::SelectAndPaste { .. } => {
-                    // Window toggling requests are usually handled by GUI listener or relayed
                     IpcResponse::Success
                 }
             };
@@ -369,5 +445,21 @@ impl DaemonServer {
         }
 
         Ok(())
+    }
+}
+
+fn decrypt_entry(entry: &mut ClipboardEntry, crypto: &CryptoEngine) {
+    if let Some(ref text) = entry.text_content {
+        if let Ok(dec) = crypto.decrypt_str(text) {
+            entry.text_content = Some(dec);
+        }
+    }
+    if let Some(ref html) = entry.html_content {
+        if let Ok(dec) = crypto.decrypt_str(html) {
+            entry.html_content = Some(dec);
+        }
+    }
+    if let Ok(dec_preview) = crypto.decrypt_str(&entry.preview) {
+        entry.preview = dec_preview;
     }
 }

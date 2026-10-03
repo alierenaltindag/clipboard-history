@@ -231,13 +231,20 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    pub fn project_dirs() -> ProjectDirs {
+    pub fn project_dirs() -> Option<ProjectDirs> {
         ProjectDirs::from("com", "antigravity", "clipboard-history")
-            .unwrap_or_else(|| panic!("Could not determine standard system directories"))
     }
 
     pub fn config_dir() -> PathBuf {
-        Self::project_dirs().config_dir().to_path_buf()
+        if let Some(dirs) = Self::project_dirs() {
+            dirs.config_dir().to_path_buf()
+        } else if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+            PathBuf::from(xdg).join("clipboard-history")
+        } else if let Ok(home) = std::env::var("HOME") {
+            PathBuf::from(home).join(".config").join("clipboard-history")
+        } else {
+            PathBuf::from("/tmp/clipboard-history/config")
+        }
     }
 
     pub fn config_path() -> PathBuf {
@@ -249,7 +256,15 @@ impl AppConfig {
     }
 
     pub fn data_dir() -> PathBuf {
-        Self::project_dirs().data_dir().to_path_buf()
+        if let Some(dirs) = Self::project_dirs() {
+            dirs.data_dir().to_path_buf()
+        } else if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+            PathBuf::from(xdg).join("clipboard-history")
+        } else if let Ok(home) = std::env::var("HOME") {
+            PathBuf::from(home).join(".local").join("share").join("clipboard-history")
+        } else {
+            PathBuf::from("/tmp/clipboard-history/data")
+        }
     }
 
     pub fn db_path() -> PathBuf {

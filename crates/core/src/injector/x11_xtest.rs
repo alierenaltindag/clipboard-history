@@ -25,6 +25,9 @@ impl X11XTestInjector {
             .reply()
             .ok()?;
         let keysyms_per_keycode = mapping.keysyms_per_keycode as usize;
+        if keysyms_per_keycode == 0 {
+            return Some((37, 55));
+        }
 
         let mut ctrl_keycode = None;
         let mut v_keycode = None;
@@ -46,6 +49,12 @@ impl X11XTestInjector {
             (Some(c), Some(v)) => Some((c, v)),
             _ => Some((37, 55)), // Standard PC defaults for Control_L and 'v'
         }
+    }
+}
+
+impl Default for X11XTestInjector {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

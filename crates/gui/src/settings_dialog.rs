@@ -220,10 +220,22 @@ impl SettingsDialog {
             Self::save_and_sync(&cfg_sync.borrow());
         });
 
+        let debounce_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+        let deb_clone = Rc::clone(&debounce_timer);
         let cfg_pin = Rc::clone(&cfg_cell);
         pin_row.connect_changed(move |row| {
-            cfg_pin.borrow_mut().sync.pairing_pin = row.text().to_string();
-            Self::save_and_sync(&cfg_pin.borrow());
+            if let Some(source) = deb_clone.borrow_mut().take() {
+                source.remove();
+            }
+            let new_pin = row.text().to_string();
+            let cfg_ref = Rc::clone(&cfg_pin);
+            let deb_ref = Rc::clone(&deb_clone);
+            let source_id = glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+                deb_ref.borrow_mut().take();
+                cfg_ref.borrow_mut().sync.pairing_pin = new_pin;
+                Self::save_and_sync(&cfg_ref.borrow());
+            });
+            *deb_clone.borrow_mut() = Some(source_id);
         });
 
         dialog.present();
@@ -238,7 +250,7 @@ impl SettingsDialog {
 
         let to_send = cfg.clone();
         glib::MainContext::default().spawn_local(async move {
-            if let Ok(mut client) = IpcClient::connect().await {
+            if let Ok(client) = IpcClient::connect().await {
                 let _ = client
                     .send(&IpcRequest::UpdateConfig {
                         config: Box::new(to_send),

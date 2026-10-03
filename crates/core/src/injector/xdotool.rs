@@ -11,6 +11,12 @@ impl XdotoolInjector {
     }
 }
 
+impl Default for XdotoolInjector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl PasteInjector for XdotoolInjector {
     fn name(&self) -> &'static str {
