@@ -1897,3 +1897,84 @@ fn test_process_memory_shield_and_buffer_protection() {
         "wipe_and_protect must zeroize the target memory"
     );
 }
+
+#[test]
+fn test_move_pasted_to_top_config_default_is_false() {
+    use clipboard_history_core::config::PasteConfig;
+
+    let cfg = PasteConfig::default();
+    assert!(
+        !cfg.move_pasted_to_top,
+        "move_pasted_to_top must default to false"
+    );
+
+    // Ensure deserialization of empty JSON also defaults to false
+    let deserialized: PasteConfig = serde_json::from_str("{}").expect("deserialization succeeds");
+    assert!(!deserialized.move_pasted_to_top);
+}
+
+#[test]
+fn test_touch_entry_moves_to_top_and_sync_updates_peer() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("local.db");
+    let repo = SqliteRepository::open(&db_path).unwrap();
+
+    let entry1 = ClipboardEntry::new_text(
+        "First item".to_string(),
+        "hash1".to_string(),
+        vec!["text/plain".to_string()],
+        None,
+    );
+    let entry2 = ClipboardEntry::new_text(
+        "Second item".to_string(),
+        "hash2".to_string(),
+        vec!["text/plain".to_string()],
+        None,
+    );
+
+    let created1 = repo.insert_or_update(&entry1).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let created2 = repo.insert_or_update(&entry2).unwrap();
+
+    // Before touch, entry2 is newest (at top of list)
+    let list_before = repo.list(10, 0, None, false).unwrap();
+    assert_eq!(list_before[0].id, created2.id);
+    assert_eq!(list_before[1].id, created1.id);
+
+    // Sleep briefly so Utc::now() advances
+    std::thread::sleep(std::time::Duration::from_millis(60));
+
+    // Touch entry1 (user pasted entry1)
+    repo.touch_entry(&created1.id).unwrap();
+
+    // After touch, entry1 must now be at the very top
+    let list_after = repo.list(10, 0, None, false).unwrap();
+    assert_eq!(list_after[0].id, created1.id);
+    assert_eq!(list_after[1].id, created2.id);
+
+    // Now verify Network Sync simulation:
+    // Peer device database receives this updated entry during sync
+    let peer_db_path = dir.path().join("peer.db");
+    let peer_repo = SqliteRepository::open(&peer_db_path).unwrap();
+
+    // Initial state on peer:
+    peer_repo.insert_or_update(&entry1).unwrap();
+    peer_repo.insert_or_update(&entry2).unwrap();
+
+    // Peer sync receives the touched entry with updated last_used_at
+    let touched_entry = list_after[0].clone();
+    peer_repo.insert_or_update(&touched_entry).unwrap();
+
+    // On peer device, entry1 must now also be at top, with NO duplicate entries
+    let peer_list = peer_repo.list(10, 0, None, false).unwrap();
+    assert_eq!(
+        peer_list.len(),
+        2,
+        "Network sync must deduplicate and avoid loops"
+    );
+    assert_eq!(
+        peer_list[0].id, created1.id,
+        "Peer must reflect updated position at top"
+    );
+    assert_eq!(peer_list[1].id, created2.id);
+}

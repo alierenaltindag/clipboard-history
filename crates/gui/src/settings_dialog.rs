@@ -35,7 +35,7 @@ impl SettingsDialog {
 
         // Retention & Capacity Group
         let general_group = libadwaita::PreferencesGroup::new();
-        general_group.set_title("Retention & Capacity");
+        general_group.set_title("Retention &amp; Capacity");
         general_group.set_description(Some(
             "Manage how many entries to preserve in local encrypted storage",
         ));
@@ -89,6 +89,13 @@ impl SettingsDialog {
         auto_paste_row.set_active(config.paste.auto_paste);
         paste_group.add(&auto_paste_row);
 
+        let move_to_top_row = libadwaita::SwitchRow::new();
+        move_to_top_row.set_title("Move Pasted Items to Top");
+        move_to_top_row
+            .set_subtitle("Move the selected item to the top of the history list upon pasting");
+        move_to_top_row.set_active(config.paste.move_pasted_to_top);
+        paste_group.add(&move_to_top_row);
+
         general_page.add(&paste_group);
         dialog.add(&general_page);
 
@@ -113,14 +120,14 @@ impl SettingsDialog {
         security_group.add(&pwd_row);
 
         let incognito_row = libadwaita::SwitchRow::new();
-        incognito_row.set_title("Ignore Private & Incognito Browsing");
+        incognito_row.set_title("Ignore Private &amp; Incognito Browsing");
         incognito_row
             .set_subtitle("Do not record copies made inside incognito or private browsing windows");
         incognito_row.set_active(config.security.ignore_incognito_windows);
         security_group.add(&incognito_row);
 
         let clean_urls_row = libadwaita::SwitchRow::new();
-        clean_urls_row.set_title("URL De-Tracker & Privacy Cleaner");
+        clean_urls_row.set_title("URL De-Tracker &amp; Privacy Cleaner");
         clean_urls_row.set_subtitle(
             "Strip tracking query parameters (utm_*, fbclid, gclid) from copied links",
         );
@@ -219,7 +226,7 @@ impl SettingsDialog {
 
         // Connected & Discovered Peers Group
         let peers_group = libadwaita::PreferencesGroup::new();
-        peers_group.set_title("Discovered Devices & Pairings");
+        peers_group.set_title("Discovered Devices &amp; Pairings");
         peers_group.set_description(Some(
             "Devices on your local network. Click the button to send a pairing request. Continuous sync starts once accepted.",
         ));
@@ -251,7 +258,7 @@ impl SettingsDialog {
 
         // Automated Firewall & Port Check Group
         let firewall_group = libadwaita::PreferencesGroup::new();
-        firewall_group.set_title("Firewall & Port Check");
+        firewall_group.set_title("Firewall &amp; Port Check");
         firewall_group.set_description(Some(
             "Verifies that P2P sync ports (54123 UDP/TCP and 54124 TCP) are accessible on your local network",
         ));
@@ -267,7 +274,7 @@ impl SettingsDialog {
 
         // Network & Security Requirements Guide Group
         let security_guide_group = libadwaita::PreferencesGroup::new();
-        security_guide_group.set_title("Network & Security Requirements");
+        security_guide_group.set_title("Network &amp; Security Requirements");
         security_guide_group.set_description(Some(
             "Local network and security settings to check if devices cannot discover each other",
         ));
@@ -343,6 +350,12 @@ impl SettingsDialog {
         auto_paste_row.connect_active_notify(move |row| {
             cfg_paste.borrow_mut().paste.auto_paste = row.is_active();
             Self::save_and_sync(&cfg_paste.borrow());
+        });
+
+        let cfg_move_top = Rc::clone(&cfg_cell);
+        move_to_top_row.connect_active_notify(move |row| {
+            cfg_move_top.borrow_mut().paste.move_pasted_to_top = row.is_active();
+            Self::save_and_sync(&cfg_move_top.borrow());
         });
 
         let cfg_entries = Rc::clone(&cfg_cell);

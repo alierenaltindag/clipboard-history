@@ -39,7 +39,7 @@ impl ClipboardApp {
         let win_activate = Rc::clone(&window_cell);
         app.connect_activate(move |_| {
             if let Some(win) = win_activate.borrow().as_ref() {
-                if win.window.is_visible() {
+                if win.window.is_visible() && win.window.is_active() {
                     win.window.set_visible(false);
                 } else {
                     win.present_near_cursor();
@@ -61,7 +61,7 @@ impl ClipboardApp {
                 );
             } else if has_toggle {
                 if let Some(win) = win_cmd.borrow().as_ref() {
-                    if win.window.is_visible() {
+                    if win.window.is_visible() && win.window.is_active() {
                         win.window.set_visible(false);
                     } else {
                         win.present_near_cursor();

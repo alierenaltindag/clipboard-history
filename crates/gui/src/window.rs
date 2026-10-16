@@ -754,6 +754,8 @@ impl ClipboardWindow {
 
         // Row Activated: Direct paste
         let filtered_for_act = Rc::clone(&filtered_entries);
+        let entries_for_act = Rc::clone(&entries);
+        let fn_refresh_act = Rc::clone(&filter_and_render);
         let win_for_act = window.clone();
         let cfg_for_act = config.clone();
         list_box.connect_row_activated(move |_, row| {
@@ -762,7 +764,10 @@ impl ClipboardWindow {
             if let Some(entry) = items.iter().find(|e| e.id == entry_id.as_str()) {
                 let entry_type = entry.entry_type;
                 let auto_paste = cfg_for_act.paste.auto_paste;
+                let move_to_top = cfg_for_act.paste.move_pasted_to_top;
                 let delay_ms = cfg_for_act.paste.paste_delay_ms.max(50);
+                let entry_id_str = entry.id.clone();
+                let content_hash = entry.content_hash.clone();
 
                 // Immediately hide popup so destination window regains focus
                 win_for_act.set_visible(false);
@@ -781,12 +786,15 @@ impl ClipboardWindow {
                         None
                     };
                     let img_path = entry.blob_hash.as_deref().and_then(find_blob);
-                    let content_hash = entry.content_hash.clone();
+                    let id_for_touch = entry_id_str.clone();
                     if let Some(p) = img_path {
                         if let Ok(bytes) = std::fs::read(&p) {
                             glib::MainContext::default().spawn_local(async move {
                                 if let Ok(client) = IpcClient::connect().await {
                                     let _ = client.prepare_paste(&content_hash).await;
+                                    if move_to_top {
+                                        let _ = client.touch_entry(&id_for_touch).await;
+                                    }
                                 }
                                 clipboard_history_core::clipboard::copy_image_to_system_clipboard(
                                     &bytes,
@@ -823,10 +831,13 @@ impl ClipboardWindow {
                     }
 
                     let text_clone = text.clone();
-                    let content_hash = entry.content_hash.clone();
+                    let id_for_touch = entry_id_str.clone();
                     glib::MainContext::default().spawn_local(async move {
                         if let Ok(client) = IpcClient::connect().await {
                             let _ = client.prepare_paste(&content_hash).await;
+                            if move_to_top {
+                                let _ = client.touch_entry(&id_for_touch).await;
+                            }
                         }
                         clipboard_history_core::copy_to_system_clipboard(&text_clone).await;
                         if auto_paste {
@@ -836,6 +847,20 @@ impl ClipboardWindow {
                             info!("Paste executed: injector={}, success={}", name, success);
                         }
                     });
+                }
+
+                if move_to_top {
+                    let mut all_entries = entries_for_act.borrow_mut();
+                    if let Some(pos) = all_entries.iter().position(|e| e.id == entry_id_str) {
+                        all_entries[pos].last_used_at = chrono::Utc::now();
+                        all_entries.sort_by(|a, b| {
+                            b.is_pinned
+                                .cmp(&a.is_pinned)
+                                .then_with(|| b.last_used_at.cmp(&a.last_used_at))
+                        });
+                    }
+                    drop(all_entries);
+                    fn_refresh_act();
                 }
             }
         });
@@ -847,6 +872,8 @@ impl ClipboardWindow {
         let list_box_key = list_box.clone();
         let search_entry_key = search_entry.clone();
         let filtered_key = Rc::clone(&filtered_entries);
+        let entries_key = Rc::clone(&entries);
+        let fn_refresh_key = Rc::clone(&filter_and_render);
         let cfg_key = config.clone();
         let current_filter_key = Rc::clone(&current_filter);
         let switch_category_key = Rc::clone(&switch_category);
@@ -1011,11 +1038,17 @@ impl ClipboardWindow {
                         }
                         win_key.set_visible(false);
                         let auto_paste = cfg_key.paste.auto_paste;
+                        let move_to_top = cfg_key.paste.move_pasted_to_top;
                         let delay_ms = cfg_key.paste.paste_delay_ms.max(50);
+                        let entry_id_str = entry.id.clone();
                         let hash = clipboard_history_core::blob::BlobStore::compute_hash(plain_text.as_bytes());
+                        let id_for_touch = entry_id_str.clone();
                         glib::MainContext::default().spawn_local(async move {
                             if let Ok(client) = IpcClient::connect().await {
                                 let _ = client.prepare_paste(&hash).await;
+                                if move_to_top {
+                                    let _ = client.touch_entry(&id_for_touch).await;
+                                }
                             }
                             clipboard_history_core::copy_to_system_clipboard(&plain_text).await;
                             if auto_paste {
@@ -1029,6 +1062,21 @@ impl ClipboardWindow {
                                 );
                             }
                         });
+
+                        if move_to_top {
+                            let mut all_entries = entries_key.borrow_mut();
+                            if let Some(pos) = all_entries.iter().position(|e| e.id == entry_id_str) {
+                                all_entries[pos].last_used_at = chrono::Utc::now();
+                                all_entries.sort_by(|a, b| {
+                                    b.is_pinned
+                                        .cmp(&a.is_pinned)
+                                        .then_with(|| b.last_used_at.cmp(&a.last_used_at))
+                                });
+                            }
+                            drop(all_entries);
+                            fn_refresh_key();
+                        }
+
                         return glib::Propagation::Stop;
                     }
                 }
@@ -1089,7 +1137,11 @@ impl ClipboardWindow {
                         if let Some(entry) = items.get(digit) {
                             win_key.set_visible(false);
                             let auto_paste = cfg_key.paste.auto_paste;
+                            let move_to_top = cfg_key.paste.move_pasted_to_top;
                             let delay_ms = cfg_key.paste.paste_delay_ms.max(50);
+                            let entry_id_str = entry.id.clone();
+                            let content_hash = entry.content_hash.clone();
+                            let id_for_touch = entry_id_str.clone();
 
                             if entry.entry_type == clipboard_history_core::domain::EntryType::Image {
                                 let blobs_dir = AppConfig::blobs_dir();
@@ -1108,6 +1160,12 @@ impl ClipboardWindow {
                                 if let Some(p) = img_path {
                                     if let Ok(bytes) = std::fs::read(&p) {
                                         glib::MainContext::default().spawn_local(async move {
+                                            if let Ok(client) = IpcClient::connect().await {
+                                                let _ = client.prepare_paste(&content_hash).await;
+                                                if move_to_top {
+                                                    let _ = client.touch_entry(&id_for_touch).await;
+                                                }
+                                            }
                                             clipboard_history_core::clipboard::copy_image_to_system_clipboard(
                                                 &bytes,
                                                 Some("image/png"),
@@ -1131,6 +1189,12 @@ impl ClipboardWindow {
                                     display.clipboard().set_text(&text);
                                 }
                                 glib::MainContext::default().spawn_local(async move {
+                                    if let Ok(client) = IpcClient::connect().await {
+                                        let _ = client.prepare_paste(&content_hash).await;
+                                        if move_to_top {
+                                            let _ = client.touch_entry(&id_for_touch).await;
+                                        }
+                                    }
                                     clipboard_history_core::copy_to_system_clipboard(&text).await;
                                     if auto_paste {
                                         tokio::time::sleep(std::time::Duration::from_millis(delay_ms))
@@ -1140,6 +1204,21 @@ impl ClipboardWindow {
                                     }
                                 });
                             }
+
+                            if move_to_top {
+                                let mut all_entries = entries_key.borrow_mut();
+                                if let Some(pos) = all_entries.iter().position(|e| e.id == entry_id_str) {
+                                    all_entries[pos].last_used_at = chrono::Utc::now();
+                                    all_entries.sort_by(|a, b| {
+                                        b.is_pinned
+                                            .cmp(&a.is_pinned)
+                                            .then_with(|| b.last_used_at.cmp(&a.last_used_at))
+                                    });
+                                }
+                                drop(all_entries);
+                                fn_refresh_key();
+                            }
+
                             return glib::Propagation::Stop;
                         }
                     }
@@ -1354,6 +1433,14 @@ impl ClipboardWindow {
         // Present window
         self.window.present();
 
+        // Immediately force activation and raise above any background/active windows
+        Self::force_activate_window(&self.window);
+
+        let win_act = self.window.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
+            Self::force_activate_window(&win_act);
+        });
+
         if !is_gnome {
             // Immediately apply move
             Self::apply_window_move(&self.window, target_x, target_y);
@@ -1373,6 +1460,120 @@ impl ClipboardWindow {
             glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
                 Self::apply_window_move(&win_c3, target_x, target_y);
             });
+        }
+    }
+
+    /// Forces window activation and focus to the foreground across X11 and Wayland
+    pub fn force_activate_window(win: &Window) {
+        win.present();
+
+        let xid_opt = Self::get_window_xid(win);
+        if let Some(xid) = xid_opt {
+            // 1. Send EWMH _NET_ACTIVE_WINDOW ClientMessage with real X server timestamp
+            if let Ok((conn, screen_num)) = x11rb::connect(None) {
+                use x11rb::connection::Connection;
+                use x11rb::protocol::xproto::{
+                    AtomEnum, ClientMessageData, ClientMessageEvent, ConnectionExt,
+                    CreateWindowAux, EventMask, PropMode, WindowClass, CLIENT_MESSAGE_EVENT,
+                };
+                use x11rb::wrapper::ConnectionExt as _;
+
+                let root = conn.setup().roots[screen_num].root;
+                if let (Ok(net_active_cookie), Ok(get_time_cookie)) = (
+                    conn.intern_atom(false, b"_NET_ACTIVE_WINDOW"),
+                    conn.intern_atom(false, b"_CLIPBOARD_GET_TIME"),
+                ) {
+                    if let (Ok(net_active_atom), Ok(get_time_atom)) =
+                        (net_active_cookie.reply(), get_time_cookie.reply())
+                    {
+                        if let Ok(temp_win) = conn.generate_id() {
+                            let win_aux =
+                                CreateWindowAux::new().event_mask(EventMask::PROPERTY_CHANGE);
+                            if conn
+                                .create_window(
+                                    0,
+                                    temp_win,
+                                    root,
+                                    -10,
+                                    -10,
+                                    1,
+                                    1,
+                                    0,
+                                    WindowClass::INPUT_OUTPUT,
+                                    0,
+                                    &win_aux,
+                                )
+                                .is_ok()
+                            {
+                                let _ = conn.change_property8(
+                                    PropMode::REPLACE,
+                                    temp_win,
+                                    get_time_atom.atom,
+                                    AtomEnum::CARDINAL,
+                                    b"1",
+                                );
+                                let _ = conn.flush();
+
+                                let mut server_time = 0u32;
+                                for _ in 0..15 {
+                                    if let Ok(Some(x11rb::protocol::Event::PropertyNotify(pn))) =
+                                        conn.poll_for_event()
+                                    {
+                                        server_time = pn.time;
+                                        break;
+                                    }
+                                    std::thread::sleep(std::time::Duration::from_millis(2));
+                                }
+                                let _ = conn.destroy_window(temp_win);
+
+                                let client_msg = ClientMessageEvent {
+                                    response_type: CLIENT_MESSAGE_EVENT,
+                                    format: 32,
+                                    sequence: 0,
+                                    window: xid,
+                                    type_: net_active_atom.atom,
+                                    data: ClientMessageData::from([
+                                        2u32, // source: pager/user direct
+                                        server_time,
+                                        0u32,
+                                        0u32,
+                                        0u32,
+                                    ]),
+                                };
+                                let _ = conn.send_event(
+                                    false,
+                                    root,
+                                    EventMask::SUBSTRUCTURE_REDIRECT
+                                        | EventMask::SUBSTRUCTURE_NOTIFY,
+                                    client_msg,
+                                );
+                                let _ = conn.map_window(xid);
+                                let _ = conn.flush();
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. Extra safeguard via xdotool
+            let _ = std::process::Command::new("xdotool")
+                .args([
+                    "windowactivate",
+                    &xid.to_string(),
+                    "windowraise",
+                    &xid.to_string(),
+                ])
+                .spawn();
+        } else {
+            let _ = std::process::Command::new("xdotool")
+                .args([
+                    "search",
+                    "--class",
+                    "clipboard-history-gui",
+                    "windowactivate",
+                    "windowraise",
+                ])
+                .spawn();
         }
     }
 

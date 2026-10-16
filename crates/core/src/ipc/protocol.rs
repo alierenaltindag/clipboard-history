@@ -116,6 +116,10 @@ pub enum IpcRequest {
     PreparePaste {
         content_hash: String,
     },
+    // Touch entry (update last_used_at to move to top)
+    TouchEntry {
+        id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

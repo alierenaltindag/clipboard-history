@@ -541,6 +541,17 @@ impl SqliteRepository {
         }
     }
 
+    pub fn touch_entry(&self, id: &str) -> Result<()> {
+        let conn = self.conn();
+        let now = Utc::now().to_rfc3339();
+        let trimmed = id.trim();
+        conn.execute(
+            "UPDATE entries SET last_used_at = ?1 WHERE id = ?2",
+            params![now, trimmed],
+        )?;
+        Ok(())
+    }
+
     pub fn batch_delete(&self, ids: &[String]) -> Result<usize> {
         if ids.is_empty() {
             return Ok(0);
@@ -919,6 +930,10 @@ impl crate::storage::Storage for SqliteRepository {
 
     fn delete(&self, id: &str) -> Result<()> {
         self.delete(id)
+    }
+
+    fn touch_entry(&self, id: &str) -> Result<()> {
+        self.touch_entry(id)
     }
 
     fn batch_delete(&self, ids: &[String]) -> Result<usize> {

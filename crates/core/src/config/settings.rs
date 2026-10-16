@@ -186,10 +186,12 @@ impl Default for UiConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PasteConfig {
     pub auto_paste: bool,
     pub paste_delay_ms: u64,
     pub preferred_injector: Option<String>,
+    pub move_pasted_to_top: bool,
 }
 
 impl Default for PasteConfig {
@@ -198,6 +200,7 @@ impl Default for PasteConfig {
             auto_paste: true,
             paste_delay_ms: 120,
             preferred_injector: None,
+            move_pasted_to_top: false,
         }
     }
 }

@@ -90,6 +90,13 @@ impl IpcClient {
         Ok(())
     }
 
+    pub async fn touch_entry(&self, id: &str) -> Result<()> {
+        let _ = self
+            .send(&IpcRequest::TouchEntry { id: id.to_string() })
+            .await?;
+        Ok(())
+    }
+
     pub async fn send(&self, request: &IpcRequest) -> Result<IpcResponse> {
         Self::send_request(&self.socket_path, request).await
     }

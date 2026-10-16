@@ -766,6 +766,11 @@ impl DaemonServer {
                     IpcResponse::Success
                 }
 
+                IpcRequest::TouchEntry { id } => {
+                    let _ = repo.touch_entry(&id);
+                    IpcResponse::Success
+                }
+
                 IpcRequest::ToggleWindow => {
                     info!("Received ToggleWindow request. Spawning GUI with --toggle...");
                     let bin = crate::tray::get_executable_path("clipboard-history-gui");

@@ -4,6 +4,7 @@ use crate::injector::InjectorCascade;
 use crate::list_row::{clean_source_app_name, format_relative_time};
 use clipboard_history_core::config::AppConfig;
 use clipboard_history_core::domain::{ClipboardEntry, EntryType};
+use clipboard_history_core::ipc::IpcClient;
 use clipboard_history_core::transforms::{TextTransforms, UrlCleaner};
 use gdk4::prelude::*;
 use gtk4::prelude::*;
@@ -141,26 +142,7 @@ pub fn show_transforms_popover(
         });
     }
 
-    // Helper for pasting transformed text
-    let make_paste_closure = |transformed: String, win: Window, auto_paste: bool| {
-        move || {
-            if let Some(display) = gdk4::Display::default() {
-                display.clipboard().set_text(&transformed);
-            }
-            win.set_visible(false);
-            if auto_paste {
-                glib::MainContext::default().spawn_local(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    let cascade = InjectorCascade::new();
-                    let (name, success) = cascade.execute_paste().await;
-                    info!(
-                        "Transformed paste executed: injector={}, success={}",
-                        name, success
-                    );
-                });
-            }
-        }
-    };
+    let move_to_top = config.paste.move_pasted_to_top;
 
     // ==========================================
     // 2. Color Detection & Palette (if applicable)
@@ -316,12 +298,16 @@ pub fn show_transforms_popover(
     let t_plain = text_content.clone();
     let win_plain = main_window.clone();
     let auto_paste = config.paste.auto_paste;
+    let id_plain = entry.id.clone();
     plain_btn.connect_clicked(move |_| {
-        make_paste_closure(
-            TextTransforms::strip_formatting(&t_plain),
+        let stripped = TextTransforms::strip_formatting(&t_plain);
+        apply_transformed_paste(
+            stripped,
             win_plain.clone(),
             auto_paste,
-        )();
+            id_plain.clone(),
+            move_to_top,
+        );
     });
     actions_row1.append(&plain_btn);
 
@@ -391,9 +377,16 @@ pub fn show_transforms_popover(
         let t_clean = text_content.clone();
         let win_clean = main_window.clone();
         let auto_paste = config.paste.auto_paste;
+        let id_clean = entry.id.clone();
         clean_btn.connect_clicked(move |_| {
             let cleaned = UrlCleaner::clean_text_urls(&t_clean);
-            make_paste_closure(cleaned, win_clean.clone(), auto_paste)();
+            apply_transformed_paste(
+                cleaned,
+                win_clean.clone(),
+                auto_paste,
+                id_clean.clone(),
+                move_to_top,
+            );
         });
     }
 
@@ -438,41 +431,84 @@ pub fn show_transforms_popover(
         case_row2.append(&camel_btn);
         container.append(&case_row2);
 
-        let t = text_content.clone();
-        let win = main_window.clone();
         let auto_paste = config.paste.auto_paste;
+
+        let t = text_content.clone();
+        let win = main_window.clone();
+        let id = entry.id.clone();
         upper_btn.connect_clicked(move |_| {
-            make_paste_closure(TextTransforms::to_uppercase(&t), win.clone(), auto_paste)();
+            apply_transformed_paste(
+                TextTransforms::to_uppercase(&t),
+                win.clone(),
+                auto_paste,
+                id.clone(),
+                move_to_top,
+            );
         });
 
         let t = text_content.clone();
         let win = main_window.clone();
+        let id = entry.id.clone();
         lower_btn.connect_clicked(move |_| {
-            make_paste_closure(TextTransforms::to_lowercase(&t), win.clone(), auto_paste)();
+            apply_transformed_paste(
+                TextTransforms::to_lowercase(&t),
+                win.clone(),
+                auto_paste,
+                id.clone(),
+                move_to_top,
+            );
         });
 
         let t = text_content.clone();
         let win = main_window.clone();
+        let id = entry.id.clone();
         title_btn.connect_clicked(move |_| {
-            make_paste_closure(TextTransforms::to_title_case(&t), win.clone(), auto_paste)();
+            apply_transformed_paste(
+                TextTransforms::to_title_case(&t),
+                win.clone(),
+                auto_paste,
+                id.clone(),
+                move_to_top,
+            );
         });
 
         let t = text_content.clone();
         let win = main_window.clone();
+        let id = entry.id.clone();
         snake_btn.connect_clicked(move |_| {
-            make_paste_closure(TextTransforms::to_snake_case(&t), win.clone(), auto_paste)();
+            apply_transformed_paste(
+                TextTransforms::to_snake_case(&t),
+                win.clone(),
+                auto_paste,
+                id.clone(),
+                move_to_top,
+            );
         });
 
         let t = text_content.clone();
         let win = main_window.clone();
+        let id = entry.id.clone();
         kebab_btn.connect_clicked(move |_| {
-            make_paste_closure(TextTransforms::to_kebab_case(&t), win.clone(), auto_paste)();
+            apply_transformed_paste(
+                TextTransforms::to_kebab_case(&t),
+                win.clone(),
+                auto_paste,
+                id.clone(),
+                move_to_top,
+            );
         });
 
         let t = text_content.clone();
         let win = main_window.clone();
+        let id = entry.id.clone();
         camel_btn.connect_clicked(move |_| {
-            make_paste_closure(TextTransforms::to_camel_case(&t), win.clone(), auto_paste)();
+            apply_transformed_paste(
+                TextTransforms::to_camel_case(&t),
+                win.clone(),
+                auto_paste,
+                id.clone(),
+                move_to_top,
+            );
         });
 
         // ==========================================
@@ -511,37 +547,54 @@ pub fn show_transforms_popover(
 
         let t = text_content.clone();
         let win = main_window.clone();
+        let id = entry.id.clone();
         json_btn.connect_clicked(move |_| {
             if let Ok(pretty) = TextTransforms::json_prettify(&t) {
-                make_paste_closure(pretty, win.clone(), auto_paste)();
+                apply_transformed_paste(pretty, win.clone(), auto_paste, id.clone(), move_to_top);
             }
         });
 
         let t = text_content.clone();
         let win = main_window.clone();
+        let id = entry.id.clone();
         b64_enc_btn.connect_clicked(move |_| {
-            make_paste_closure(TextTransforms::base64_encode(&t), win.clone(), auto_paste)();
+            apply_transformed_paste(
+                TextTransforms::base64_encode(&t),
+                win.clone(),
+                auto_paste,
+                id.clone(),
+                move_to_top,
+            );
         });
 
         let t = text_content.clone();
         let win = main_window.clone();
+        let id = entry.id.clone();
         b64_dec_btn.connect_clicked(move |_| {
             if let Ok(decoded) = TextTransforms::base64_decode(&t) {
-                make_paste_closure(decoded, win.clone(), auto_paste)();
+                apply_transformed_paste(decoded, win.clone(), auto_paste, id.clone(), move_to_top);
             }
         });
 
         let t = text_content.clone();
         let win = main_window.clone();
+        let id = entry.id.clone();
         url_enc_btn.connect_clicked(move |_| {
-            make_paste_closure(TextTransforms::url_encode(&t), win.clone(), auto_paste)();
+            apply_transformed_paste(
+                TextTransforms::url_encode(&t),
+                win.clone(),
+                auto_paste,
+                id.clone(),
+                move_to_top,
+            );
         });
 
         let t = text_content.clone();
         let win = main_window.clone();
+        let id = entry.id.clone();
         url_dec_btn.connect_clicked(move |_| {
             if let Ok(decoded) = TextTransforms::url_decode(&t) {
-                make_paste_closure(decoded, win.clone(), auto_paste)();
+                apply_transformed_paste(decoded, win.clone(), auto_paste, id.clone(), move_to_top);
             }
         });
     }
@@ -599,4 +652,36 @@ pub fn show_qr_dialog(parent: &Window, text: &str) {
 
     dialog.set_child(Some(&root));
     dialog.present();
+}
+
+fn apply_transformed_paste(
+    transformed: String,
+    win: Window,
+    auto_paste: bool,
+    entry_id: String,
+    move_to_top: bool,
+) {
+    if let Some(display) = gdk4::Display::default() {
+        display.clipboard().set_text(&transformed);
+    }
+    win.set_visible(false);
+    glib::MainContext::default().spawn_local(async move {
+        let hash = clipboard_history_core::blob::BlobStore::compute_hash(transformed.as_bytes());
+        if let Ok(client) = IpcClient::connect().await {
+            let _ = client.prepare_paste(&hash).await;
+            if move_to_top {
+                let _ = client.touch_entry(&entry_id).await;
+            }
+        }
+        clipboard_history_core::copy_to_system_clipboard(&transformed).await;
+        if auto_paste {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let cascade = InjectorCascade::new();
+            let (name, success) = cascade.execute_paste().await;
+            info!(
+                "Transformed paste executed: injector={}, success={}",
+                name, success
+            );
+        }
+    });
 }
