@@ -629,6 +629,30 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                     .await;
                                 }
 
+                                SyncMessage::ClearHistorySync {
+                                    origin_device,
+                                    include_pinned,
+                                } => {
+                                    let is_trusted =
+                                        current_sync.is_peer_trusted(&clean_ip, &origin_device);
+                                    if !is_trusted && !authenticated {
+                                        tracing::warn!(
+                                            "Rejected unauthenticated ClearHistorySync from untrusted peer '{}' ({})",
+                                            origin_device,
+                                            peer_addr
+                                        );
+                                        break;
+                                    }
+                                    info!(
+                                        "Processing ClearHistorySync from peer '{}' (include_pinned={})",
+                                        origin_device, include_pinned
+                                    );
+                                    let _ = sync_repo.clear(include_pinned);
+                                    if let Ok(active_hashes) = sync_repo.get_all_blob_hashes() {
+                                        let _ = sync_blob_store.cleanup_orphans(&active_hashes);
+                                    }
+                                }
+
                                 SyncMessage::Ping => {
                                     if !authenticated
                                         && !current_sync.is_peer_trusted(&clean_ip, "")
@@ -1012,10 +1036,6 @@ async fn flush_micro_batch(
     }
 }
 
-fn extract_host(s: &str) -> &str {
-    s.split(':').next().unwrap_or(s)
-}
-
 fn broadcast_to_peers(
     cfg: &clipboard_history_core::config::SyncConfig,
     entry: &ClipboardEntry,
@@ -1028,7 +1048,7 @@ fn broadcast_to_peers(
     if !cfg.enabled {
         return;
     }
-    use clipboard_history_core::sync::{read_sync_message, send_sync_message, SyncMessage};
+    use clipboard_history_core::sync::SyncMessage;
 
     let mut entry_clone = entry.clone();
     sync_service::decrypt_entry_for_transit(&mut entry_clone, repo, crypto);
@@ -1056,94 +1076,5 @@ fn broadcast_to_peers(
         is_history_batch: false,
     };
 
-    let mut targets: Vec<String> = Vec::new();
-    let mut add_target = |addr: &str| {
-        let host = extract_host(addr);
-        if !targets.iter().any(|t| extract_host(t) == host) {
-            targets.push(addr.to_string());
-        }
-    };
-
-    // 1. Add active peers known from peer_tracker if trusted
-    for (addr, dev_name) in known_peers {
-        if cfg.is_peer_trusted(addr, dev_name) {
-            add_target(addr);
-        }
-    }
-
-    // 2. Add configured manual peer addresses
-    for peer in &cfg.peer_addresses {
-        add_target(peer);
-    }
-
-    // 3. Add any IP addresses directly in trusted_peers
-    for peer in &cfg.trusted_peers {
-        if peer.contains('.') || peer.contains(':') {
-            add_target(peer);
-        }
-    }
-
-    if targets.is_empty() {
-        return;
-    }
-
-    info!(
-        "Broadcasting clipboard entry [{}] to {} peer target(s): {:?}",
-        entry.entry_type,
-        targets.len(),
-        targets
-    );
-
-    for peer in targets {
-        let pin = cfg.pairing_pin.clone();
-        let my_dev_name = cfg.device_name.clone();
-        let msg = msg.clone();
-        tokio::spawn(async move {
-            use std::time::Duration;
-
-            let candidate_peers = if peer.contains(':') {
-                let parts: Vec<&str> = peer.split(':').collect();
-                let ip = parts[0];
-                let port: u16 = parts[1].parse().unwrap_or(54123);
-                let alt_port = if port == 54123 { 54124 } else { 54123 };
-                vec![peer.clone(), format!("{}:{}", ip, alt_port)]
-            } else {
-                vec![format!("{}:54123", peer), format!("{}:54124", peer)]
-            };
-
-            for candidate in candidate_peers {
-                let connect_fut = tokio::net::TcpStream::connect(&candidate);
-                if let Ok(Ok(mut stream)) =
-                    tokio::time::timeout(Duration::from_secs(3), connect_fut).await
-                {
-                    let (mut reader, mut writer) = stream.split();
-                    // 1. Handshake with AuthRequest
-                    let auth_req = SyncMessage::AuthRequest {
-                        device_name: my_dev_name.clone(),
-                        pairing_pin: pin.clone(),
-                        nonce: rand::random(),
-                    };
-                    if send_sync_message(&mut writer, &pin, &auth_req)
-                        .await
-                        .is_err()
-                    {
-                        continue;
-                    }
-                    // 2. Await AuthResponse
-                    if let Ok(SyncMessage::AuthResponse { success: true, .. }) =
-                        read_sync_message(&mut reader, &pin).await
-                    {
-                        // 3. Send entry
-                        if send_sync_message(&mut writer, &pin, &msg).await.is_ok() {
-                            info!(
-                                "Successfully synchronized clipboard entry to peer at {}",
-                                candidate
-                            );
-                        }
-                        break; // Delivered successfully
-                    }
-                }
-            }
-        });
-    }
+    sync_service::broadcast_sync_message(cfg, known_peers, msg);
 }

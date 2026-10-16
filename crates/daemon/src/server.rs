@@ -330,7 +330,28 @@ impl DaemonServer {
                 },
 
                 IpcRequest::ClearHistory { include_pinned } => match repo.clear(include_pinned) {
-                    Ok(_) => IpcResponse::Success,
+                    Ok(_) => {
+                        if let Ok(active_hashes) = repo.get_all_blob_hashes() {
+                            let _ = blob_store.cleanup_orphans(&active_hashes);
+                        }
+
+                        // If Network Sync is enabled, broadcast ClearHistorySync to all paired devices
+                        let sync_cfg = config.read().await.sync.clone();
+                        if sync_cfg.enabled {
+                            let active_peers = peer_tracker.get_all_peers().await;
+                            let clear_msg = clipboard_history_core::sync::SyncMessage::ClearHistorySync {
+                                origin_device: sync_cfg.device_name.clone(),
+                                include_pinned,
+                            };
+                            crate::sync_service::broadcast_sync_message(
+                                &sync_cfg,
+                                &active_peers,
+                                clear_msg,
+                            );
+                        }
+
+                        IpcResponse::Success
+                    }
                     Err(e) => IpcResponse::Error(e.to_string()),
                 },
 

@@ -448,6 +448,122 @@ pub async fn perform_mutual_history_sync(
     true
 }
 
+/// Helper to extract host/IP without port
+pub fn extract_host(s: &str) -> &str {
+    s.split(':').next().unwrap_or(s)
+}
+
+/// Broadcasts a SyncMessage (e.g. EntrySync or ClearHistorySync) to all active, trusted, or configured peers.
+pub fn broadcast_sync_message(
+    cfg: &clipboard_history_core::config::SyncConfig,
+    known_peers: &[(String, String)],
+    msg: SyncMessage,
+) {
+    if !cfg.enabled {
+        return;
+    }
+
+    let mut targets: Vec<String> = Vec::new();
+    let mut add_target = |addr: &str| {
+        let host = extract_host(addr);
+        if !targets.iter().any(|t| extract_host(t) == host) {
+            targets.push(addr.to_string());
+        }
+    };
+
+    // 1. Add active peers known from peer_tracker if trusted
+    for (addr, dev_name) in known_peers {
+        if cfg.is_peer_trusted(addr, dev_name) {
+            add_target(addr);
+        }
+    }
+
+    // 2. Add configured manual peer addresses
+    for peer in &cfg.peer_addresses {
+        add_target(peer);
+    }
+
+    // 3. Add any IP addresses directly in trusted_peers
+    for peer in &cfg.trusted_peers {
+        if peer.contains('.') || peer.contains(':') {
+            add_target(peer);
+        }
+    }
+
+    if targets.is_empty() {
+        return;
+    }
+
+    let msg_name = match &msg {
+        SyncMessage::ClearHistorySync { .. } => "ClearHistorySync",
+        SyncMessage::EntrySync { entry, .. } => {
+            debug!("Broadcasting entry type: {}", entry.entry_type);
+            "EntrySync"
+        }
+        _ => "SyncMessage",
+    };
+
+    info!(
+        "Broadcasting {} to {} peer target(s): {:?}",
+        msg_name,
+        targets.len(),
+        targets
+    );
+
+    for peer in targets {
+        let pin = cfg.pairing_pin.clone();
+        let my_dev_name = cfg.device_name.clone();
+        let msg = msg.clone();
+        tokio::spawn(async move {
+            use std::time::Duration;
+
+            let candidate_peers = if peer.contains(':') {
+                let parts: Vec<&str> = peer.split(':').collect();
+                let ip = parts[0];
+                let port: u16 = parts[1].parse().unwrap_or(54123);
+                let alt_port = if port == 54123 { 54124 } else { 54123 };
+                vec![peer.clone(), format!("{}:{}", ip, alt_port)]
+            } else {
+                vec![format!("{}:54123", peer), format!("{}:54124", peer)]
+            };
+
+            for candidate in candidate_peers {
+                let connect_fut = tokio::net::TcpStream::connect(&candidate);
+                if let Ok(Ok(mut stream)) =
+                    tokio::time::timeout(Duration::from_secs(3), connect_fut).await
+                {
+                    let (mut reader, mut writer) = stream.split();
+                    // 1. Handshake with AuthRequest
+                    let auth_req = SyncMessage::AuthRequest {
+                        device_name: my_dev_name.clone(),
+                        pairing_pin: pin.clone(),
+                        nonce: rand::random(),
+                    };
+                    if send_sync_message(&mut writer, &pin, &auth_req)
+                        .await
+                        .is_err()
+                    {
+                        continue;
+                    }
+                    // 2. Await AuthResponse
+                    if let Ok(SyncMessage::AuthResponse { success: true, .. }) =
+                        read_sync_message(&mut reader, &pin).await
+                    {
+                        // 3. Send message
+                        if send_sync_message(&mut writer, &pin, &msg).await.is_ok() {
+                            info!(
+                                "Successfully synchronized {} to peer at {}",
+                                msg_name, candidate
+                            );
+                        }
+                        break;
+                    }
+                }
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,5 +591,17 @@ mod tests {
             .await;
         assert!(tracker.is_echo("sample_hash_2").await);
         assert!(tracker.is_echo("sample_hash_1").await);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_sync_message_noop_when_disabled() {
+        let mut cfg = clipboard_history_core::config::SyncConfig::default();
+        cfg.enabled = false;
+        let msg = SyncMessage::ClearHistorySync {
+            origin_device: "test-dev".to_string(),
+            include_pinned: true,
+        };
+        // Should safely no-op without panicking
+        broadcast_sync_message(&cfg, &[], msg);
     }
 }

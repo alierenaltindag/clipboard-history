@@ -1527,6 +1527,93 @@ async fn test_history_sync_protocol_messages() {
     receiver.await.unwrap();
 }
 
+#[tokio::test]
+async fn test_clear_history_sync_protocol_messages_and_handling() {
+    use clipboard_history_core::domain::ClipboardEntry;
+    use clipboard_history_core::storage::SqliteRepository;
+    use clipboard_history_core::sync::{read_sync_message, send_sync_message, SyncMessage};
+
+    // 1. Verify encrypted duplex transmission of ClearHistorySync
+    let (mut sender_io, mut receiver_io) = tokio::io::duplex(64 * 1024);
+    let pin = "123456";
+
+    let sender = tokio::spawn(async move {
+        let clear_msg = SyncMessage::ClearHistorySync {
+            origin_device: "laptop-a".to_string(),
+            include_pinned: false,
+        };
+        send_sync_message(&mut sender_io, pin, &clear_msg)
+            .await
+            .unwrap();
+
+        let clear_all = SyncMessage::ClearHistorySync {
+            origin_device: "laptop-a".to_string(),
+            include_pinned: true,
+        };
+        send_sync_message(&mut sender_io, pin, &clear_all)
+            .await
+            .unwrap();
+    });
+
+    let receiver = tokio::spawn(async move {
+        let msg1 = read_sync_message(&mut receiver_io, pin).await.unwrap();
+        match msg1 {
+            SyncMessage::ClearHistorySync {
+                origin_device,
+                include_pinned,
+            } => {
+                assert_eq!(origin_device, "laptop-a");
+                assert!(!include_pinned);
+            }
+            _ => panic!("Expected ClearHistorySync (include_pinned=false)"),
+        }
+
+        let msg2 = read_sync_message(&mut receiver_io, pin).await.unwrap();
+        match msg2 {
+            SyncMessage::ClearHistorySync {
+                origin_device,
+                include_pinned,
+            } => {
+                assert_eq!(origin_device, "laptop-a");
+                assert!(include_pinned);
+            }
+            _ => panic!("Expected ClearHistorySync (include_pinned=true)"),
+        }
+    });
+
+    sender.await.unwrap();
+    receiver.await.unwrap();
+
+    // 2. Verify that applying ClearHistorySync to a peer repository behaves correctly
+    let repo = SqliteRepository::open_in_memory().unwrap();
+    let mut entry1 = ClipboardEntry::new_text(
+        "item 1".to_string(),
+        "h1".to_string(),
+        vec!["text/plain".to_string()],
+        None,
+    );
+    entry1.is_pinned = false;
+    let mut entry2 = ClipboardEntry::new_text(
+        "item 2 pinned".to_string(),
+        "h2".to_string(),
+        vec!["text/plain".to_string()],
+        None,
+    );
+    entry2.is_pinned = true;
+
+    repo.insert_or_update(&entry1).unwrap();
+    repo.insert_or_update(&entry2).unwrap();
+    assert_eq!(repo.count().unwrap(), 2);
+
+    // Simulated handler for ClearHistorySync { include_pinned: false }
+    let _ = repo.clear(false);
+    assert_eq!(repo.count().unwrap(), 1); // Pinned item preserved
+
+    // Simulated handler for ClearHistorySync { include_pinned: true }
+    let _ = repo.clear(true);
+    assert_eq!(repo.count().unwrap(), 0); // All items cleared
+}
+
 #[test]
 fn test_sqlite_history_sync_timestamp_preservation() {
     use chrono::{Duration, Utc};

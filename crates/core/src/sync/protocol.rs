@@ -53,4 +53,9 @@ pub enum SyncMessage {
         origin_device: String,
         count: usize,
     },
+    /// Request clearing of history across paired devices
+    ClearHistorySync {
+        origin_device: String,
+        include_pinned: bool,
+    },
 }

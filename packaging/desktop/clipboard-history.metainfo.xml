@@ -32,6 +32,11 @@
     <binary>clipboard-history-gui</binary>
   </provides>
   <releases>
+    <release version="1.1.1" date="2026-10-16">
+      <description>
+        <p>Introduces network sync propagation for Clear All operations, ensuring history is cleaned synchronously across all paired devices, with support for preserving pinned items.</p>
+      </description>
+    </release>
     <release version="1.1.0" date="2026-10-16">
       <description>
         <p>Major OCR engine upgrade featuring full Turkish character accuracy, multi-pass page segmentation (PSM 6 with fallback), adaptive Lanczos3 upscaling, dynamic contrast normalization, unquantized neural model support (tessdata_best), and one-click terminal dependency installer.</p>
