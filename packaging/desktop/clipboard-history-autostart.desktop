@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Clipboard History Daemon
+GenericName=Clipboard Manager Background Service
+Comment=High-performance background clipboard watcher daemon
+Exec=clipboard-history-daemon
+Terminal=false
+Hidden=false
+NoDisplay=true
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+X-KDE-autostart-after=panel
+# Instructs systemd-xdg-autostart-generator to skip generating duplicate units on systemd sessions
+X-systemd-skip=true
+Categories=Utility;System;

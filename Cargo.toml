@@ -1,0 +1,28 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/daemon",
+    "crates/gui",
+    "crates/cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+authors = ["Ali Eren Altındağ <alierenaltindaag@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/alierenaltindag/clipboard-history"
+homepage = "https://github.com/alierenaltindag/clipboard-history"
+readme = "README.md"
+rust-version = "1.80"
+description = "Universal Linux Clipboard History utility (Windows Win+V alternative) for Wayland and X11"
+keywords = ["clipboard", "wayland", "x11", "history", "linux"]
+categories = ["command-line-utilities", "gui"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
