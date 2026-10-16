@@ -371,6 +371,113 @@ fn test_text_transforms_and_color_detection() {
     assert!(qr_svg.contains("</svg>"));
 }
 
+#[tokio::test]
+async fn test_ocr_engine_language_selection_and_preprocessing() {
+    use clipboard_history_core::transforms::OcrEngine;
+    use image::{ImageBuffer, Rgba};
+    use std::io::Cursor;
+
+    // 1. Test language selection
+    let empty_langs: Vec<String> = vec![];
+    assert_eq!(OcrEngine::determine_ocr_languages(&empty_langs), None);
+
+    let eng_only = vec!["eng".to_string()];
+    assert_eq!(
+        OcrEngine::determine_ocr_languages(&eng_only),
+        Some("eng".to_string())
+    );
+
+    let eng_osd = vec!["eng".to_string(), "osd".to_string()];
+    assert_eq!(
+        OcrEngine::determine_ocr_languages(&eng_osd),
+        Some("eng".to_string())
+    );
+
+    // Turkish prioritization
+    let tur_eng_osd = vec!["tur".to_string(), "eng".to_string(), "osd".to_string()];
+    assert_eq!(
+        OcrEngine::determine_ocr_languages(&tur_eng_osd),
+        Some("tur+eng".to_string())
+    );
+
+    // Fallback when detected locale not installed (excludes osd)
+    let deu_osd = vec!["deu".to_string(), "osd".to_string()];
+    let res = OcrEngine::determine_ocr_languages(&deu_osd);
+    assert_eq!(res, Some("deu".to_string()));
+
+    // 2. Test image preprocessing with alpha transparency, upscaling and 20px padding
+    // Create an 80x80 image with transparent pixels and some black text pixels
+    let mut img = ImageBuffer::<Rgba<u8>, Vec<u8>>::new(80, 80);
+    for (x, y, pixel) in img.enumerate_pixels_mut() {
+        if x < 40 && y < 40 {
+            // Transparent pixel
+            *pixel = Rgba([0, 0, 0, 0]);
+        } else {
+            // Black pixel
+            *pixel = Rgba([0, 0, 0, 255]);
+        }
+    }
+
+    let mut raw_png = Cursor::new(Vec::new());
+    img.write_to(&mut raw_png, image::ImageFormat::Png).unwrap();
+    let raw_bytes = raw_png.into_inner();
+
+    let preprocessed = OcrEngine::preprocess_image_bytes(&raw_bytes);
+    let loaded = image::load_from_memory(&preprocessed).expect("Failed to load preprocessed image");
+
+    // Dimensions: 80 * 3 = 240 + 20px padding on each side = 280
+    assert_eq!(loaded.width(), 280);
+    assert_eq!(loaded.height(), 280);
+
+    // Border padding at (5, 5) must be white (255, 255, 255)
+    let rgb = loaded.to_rgb8();
+    let border_pixel = rgb.get_pixel(5, 5);
+    assert_eq!(border_pixel.0, [255, 255, 255]);
+
+    // 3. Test tesseract error handling when not installed
+    if !OcrEngine::is_available().await {
+        let err = OcrEngine::extract_text(&raw_bytes).await.unwrap_err();
+        assert!(err.to_string().contains("Tesseract OCR is not installed"));
+    }
+}
+
+#[tokio::test]
+async fn test_tesseract_turkish_language_priority() {
+    use clipboard_history_core::transforms::OcrEngine;
+
+    if !OcrEngine::is_available().await {
+        return;
+    }
+
+    let langs = OcrEngine::get_installed_languages().await;
+    if langs.iter().any(|l| l == "tur") {
+        let determined = OcrEngine::determine_ocr_languages(&langs).unwrap();
+        assert!(determined.contains("tur"), "Must prioritize Turkish when 'tur' is installed, got: {}", determined);
+        assert!(!determined.contains("osd"), "Must not include 'osd' in recognition languages, got: {}", determined);
+    }
+}
+
+#[tokio::test]
+async fn test_turkish_ocr_accuracy_on_real_sample() {
+    use clipboard_history_core::transforms::OcrEngine;
+
+    if !OcrEngine::is_available().await {
+        return;
+    }
+
+    let sample_path = "/home/laptop-ubuntu/.local/share/clipboard-history/blobs/68c773c53335bfbff222c9f068dd18b59ce19d5a372a8dba80265a14b622d5ab.blob";
+    if let Ok(bytes) = std::fs::read(sample_path) {
+        let extracted = OcrEngine::extract_text(&bytes).await.expect("OCR extraction failed");
+        println!("\n================== EXTRACTED OCR TEXT ==================");
+        println!("{}", extracted);
+        println!("=======================================================\n");
+        assert!(extracted.contains("İşlem") || extracted.contains("işlem"));
+        assert!(extracted.contains("Türkçe"));
+        assert!(extracted.contains("İngilizce") || extracted.contains("ingilizce"));
+    }
+}
+
+
 #[test]
 fn test_security_config_defaults_and_toggle() {
     use clipboard_history_core::config::AppConfig;

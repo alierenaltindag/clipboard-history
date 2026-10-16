@@ -383,9 +383,269 @@ impl OcrEngine {
             .unwrap_or(false)
     }
 
-    /// Run tesseract on raw image bytes asynchronously
+    /// Checks if a custom high-accuracy tessdata directory exists (e.g. ~/.local/share/clipboard-history/tessdata)
+    pub fn get_custom_tessdata_dir() -> Option<std::path::PathBuf> {
+        if let Ok(dir) = std::env::var("CLIPBOARD_HISTORY_TESSDATA") {
+            let p = std::path::PathBuf::from(dir);
+            if p.is_dir() {
+                return Some(p);
+            }
+        }
+
+        let p = crate::config::AppConfig::data_dir().join("tessdata");
+        if p.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&p) {
+                let has_traineddata = entries.filter_map(|e| e.ok()).any(|e| {
+                    e.path()
+                        .extension()
+                        .map(|ext| ext == "traineddata")
+                        .unwrap_or(false)
+                });
+                if has_traineddata {
+                    return Some(p);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Queries installed languages from `tesseract --list-langs` (merging custom tessdata and system models)
+    pub async fn get_installed_languages() -> Vec<String> {
+        let mut langs = std::collections::BTreeSet::new();
+
+        // 1. Check custom tessdata directory if present
+        if let Some(custom_dir) = Self::get_custom_tessdata_dir() {
+            let output = tokio::process::Command::new("tesseract")
+                .arg("--tessdata-dir")
+                .arg(&custom_dir)
+                .arg("--list-langs")
+                .output()
+                .await;
+
+            if let Ok(out) = output {
+                if out.status.success() {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    for line in stdout.lines() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() && !trimmed.starts_with("List of available languages") {
+                            langs.insert(trimmed.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Query system tesseract languages
+        let output = tokio::process::Command::new("tesseract")
+            .arg("--list-langs")
+            .output()
+            .await;
+
+        if let Ok(out) = output {
+            if out.status.success() {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                for line in stdout.lines() {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() && !trimmed.starts_with("List of available languages") {
+                        langs.insert(trimmed.to_string());
+                    }
+                }
+            }
+        }
+
+        langs.into_iter().collect()
+    }
+
+    /// Selects an optimal language string (e.g. "tur+eng" or "eng") based on system locale and installed languages.
+    /// Note: `osd` is strictly excluded from recognition models as it degrades LSTM accuracy.
+    pub fn determine_ocr_languages(installed: &[String]) -> Option<String> {
+        if installed.is_empty() {
+            return None;
+        }
+
+        let has_tur = installed.iter().any(|l| l == "tur");
+        let has_eng = installed.iter().any(|l| l == "eng");
+
+        // If Turkish language data is installed, prioritize Turkish + English
+        if has_tur {
+            return if has_eng {
+                Some("tur+eng".to_string())
+            } else {
+                Some("tur".to_string())
+            };
+        }
+
+        let locale_lang = std::env::var("LC_ALL")
+            .or_else(|_| std::env::var("LC_MESSAGES"))
+            .or_else(|_| std::env::var("LANG"))
+            .unwrap_or_default()
+            .to_lowercase();
+
+        let prefix = locale_lang.split(['_', '.', '@', '-']).next().unwrap_or("");
+        let mapped_tess_lang = match prefix {
+            "tr" => Some("tur"),
+            "de" => Some("deu"),
+            "fr" => Some("fra"),
+            "es" => Some("spa"),
+            "it" => Some("ita"),
+            "pt" => Some("por"),
+            "ru" => Some("rus"),
+            "pl" => Some("pol"),
+            "nl" => Some("nld"),
+            "uk" => Some("ukr"),
+            "ar" => Some("ara"),
+            "zh" => Some("chi_sim"),
+            "ja" => Some("jpn"),
+            "ko" => Some("kor"),
+            "en" => Some("eng"),
+            _ => None,
+        };
+
+        if let Some(target_lang) = mapped_tess_lang {
+            if installed.iter().any(|l| l == target_lang) {
+                if target_lang == "eng" {
+                    return Some("eng".to_string());
+                } else if has_eng {
+                    return Some(format!("{}+eng", target_lang));
+                } else {
+                    return Some(target_lang.to_string());
+                }
+            }
+        }
+
+        // Fallback if detected locale language is not installed
+        if has_eng {
+            Some("eng".to_string())
+        } else {
+            installed
+                .iter()
+                .find(|l| l.as_str() != "osd")
+                .cloned()
+                .or_else(|| installed.first().cloned())
+        }
+    }
+
+    /// Preprocesses image bytes to optimize OCR recognition:
+    /// - Composites alpha transparency onto solid white and converts to ITU-R 601 grayscale
+    ///   (eliminates LCD subpixel color fringing that corrupts diacritics like dots on i/ö/ü, breves on ğ, cedillas on ç/ş)
+    /// - Detects dark mode backgrounds and inverts to dark text on white
+    /// - Applies dynamic contrast stretching to maximize separation of text strokes
+    /// - Adaptively upscales low-resolution screenshots using Lanczos3
+    /// - Adds a 20px solid white border (padding) for reliable page segmentation
+    pub fn preprocess_image_bytes(image_bytes: &[u8]) -> Vec<u8> {
+        let img = match image::load_from_memory(image_bytes) {
+            Ok(i) => i,
+            Err(_) => return image_bytes.to_vec(),
+        };
+
+        let (orig_w, orig_h) = (img.width(), img.height());
+        if orig_w == 0 || orig_h == 0 {
+            return image_bytes.to_vec();
+        }
+
+        // 1. Composite onto white and convert to grayscale
+        let rgba = img.to_rgba8();
+        let mut gray = image::GrayImage::new(orig_w, orig_h);
+        let mut total_luma: u64 = 0;
+        let mut min_luma: u8 = 255;
+        let mut max_luma: u8 = 0;
+
+        for (x, y, pixel) in rgba.enumerate_pixels() {
+            let a = pixel[3] as f32 / 255.0;
+            let r = (pixel[0] as f32 * a) + (255.0 * (1.0 - a));
+            let g = (pixel[1] as f32 * a) + (255.0 * (1.0 - a));
+            let b = (pixel[2] as f32 * a) + (255.0 * (1.0 - a));
+
+            let luma = (0.299 * r + 0.587 * g + 0.114 * b).round().clamp(0.0, 255.0) as u8;
+            total_luma += luma as u64;
+
+            if luma < min_luma { min_luma = luma; }
+            if luma > max_luma { max_luma = luma; }
+
+            gray.put_pixel(x, y, image::Luma([luma]));
+        }
+
+        let pixel_count = (orig_w as u64) * (orig_h as u64);
+        let avg_luma = if pixel_count > 0 {
+            (total_luma / pixel_count) as u8
+        } else {
+            255
+        };
+
+        // 2. Dark mode inversion: If background is dark (average luminance < 120),
+        // invert colors so light text becomes dark text on a white background.
+        if avg_luma < 120 {
+            for pixel in gray.pixels_mut() {
+                pixel[0] = 255 - pixel[0];
+            }
+            let old_min = min_luma;
+            min_luma = 255 - max_luma;
+            max_luma = 255 - old_min;
+        }
+
+        // 3. Dynamic contrast stretch:
+        // Spreads out pixel luminance so faint diacritics and dots stand out clearly against background.
+        if max_luma > min_luma && (max_luma - min_luma) >= 20 {
+            let range = (max_luma - min_luma) as f32;
+            for pixel in gray.pixels_mut() {
+                let val = pixel[0];
+                let stretched = (((val.saturating_sub(min_luma)) as f32 / range) * 255.0)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+                pixel[0] = stretched;
+            }
+        }
+
+        // 4. Adaptive High-DPI Upscaling:
+        // Desktop font heights are often 9-14px; Tesseract LSTM functions best with ~30-35px glyph heights.
+        let scale_factor = if orig_h < 150 || orig_w < 200 {
+            3
+        } else if orig_h < 600 || orig_w < 800 {
+            2
+        } else {
+            1
+        };
+
+        let scaled = if scale_factor > 1 {
+            let target_w = orig_w.saturating_mul(scale_factor).min(4096);
+            let target_h = orig_h.saturating_mul(scale_factor).min(4096);
+            image::imageops::resize(&gray, target_w, target_h, image::imageops::FilterType::Lanczos3)
+        } else {
+            gray
+        };
+
+        // 5. Add 20px Solid White Border (Padding):
+        let pad = 20u32;
+        let padded_w = scaled.width() + pad * 2;
+        let padded_h = scaled.height() + pad * 2;
+        let mut padded =
+            image::GrayImage::from_pixel(padded_w, padded_h, image::Luma([255]));
+
+        image::imageops::overlay(&mut padded, &scaled, pad as i64, pad as i64);
+
+        let final_img = image::DynamicImage::ImageLuma8(padded);
+
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        if final_img.write_to(&mut buffer, image::ImageFormat::Png).is_ok() {
+            buffer.into_inner()
+        } else {
+            image_bytes.to_vec()
+        }
+    }
+
+    /// Run tesseract on raw image bytes asynchronously with preprocessing, multi-pass PSM, and timeout protection
     pub async fn extract_text(image_bytes: &[u8]) -> Result<String, crate::error::CoreError> {
         use std::io::Write;
+
+        if !Self::is_available().await {
+            return Err(crate::error::CoreError::Storage(
+                "Tesseract OCR is not installed. Please install 'tesseract-ocr' on your system."
+                    .to_string(),
+            ));
+        }
+
+        let preprocessed = Self::preprocess_image_bytes(image_bytes);
 
         let mut temp_file = tempfile::Builder::new()
             .prefix("clipboard-ocr-")
@@ -395,33 +655,103 @@ impl OcrEngine {
                 crate::error::CoreError::Storage(format!("Failed to create OCR tempfile: {}", e))
             })?;
 
-        temp_file.write_all(image_bytes).map_err(|e| {
+        temp_file.write_all(&preprocessed).map_err(|e| {
             crate::error::CoreError::Storage(format!("Failed to write OCR tempfile: {}", e))
         })?;
 
         let temp_path = temp_file.path().to_path_buf();
+        let installed_langs = Self::get_installed_languages().await;
+        let lang_arg = Self::determine_ocr_languages(&installed_langs);
+        let custom_tessdata = Self::get_custom_tessdata_dir();
 
-        let output = tokio::process::Command::new("tesseract")
-            .arg(&temp_path)
-            .arg("stdout")
-            .arg("-l")
-            .arg("eng+osd")
-            .output()
-            .await
-            .map_err(|e| {
-                crate::error::CoreError::Storage(format!("Failed to run tesseract: {}", e))
-            })?;
+        let run_tesseract = |psm: &str| {
+            let mut cmd = tokio::process::Command::new("tesseract");
+            if let Some(ref dir) = custom_tessdata {
+                cmd.arg("--tessdata-dir").arg(dir);
+            }
+            cmd.arg(&temp_path).arg("stdout");
+            if let Some(ref langs) = lang_arg {
+                cmd.arg("-l").arg(langs);
+            }
+            cmd.arg("--dpi").arg("300");
+            cmd.arg("--oem").arg("1");
+            cmd.arg("--psm").arg(psm);
+            cmd.arg("-c").arg("preserve_interword_spaces=1");
+            cmd.kill_on_drop(true);
+            cmd
+        };
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(crate::error::CoreError::Storage(format!(
-                "Tesseract failed: {}",
-                stderr
-            )));
+        // Pass 1: PSM 6 (Assume a single uniform block of text - optimal for clipboard snippets & UI captures)
+        let output = match tokio::time::timeout(std::time::Duration::from_secs(25), run_tesseract("6").output()).await {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => {
+                return Err(crate::error::CoreError::Storage(format!(
+                    "Failed to execute tesseract: {}",
+                    e
+                )));
+            }
+            Err(_) => {
+                return Err(crate::error::CoreError::Storage(
+                    "OCR process timed out after 25 seconds".to_string(),
+                ));
+            }
+        };
+
+        let mut text = if output.status.success() {
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        } else {
+            String::new()
+        };
+
+        // Pass 2 (Fallback): If PSM 6 returns empty or very short non-word text, try PSM 3 (standard layout analysis)
+        if text.chars().filter(|c| c.is_alphanumeric()).count() < 2 {
+            let mut cmd3 = run_tesseract("3");
+            if let Ok(Ok(retry_out)) = tokio::time::timeout(std::time::Duration::from_secs(15), cmd3.output()).await {
+                if retry_out.status.success() {
+                    let retry_text = String::from_utf8_lossy(&retry_out.stdout).trim().to_string();
+                    if retry_text.chars().filter(|c| c.is_alphanumeric()).count() >= 2 {
+                        text = retry_text;
+                    }
+                }
+            }
         }
 
-        let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Ok(text)
+        // Pass 3 (Sparse Fallback): If still empty, try PSM 11 (Sparse text)
+        if text.chars().filter(|c| c.is_alphanumeric()).count() < 2 {
+            let mut retry_cmd = run_tesseract("11");
+            if let Ok(Ok(retry_out)) =
+                tokio::time::timeout(std::time::Duration::from_secs(15), retry_cmd.output()).await
+            {
+                if retry_out.status.success() {
+                    let retry_text = String::from_utf8_lossy(&retry_out.stdout).trim().to_string();
+                    if !retry_text.is_empty() {
+                        text = retry_text;
+                    }
+                }
+            }
+        }
+
+        // Clean up repeated blank lines while preserving paragraphs
+        let lines: Vec<&str> = text.lines().map(|l| l.trim_end()).collect();
+        let mut final_text = String::with_capacity(text.len());
+        let mut prev_empty = false;
+        for line in lines {
+            let is_empty = line.trim().is_empty();
+            if is_empty {
+                if !prev_empty && !final_text.is_empty() {
+                    final_text.push('\n');
+                    prev_empty = true;
+                }
+            } else {
+                if !final_text.is_empty() && !prev_empty {
+                    final_text.push('\n');
+                }
+                final_text.push_str(line);
+                prev_empty = false;
+            }
+        }
+
+        Ok(final_text)
     }
 }
 

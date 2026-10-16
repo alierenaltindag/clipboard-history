@@ -284,42 +284,71 @@ pub fn show_transforms_popover(
     copy_btn.add_css_class("suggested");
     let text_for_copy = text_content.clone();
     let win_for_copy = main_window.clone();
+    let is_image_entry = entry.entry_type == EntryType::Image;
+    let image_blob_hash = entry.blob_hash.clone();
     copy_btn.connect_clicked(move |_| {
-        if let Some(display) = gdk4::Display::default() {
+        if is_image_entry {
+            let blobs_dir = AppConfig::blobs_dir();
+            let find_blob = |hash: &str| -> Option<std::path::PathBuf> {
+                let direct = blobs_dir.join(hash);
+                if direct.exists() {
+                    return Some(direct);
+                }
+                let with_ext = blobs_dir.join(format!("{}.blob", hash));
+                if with_ext.exists() {
+                    return Some(with_ext);
+                }
+                None
+            };
+            if let Some(p) = image_blob_hash.as_deref().and_then(find_blob) {
+                if let Ok(bytes) = std::fs::read(&p) {
+                    glib::MainContext::default().spawn_local(async move {
+                        clipboard_history_core::clipboard::copy_image_to_system_clipboard(
+                            &bytes,
+                            Some("image/png"),
+                        )
+                        .await;
+                    });
+                }
+            }
+        } else if let Some(display) = gdk4::Display::default() {
             display.clipboard().set_text(&text_for_copy);
         }
         win_for_copy.set_visible(false);
     });
     actions_row1.append(&copy_btn);
 
-    // Paste Plain Text (Strips formatting and pastes)
-    let plain_btn = Button::with_label("📄 Plain Text");
-    plain_btn.add_css_class("popover-action-btn");
-    let t_plain = text_content.clone();
-    let win_plain = main_window.clone();
-    let auto_paste = config.paste.auto_paste;
-    let id_plain = entry.id.clone();
-    plain_btn.connect_clicked(move |_| {
-        let stripped = TextTransforms::strip_formatting(&t_plain);
-        apply_transformed_paste(
-            stripped,
-            win_plain.clone(),
-            auto_paste,
-            id_plain.clone(),
-            move_to_top,
-        );
-    });
-    actions_row1.append(&plain_btn);
+    // Paste Plain Text & QR Code (only applicable to text entries)
+    if entry.entry_type != EntryType::Image {
+        // Paste Plain Text (Strips formatting and pastes)
+        let plain_btn = Button::with_label("📄 Plain Text");
+        plain_btn.add_css_class("popover-action-btn");
+        let t_plain = text_content.clone();
+        let win_plain = main_window.clone();
+        let auto_paste = config.paste.auto_paste;
+        let id_plain = entry.id.clone();
+        plain_btn.connect_clicked(move |_| {
+            let stripped = TextTransforms::strip_formatting(&t_plain);
+            apply_transformed_paste(
+                stripped,
+                win_plain.clone(),
+                auto_paste,
+                id_plain.clone(),
+                move_to_top,
+            );
+        });
+        actions_row1.append(&plain_btn);
 
-    // View QR Code
-    let qr_btn = Button::with_label("📱 QR Code");
-    qr_btn.add_css_class("popover-action-btn");
-    let t_qr = text_content.clone();
-    let win_qr = main_window.clone();
-    qr_btn.connect_clicked(move |_| {
-        show_qr_dialog(&win_qr, &t_qr);
-    });
-    actions_row1.append(&qr_btn);
+        // View QR Code
+        let qr_btn = Button::with_label("📱 QR Code");
+        qr_btn.add_css_class("popover-action-btn");
+        let t_qr = text_content.clone();
+        let win_qr = main_window.clone();
+        qr_btn.connect_clicked(move |_| {
+            show_qr_dialog(&win_qr, &t_qr);
+        });
+        actions_row1.append(&qr_btn);
+    }
 
     container.append(&actions_row1);
 
@@ -334,9 +363,21 @@ pub fn show_transforms_popover(
 
         let hash_cloned = blob_hash.clone();
         let win_ocr = main_window.clone();
+        let pop_ocr = popover.clone();
+        let btn_ocr = ocr_btn.clone();
+        let entry_id = entry.id.clone();
+        let auto_paste = config.paste.auto_paste;
+
         ocr_btn.connect_clicked(move |_| {
             let hash = hash_cloned.clone();
             let win = win_ocr.clone();
+            let pop = pop_ocr.clone();
+            let btn = btn_ocr.clone();
+            let id = entry_id.clone();
+
+            btn.set_sensitive(false);
+            btn.set_label("⏳ Extracting text (OCR)...");
+
             glib::MainContext::default().spawn_local(async move {
                 if let Ok(client) = clipboard_history_core::ipc::IpcClient::connect().await {
                     match client
@@ -346,20 +387,67 @@ pub fn show_transforms_popover(
                         .await
                     {
                         Ok(clipboard_history_core::ipc::IpcResponse::OcrResult { text }) => {
-                            if let Some(display) = gdk4::Display::default() {
-                                display.clipboard().set_text(&text);
+                            let trimmed = text.trim();
+                            if trimmed.is_empty() {
+                                btn.set_label("⚠️ No text found in image");
+                                btn.set_sensitive(true);
+                                let b = btn.clone();
+                                glib::timeout_add_local_once(
+                                    std::time::Duration::from_secs(3),
+                                    move || {
+                                        b.set_label("🔍 Extract Text (OCR)");
+                                    },
+                                );
+                            } else {
+                                pop.popdown();
+                                apply_transformed_paste(
+                                    text.clone(),
+                                    win.clone(),
+                                    auto_paste,
+                                    id,
+                                    move_to_top,
+                                );
+                                info!(
+                                    "OCR extracted {} characters and copied to clipboard",
+                                    text.len()
+                                );
                             }
-                            win.set_visible(false);
-                            info!(
-                                "OCR extracted {} characters and copied to clipboard",
-                                text.len()
-                            );
                         }
                         Ok(clipboard_history_core::ipc::IpcResponse::Error(e)) => {
                             tracing::warn!("OCR request failed: {}", e);
+                            btn.set_sensitive(true);
+                            if e.contains("not installed") {
+                                btn.set_label("⚠️ Tesseract not installed");
+                                let b_install = btn.clone();
+                                show_ocr_missing_dialog(
+                                    &win,
+                                    Some(std::rc::Rc::new(move || {
+                                        b_install.set_label("⏳ Installing in terminal...");
+                                    })),
+                                );
+                            } else {
+                                btn.set_label("⚠️ OCR failed");
+                            }
+                            let b = btn.clone();
+                            glib::timeout_add_local_once(
+                                std::time::Duration::from_secs(6),
+                                move || {
+                                    b.set_label("🔍 Extract Text (OCR)");
+                                },
+                            );
                         }
-                        _ => {}
+                        _ => {
+                            btn.set_sensitive(true);
+                            btn.set_label("🔍 Extract Text (OCR)");
+                        }
                     }
+                } else {
+                    btn.set_sensitive(true);
+                    btn.set_label("⚠️ Daemon offline");
+                    let b = btn.clone();
+                    glib::timeout_add_local_once(std::time::Duration::from_secs(3), move || {
+                        b.set_label("🔍 Extract Text (OCR)");
+                    });
                 }
             });
         });
@@ -653,6 +741,106 @@ pub fn show_qr_dialog(parent: &Window, text: &str) {
     dialog.set_child(Some(&root));
     dialog.present();
 }
+
+#[cfg(feature = "gtk")]
+pub fn show_ocr_missing_dialog(parent: &Window, on_install: Option<std::rc::Rc<dyn Fn()>>) {
+    let dialog = Window::builder()
+        .title("Tesseract OCR Required")
+        .transient_for(parent)
+        .modal(true)
+        .default_width(400)
+        .default_height(240)
+        .resizable(false)
+        .build();
+
+    let root = GtkBox::new(Orientation::Vertical, 14);
+    root.set_margin_start(18);
+    root.set_margin_end(18);
+    root.set_margin_top(16);
+    root.set_margin_bottom(16);
+
+    let title = Label::new(Some("🔍 Install Tesseract OCR?"));
+    title.add_css_class("heading");
+    title.set_xalign(0.0);
+    root.append(&title);
+
+    let msg = Label::new(Some(
+        "Tesseract OCR is required to extract text from images.\n\nWould you like to install it now? A terminal window will open to complete the installation with sudo privileges.",
+    ));
+    msg.set_wrap(true);
+    msg.set_xalign(0.0);
+    root.append(&msg);
+
+    let btn_box = GtkBox::new(Orientation::Horizontal, 8);
+    btn_box.set_halign(gtk4::Align::End);
+    btn_box.set_margin_top(10);
+
+    let cancel_btn = Button::with_label("Cancel");
+    let d_cancel = dialog.clone();
+    cancel_btn.connect_clicked(move |_| {
+        d_cancel.close();
+    });
+    btn_box.append(&cancel_btn);
+
+    let install_btn = Button::with_label("🚀 Install in Terminal");
+    install_btn.add_css_class("suggested-action");
+    let d_install = dialog.clone();
+    install_btn.connect_clicked(move |_| {
+        d_install.close();
+        if let Some(ref cb) = on_install {
+            cb();
+        }
+        launch_ocr_terminal_install();
+    });
+    btn_box.append(&install_btn);
+
+    root.append(&btn_box);
+
+    dialog.set_child(Some(&root));
+    dialog.present();
+}
+
+#[cfg(feature = "gtk")]
+fn launch_ocr_terminal_install() -> bool {
+    let install_cmd = if which::which("apt-get").is_ok() {
+        "echo '=== Installing Tesseract OCR (Debian/Ubuntu) ==='; sudo apt update && sudo apt install -y tesseract-ocr tesseract-ocr-tur tesseract-ocr-eng"
+    } else if which::which("pacman").is_ok() {
+        "echo '=== Installing Tesseract OCR (Arch Linux) ==='; sudo pacman -S --needed tesseract tesseract-data-eng tesseract-data-tur"
+    } else if which::which("dnf").is_ok() {
+        "echo '=== Installing Tesseract OCR (Fedora/RHEL) ==='; sudo dnf install -y tesseract tesseract-langpack-tur tesseract-langpack-eng"
+    } else if which::which("zypper").is_ok() {
+        "echo '=== Installing Tesseract OCR (openSUSE) ==='; sudo zypper install -y tesseract tesseract-ocr-traineddata-tur tesseract-ocr-traineddata-eng"
+    } else {
+        "echo '=== Installing Tesseract OCR ==='; sudo apt update && sudo apt install -y tesseract-ocr tesseract-ocr-tur tesseract-ocr-eng"
+    };
+
+    let bash_script = format!(
+        "{}; echo ''; echo '=== Downloading high-accuracy Turkish OCR models (tessdata_best) ==='; mkdir -p \"${{HOME}}/.local/share/clipboard-history/tessdata\"; curl -L -o \"${{HOME}}/.local/share/clipboard-history/tessdata/tur.traineddata\" https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/tur.traineddata || true; curl -L -o \"${{HOME}}/.local/share/clipboard-history/tessdata/eng.traineddata\" https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/eng.traineddata || true; echo ''; read -p 'Installation finished! Press Enter to close this terminal...' dummy",
+        install_cmd
+    );
+
+    let candidates: &[(&str, &[&str])] = &[
+        ("gnome-terminal", &["--", "bash", "-c", &bash_script]),
+        ("ptyxis", &["--", "bash", "-c", &bash_script]),
+        ("konsole", &["-e", "bash", "-c", &bash_script]),
+        ("xfce4-terminal", &["-x", "bash", "-c", &bash_script]),
+        ("x-terminal-emulator", &["-e", "bash", "-c", &bash_script]),
+        ("alacritty", &["-e", "bash", "-c", &bash_script]),
+        ("kitty", &["bash", "-c", &bash_script]),
+        ("foot", &["bash", "-c", &bash_script]),
+        ("xterm", &["-e", "bash", "-c", &bash_script]),
+    ];
+
+    for (bin, args) in candidates {
+        if which::which(bin).is_ok() {
+            if std::process::Command::new(bin).args(*args).spawn().is_ok() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 
 fn apply_transformed_paste(
     transformed: String,

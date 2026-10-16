@@ -26,7 +26,7 @@
 - 🧩 **Multi-Item Batch Operations & "Concatenate Paste"**: Select multiple entries (`Ctrl+M`) and join them with custom delimiters (newlines, paragraphs, commas, bullet lists, numbered lists) to paste all at once. Batch delete or pin.
 - 🔀 **Built-in Clipboard Diff Viewer**: Compare any two text or code snippets with side-by-side/unified syntax-highlighted diffs, additions/deletions stats, swap controls, and one-click diff copying.
 - 📝 **Permanent Snippets & Canned Responses**: Dedicated Snippets tab with dynamic template placeholders (`{date}`, `{time}`, `{datetime}`, `{year}`, `{month}`, `{day}`, `{uuid}`, and `{clipboard}`).
-- 🔍 **On-Demand Image OCR**: Extract text directly from copied screenshots and image entries with one click.
+- 🔍 **On-Demand Image OCR**: Extract text directly from copied screenshots and image entries with one click or via CLI. Features alpha-channel transparency preprocessing, dynamic language detection (Turkish, English, German, French, etc. based on system locale), and automatic copy/paste support (requires `tesseract-ocr`).
 - 🎨 **Color Format Converter & Swatches**: Real-time detection of Hex and RGB/RGBA colors with inline Cairo swatches and one-click conversions to Hex, RGB, HSL, CSS variables (`--color`), and GLSL.
 - 🖼️ **Image Thumbnails & Rich Previews**: Copied images display scaled thumbnail previews directly in the card. Code entries render inside formatted monospace blocks with character and line count indicators.
 - 🌐 **Zero-Trust P2P LAN Encrypted Sync**: Synchronize clipboard items across trusted local devices with pure-Rust AES-256-GCM encryption derived from a 6-digit pairing PIN.

@@ -32,6 +32,11 @@
     <binary>clipboard-history-gui</binary>
   </provides>
   <releases>
+    <release version="1.1.0" date="2026-10-16">
+      <description>
+        <p>Major OCR engine upgrade featuring full Turkish character accuracy, multi-pass page segmentation (PSM 6 with fallback), adaptive Lanczos3 upscaling, dynamic contrast normalization, unquantized neural model support (tessdata_best), and one-click terminal dependency installer.</p>
+      </description>
+    </release>
     <release version="1.0.0" date="2026-10-16">
       <description>
         <p>Official 1.0.0 stable release featuring Windows 11 Fluent ergonomics, compact layout, vertical quick action bar, pinned section accordion with live counter, metadata popover, zero-trust P2P encrypted sync, and rich text transformations.</p>

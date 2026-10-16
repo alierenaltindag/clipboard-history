@@ -708,27 +708,58 @@ impl DaemonServer {
                     IpcResponse::FirewallStatus(result)
                 }
 
-                IpcRequest::PerformOcr { blob_hash } => match blob_store.read(&blob_hash) {
-                    Ok(image_bytes) => match OcrEngine::extract_text(&image_bytes).await {
-                        Ok(extracted_text) => {
-                            if !extracted_text.trim().is_empty() {
-                                let hash = BlobStore::compute_hash(extracted_text.as_bytes());
-                                let entry = ClipboardEntry::new_text(
-                                    extracted_text.clone(),
-                                    hash,
-                                    vec!["text/plain".to_string()],
-                                    Some("OCR".to_string()),
-                                );
-                                let _ = repo.insert_or_update(&entry);
+                IpcRequest::PerformOcr { blob_hash } => {
+                    let is_encrypted = config.read().await.security.encryption_enabled;
+                    let image_res = if is_encrypted {
+                        blob_store
+                            .read_decrypted(&blob_hash, &crypto)
+                            .or_else(|_| blob_store.read(&blob_hash))
+                    } else {
+                        blob_store.read(&blob_hash)
+                    };
+
+                    match image_res {
+                        Ok(image_bytes) => match OcrEngine::extract_text(&image_bytes).await {
+                            Ok(extracted_text) => {
+                                if !extracted_text.trim().is_empty() {
+                                    let hash = BlobStore::compute_hash(extracted_text.as_bytes());
+                                    let mut entry = ClipboardEntry::new_text(
+                                        extracted_text.clone(),
+                                        hash,
+                                        vec!["text/plain".to_string()],
+                                        Some("OCR".to_string()),
+                                    );
+
+                                    if is_encrypted {
+                                        if let Ok(wrapped_dek) =
+                                            crypto.encrypt_entry_envelope(&mut entry)
+                                        {
+                                            let _ =
+                                                repo.insert_entry_dek(&entry.id, &wrapped_dek, &[]);
+                                        } else {
+                                            entry.preview = crypto
+                                                .encrypt_str(&entry.preview)
+                                                .unwrap_or(entry.preview);
+                                            entry.text_content = entry
+                                                .text_content
+                                                .and_then(|t| crypto.encrypt_str(&t).ok());
+                                            entry.html_content = entry
+                                                .html_content
+                                                .and_then(|h| crypto.encrypt_str(&h).ok());
+                                        }
+                                    }
+
+                                    let _ = repo.insert_or_update(&entry);
+                                }
+                                IpcResponse::OcrResult {
+                                    text: extracted_text,
+                                }
                             }
-                            IpcResponse::OcrResult {
-                                text: extracted_text,
-                            }
-                        }
-                        Err(e) => IpcResponse::Error(e.to_string()),
-                    },
-                    Err(e) => IpcResponse::Error(format!("Failed to read image blob: {}", e)),
-                },
+                            Err(e) => IpcResponse::Error(e.to_string()),
+                        },
+                        Err(e) => IpcResponse::Error(format!("Failed to read image blob: {}", e)),
+                    }
+                }
 
                 IpcRequest::BatchDelete { ids } => match repo.batch_delete(&ids) {
                     Ok(count) => IpcResponse::BatchSuccess { count },

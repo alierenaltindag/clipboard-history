@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-10-16
+
+### Added
+- **High-Accuracy OCR Engine & Turkish Language Optimization**:
+  - Full support for Turkish characters (`ç, ğ, ı, ö, ş, ü, Ç, Ğ, İ, Ö, Ş, Ü`) and multilingual text recognition.
+  - Multi-pass Page Segmentation: Defaults to `--psm 6` (single uniform text block) for clipboard snippets with fallback to `--psm 3` and `--psm 11` for sparse text.
+  - Subpixel LCD anti-aliasing neutralization via ITU-R 601 grayscale conversion and dynamic contrast normalization.
+  - Adaptive Lanczos3 upscaling to 300 DPI equivalent with 20px solid white border padding.
+  - Automatic discovery and prioritization of unquantized float LSTM neural models (`tessdata_best`).
+  - Strict exclusion of `osd` from text recognition passes, eliminating LSTM engine crashes.
+- **OCR Daemon & GUI Integration**:
+  - Encryption-at-rest support for OCR image blobs (`read_decrypted`) and encrypted envelope DEK storage of newly generated text entries.
+  - Non-blocking asynchronous loading indicator (`⏳ Extracting text (OCR)...`) in the Quick Transforms popover.
+  - Interactive missing dependency dialog with one-click terminal launcher for automated package installation across Debian, Ubuntu, Arch, Fedora, openSUSE.
+  - Clipboard echo prevention via `prepare_paste`.
+- **Packaging & Installation**:
+  - Automated `tessdata_best` high-accuracy model downloads in `install.sh` and terminal installer.
+  - CLI `clipboard-history ocr <id|hash>` command for fast terminal-based text extraction.
+
 ## [1.0.0] - 2026-10-13
 
 ### Added

@@ -80,16 +80,16 @@ install_dependencies() {
     if command -v apt-get >/dev/null 2>&1; then
         info "Debian/Ubuntu detected. Installing dependencies via apt..."
         sudo apt-get update
-        sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libx11-dev libxtst-dev wl-clipboard xdotool pkg-config build-essential curl git
+        sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libx11-dev libxtst-dev wl-clipboard xdotool tesseract-ocr pkg-config build-essential curl git
     elif command -v dnf >/dev/null 2>&1; then
         info "Fedora/RHEL detected. Installing dependencies via dnf..."
-        sudo dnf install -y gtk4-devel libadwaita-devel libX11-devel libXtst-devel wl-clipboard xdotool pkgconf gcc curl git
+        sudo dnf install -y gtk4-devel libadwaita-devel libX11-devel libXtst-devel wl-clipboard xdotool tesseract pkgconf gcc curl git
     elif command -v pacman >/dev/null 2>&1; then
         info "Arch Linux detected. Installing dependencies via pacman..."
-        sudo pacman -S --needed --noconfirm gtk4 libadwaita libx11 libxtst wl-clipboard xdotool pkgconf base-devel curl git
+        sudo pacman -S --needed --noconfirm gtk4 libadwaita libx11 libxtst wl-clipboard xdotool tesseract pkgconf base-devel curl git
     elif command -v zypper >/dev/null 2>&1; then
         info "openSUSE detected. Installing dependencies via zypper..."
-        sudo zypper install -y gtk4-devel libadwaita-devel libX11-devel libXtst-devel wl-clipboard xdotool pkg-config gcc curl git
+        sudo zypper install -y gtk4-devel libadwaita-devel libX11-devel libXtst-devel wl-clipboard xdotool tesseract pkg-config gcc curl git
     else
         warn "Could not identify package manager automatically. Ensure GTK4, Libadwaita, and X11 dev headers are installed."
     fi
@@ -128,6 +128,18 @@ cargo build --release --workspace
 DATA_DIR="${HOME}/.local/share/clipboard-history"
 CONFIG_DIR="${HOME}/.config/clipboard-history"
 mkdir -p "${BIN_DIR}" "${DESKTOP_DIR}" "${METAINFO_DIR}" "${ICON_DIR}" "${SYSTEMD_USER_DIR}" "${DATA_DIR}" "${CONFIG_DIR}"
+
+# Ensure High-Accuracy OCR Models (tessdata_best) are available
+TESSDATA_DIR="${DATA_DIR}/tessdata"
+mkdir -p "${TESSDATA_DIR}"
+if [[ ! -f "${TESSDATA_DIR}/tur.traineddata" ]]; then
+    info "Downloading high-accuracy Turkish OCR model (tessdata_best)..."
+    curl -fsSL -o "${TESSDATA_DIR}/tur.traineddata" "https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/tur.traineddata" 2>/dev/null || true
+fi
+if [[ ! -f "${TESSDATA_DIR}/eng.traineddata" ]]; then
+    info "Downloading high-accuracy English OCR model (tessdata_best)..."
+    curl -fsSL -o "${TESSDATA_DIR}/eng.traineddata" "https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/eng.traineddata" 2>/dev/null || true
+fi
 
 # 6. Install Binaries
 info "Installing binaries into ${BIN_DIR}..."

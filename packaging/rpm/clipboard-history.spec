@@ -1,5 +1,5 @@
 Name:           clipboard-history
-Version:        1.0.0
+Version:        1.1.0
 Release:        1%{?dist}
 Summary:        High-performance Universal Clipboard History utility for Linux
 
@@ -18,6 +18,7 @@ Requires:       libX11
 Requires:       libXtst
 Recommends:     wl-clipboard
 Recommends:     xdotool
+Recommends:     tesseract
 
 %description
 Modern Win+V clipboard alternative for Wayland and X11 desktop environments,

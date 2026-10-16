@@ -24,8 +24,23 @@ pub async fn handle_ocr(socket_path: &Path, id: String) {
     let req = IpcRequest::PerformOcr { blob_hash };
     match IpcClient::send_request(socket_path, &req).await {
         Ok(IpcResponse::OcrResult { text }) => {
-            println!("OCR Extracted Text:\n-------------------");
-            println!("{}", text);
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                println!("No readable text detected in this image.");
+            } else {
+                let hash = clipboard_history_core::blob::BlobStore::compute_hash(text.as_bytes());
+                let _ = IpcClient::send_request(
+                    socket_path,
+                    &IpcRequest::PreparePaste { content_hash: hash },
+                )
+                .await;
+                copy_to_system_clipboard(&text).await;
+
+                println!("OCR Extracted Text:\n-------------------");
+                println!("{}", text);
+                println!("-------------------");
+                println!("(Text copied to system clipboard)");
+            }
         }
         Ok(IpcResponse::Error(e)) => eprintln!("OCR Error: {}", e),
         Err(_) => super::print_daemon_offline_error(),
