@@ -428,7 +428,9 @@ impl OcrEngine {
                     let stdout = String::from_utf8_lossy(&out.stdout);
                     for line in stdout.lines() {
                         let trimmed = line.trim();
-                        if !trimmed.is_empty() && !trimmed.starts_with("List of available languages") {
+                        if !trimmed.is_empty()
+                            && !trimmed.starts_with("List of available languages")
+                        {
                             langs.insert(trimmed.to_string());
                         }
                     }
@@ -557,21 +559,26 @@ impl OcrEngine {
             let g = (pixel[1] as f32 * a) + (255.0 * (1.0 - a));
             let b = (pixel[2] as f32 * a) + (255.0 * (1.0 - a));
 
-            let luma = (0.299 * r + 0.587 * g + 0.114 * b).round().clamp(0.0, 255.0) as u8;
+            let luma = (0.299 * r + 0.587 * g + 0.114 * b)
+                .round()
+                .clamp(0.0, 255.0) as u8;
             total_luma += luma as u64;
 
-            if luma < min_luma { min_luma = luma; }
-            if luma > max_luma { max_luma = luma; }
+            if luma < min_luma {
+                min_luma = luma;
+            }
+            if luma > max_luma {
+                max_luma = luma;
+            }
 
             gray.put_pixel(x, y, image::Luma([luma]));
         }
 
         let pixel_count = (orig_w as u64) * (orig_h as u64);
-        let avg_luma = if pixel_count > 0 {
-            (total_luma / pixel_count) as u8
-        } else {
-            255
-        };
+        let avg_luma = total_luma
+            .checked_div(pixel_count)
+            .map(|v| v as u8)
+            .unwrap_or(255);
 
         // 2. Dark mode inversion: If background is dark (average luminance < 120),
         // invert colors so light text becomes dark text on a white background.
@@ -610,7 +617,12 @@ impl OcrEngine {
         let scaled = if scale_factor > 1 {
             let target_w = orig_w.saturating_mul(scale_factor).min(4096);
             let target_h = orig_h.saturating_mul(scale_factor).min(4096);
-            image::imageops::resize(&gray, target_w, target_h, image::imageops::FilterType::Lanczos3)
+            image::imageops::resize(
+                &gray,
+                target_w,
+                target_h,
+                image::imageops::FilterType::Lanczos3,
+            )
         } else {
             gray
         };
@@ -619,15 +631,17 @@ impl OcrEngine {
         let pad = 20u32;
         let padded_w = scaled.width() + pad * 2;
         let padded_h = scaled.height() + pad * 2;
-        let mut padded =
-            image::GrayImage::from_pixel(padded_w, padded_h, image::Luma([255]));
+        let mut padded = image::GrayImage::from_pixel(padded_w, padded_h, image::Luma([255]));
 
         image::imageops::overlay(&mut padded, &scaled, pad as i64, pad as i64);
 
         let final_img = image::DynamicImage::ImageLuma8(padded);
 
         let mut buffer = std::io::Cursor::new(Vec::new());
-        if final_img.write_to(&mut buffer, image::ImageFormat::Png).is_ok() {
+        if final_img
+            .write_to(&mut buffer, image::ImageFormat::Png)
+            .is_ok()
+        {
             buffer.into_inner()
         } else {
             image_bytes.to_vec()
@@ -682,7 +696,12 @@ impl OcrEngine {
         };
 
         // Pass 1: PSM 6 (Assume a single uniform block of text - optimal for clipboard snippets & UI captures)
-        let output = match tokio::time::timeout(std::time::Duration::from_secs(25), run_tesseract("6").output()).await {
+        let output = match tokio::time::timeout(
+            std::time::Duration::from_secs(25),
+            run_tesseract("6").output(),
+        )
+        .await
+        {
             Ok(Ok(out)) => out,
             Ok(Err(e)) => {
                 return Err(crate::error::CoreError::Storage(format!(
@@ -706,9 +725,13 @@ impl OcrEngine {
         // Pass 2 (Fallback): If PSM 6 returns empty or very short non-word text, try PSM 3 (standard layout analysis)
         if text.chars().filter(|c| c.is_alphanumeric()).count() < 2 {
             let mut cmd3 = run_tesseract("3");
-            if let Ok(Ok(retry_out)) = tokio::time::timeout(std::time::Duration::from_secs(15), cmd3.output()).await {
+            if let Ok(Ok(retry_out)) =
+                tokio::time::timeout(std::time::Duration::from_secs(15), cmd3.output()).await
+            {
                 if retry_out.status.success() {
-                    let retry_text = String::from_utf8_lossy(&retry_out.stdout).trim().to_string();
+                    let retry_text = String::from_utf8_lossy(&retry_out.stdout)
+                        .trim()
+                        .to_string();
                     if retry_text.chars().filter(|c| c.is_alphanumeric()).count() >= 2 {
                         text = retry_text;
                     }
@@ -723,7 +746,9 @@ impl OcrEngine {
                 tokio::time::timeout(std::time::Duration::from_secs(15), retry_cmd.output()).await
             {
                 if retry_out.status.success() {
-                    let retry_text = String::from_utf8_lossy(&retry_out.stdout).trim().to_string();
+                    let retry_text = String::from_utf8_lossy(&retry_out.stdout)
+                        .trim()
+                        .to_string();
                     if !retry_text.is_empty() {
                         text = retry_text;
                     }

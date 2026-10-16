@@ -339,10 +339,11 @@ impl DaemonServer {
                         let sync_cfg = config.read().await.sync.clone();
                         if sync_cfg.enabled {
                             let active_peers = peer_tracker.get_all_peers().await;
-                            let clear_msg = clipboard_history_core::sync::SyncMessage::ClearHistorySync {
-                                origin_device: sync_cfg.device_name.clone(),
-                                include_pinned,
-                            };
+                            let clear_msg =
+                                clipboard_history_core::sync::SyncMessage::ClearHistorySync {
+                                    origin_device: sync_cfg.device_name.clone(),
+                                    include_pinned,
+                                };
                             crate::sync_service::broadcast_sync_message(
                                 &sync_cfg,
                                 &active_peers,

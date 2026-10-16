@@ -33,6 +33,8 @@ pub struct ClipboardWindow {
     current_filter: Rc<RefCell<CategoryFilter>>,
     #[allow(dead_code)]
     current_query: Rc<RefCell<String>>,
+    #[allow(dead_code)]
+    search_seq: Rc<RefCell<u64>>,
     filter_and_render: Rc<dyn Fn()>,
     daemon_connected: Rc<RefCell<bool>>,
     #[allow(dead_code)]
@@ -247,6 +249,7 @@ impl ClipboardWindow {
         let last_deleted: Rc<RefCell<Option<ClipboardEntry>>> = Rc::new(RefCell::new(None));
         let current_filter = Rc::new(RefCell::new(CategoryFilter::All));
         let current_query = Rc::new(RefCell::new(String::new()));
+        let search_seq = Rc::new(RefCell::new(0u64));
         let daemon_connected = Rc::new(RefCell::new(true));
 
         let toggle_pin_holder: Rc<RefCell<Option<Rc<dyn Fn(&str)>>>> = Rc::new(RefCell::new(None));
@@ -629,24 +632,106 @@ impl ClipboardWindow {
             });
         }
 
-        // Search entry live typing with 100ms debounce
-        let fn_for_search = Rc::clone(&filter_and_render);
-        let q_ref = Rc::clone(&current_query);
+        // Search entry live typing with 100ms debounce and universal full-history IPC search
         let debounce_source: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
-        let debounce_clone = Rc::clone(&debounce_source);
+
+        let trigger_search: Rc<dyn Fn(String)> = {
+            let entries_clone = Rc::clone(&entries);
+            let filtered_clone = Rc::clone(&filtered_entries);
+            let current_filter_clone = Rc::clone(&current_filter);
+            let current_query_clone = Rc::clone(&current_query);
+            let pop_fn = Rc::clone(&populate_rows);
+            let seq_clone = Rc::clone(&search_seq);
+
+            Rc::new(move |query_text: String| {
+                let trimmed = query_text.trim().to_string();
+                *current_query_clone.borrow_mut() = trimmed.clone();
+
+                if trimmed.is_empty() {
+                    // Instant restoration: cancel in-flight sequence, restore from local cache
+                    let next_seq = seq_clone.borrow().wrapping_add(1);
+                    *seq_clone.borrow_mut() = next_seq;
+
+                    let searcher = FuzzySearchEngine::new();
+                    let all_items = entries_clone.borrow();
+                    let cat = *current_filter_clone.borrow();
+                    *filtered_clone.borrow_mut() = searcher.filter_entries(&all_items, "", cat);
+                    pop_fn();
+                    return;
+                }
+
+                // Active search: dispatch IPC query
+                let my_seq = seq_clone.borrow().wrapping_add(1);
+                *seq_clone.borrow_mut() = my_seq;
+
+                let filtered_c = Rc::clone(&filtered_clone);
+                let entries_c = Rc::clone(&entries_clone);
+                let filter_c = Rc::clone(&current_filter_clone);
+                let q_c = Rc::clone(&current_query_clone);
+                let pop_c = Rc::clone(&pop_fn);
+                let seq_c = Rc::clone(&seq_clone);
+                let q_target = trimmed.clone();
+
+                glib::MainContext::default().spawn_local(async move {
+                    let search_results = if let Ok(client) = IpcClient::connect().await {
+                        let req = IpcRequest::Search {
+                            query: q_target.clone(),
+                            limit: 100,
+                            offset: 0,
+                        };
+                        match client.send(&req).await {
+                            Ok(IpcResponse::Entries(results)) => results,
+                            _ => Vec::new(),
+                        }
+                    } else {
+                        Vec::new()
+                    };
+
+                    // Verify sequence and current query before updating
+                    if *seq_c.borrow() != my_seq || *q_c.borrow() != q_target {
+                        return;
+                    }
+
+                    let searcher = FuzzySearchEngine::new();
+                    let cat = *filter_c.borrow();
+
+                    let final_entries = if !search_results.is_empty() {
+                        searcher.filter_entries(&search_results, &q_target, cat)
+                    } else {
+                        // Fallback to local filtering if daemon offline or returned 0
+                        searcher.filter_entries(&entries_c.borrow(), &q_target, cat)
+                    };
+
+                    *filtered_c.borrow_mut() = final_entries;
+                    pop_c();
+                });
+            })
+        };
+
+        let deb_source = Rc::clone(&debounce_source);
+        let trig_search = Rc::clone(&trigger_search);
         search_entry.connect_search_changed(move |entry| {
-            *q_ref.borrow_mut() = entry.text().to_string();
-            if let Some(source) = debounce_clone.borrow_mut().take() {
+            let text = entry.text().to_string();
+            if let Some(source) = deb_source.borrow_mut().take() {
                 source.remove();
             }
-            let fn_call = Rc::clone(&fn_for_search);
-            let deb_ref = Rc::clone(&debounce_clone);
-            let source_id =
-                glib::timeout_add_local_once(std::time::Duration::from_millis(100), move || {
-                    deb_ref.borrow_mut().take();
-                    fn_call();
-                });
-            *debounce_clone.borrow_mut() = Some(source_id);
+
+            if text.trim().is_empty() {
+                // Immediate zero-lag restore on empty
+                trig_search(text);
+            } else {
+                // 100ms debounce on typing
+                let deb_ref = Rc::clone(&deb_source);
+                let trig = Rc::clone(&trig_search);
+                let source_id = glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(100),
+                    move || {
+                        deb_ref.borrow_mut().take();
+                        trig(text);
+                    },
+                );
+                *deb_source.borrow_mut() = Some(source_id);
+            }
         });
 
         // Pressing Enter in search bar activates currently selected (or first) row
@@ -765,7 +850,7 @@ impl ClipboardWindow {
                 let entry_type = entry.entry_type;
                 let auto_paste = cfg_for_act.paste.auto_paste;
                 let move_to_top = cfg_for_act.paste.move_pasted_to_top;
-                let delay_ms = cfg_for_act.paste.paste_delay_ms.max(50);
+                let delay_ms = cfg_for_act.paste.effective_delay_ms();
                 let entry_id_str = entry.id.clone();
                 let content_hash = entry.content_hash.clone();
 
@@ -1039,7 +1124,7 @@ impl ClipboardWindow {
                         win_key.set_visible(false);
                         let auto_paste = cfg_key.paste.auto_paste;
                         let move_to_top = cfg_key.paste.move_pasted_to_top;
-                        let delay_ms = cfg_key.paste.paste_delay_ms.max(50);
+                        let delay_ms = cfg_key.paste.effective_delay_ms();
                         let entry_id_str = entry.id.clone();
                         let hash = clipboard_history_core::blob::BlobStore::compute_hash(plain_text.as_bytes());
                         let id_for_touch = entry_id_str.clone();
@@ -1138,7 +1223,7 @@ impl ClipboardWindow {
                             win_key.set_visible(false);
                             let auto_paste = cfg_key.paste.auto_paste;
                             let move_to_top = cfg_key.paste.move_pasted_to_top;
-                            let delay_ms = cfg_key.paste.paste_delay_ms.max(50);
+                            let delay_ms = cfg_key.paste.effective_delay_ms();
                             let entry_id_str = entry.id.clone();
                             let content_hash = entry.content_hash.clone();
                             let id_for_touch = entry_id_str.clone();
@@ -1237,6 +1322,7 @@ impl ClipboardWindow {
             filtered_entries,
             current_filter,
             current_query,
+            search_seq,
             filter_and_render,
             daemon_connected,
             toast_overlay,

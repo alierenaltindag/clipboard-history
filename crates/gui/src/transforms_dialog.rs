@@ -832,15 +832,13 @@ fn launch_ocr_terminal_install() -> bool {
     ];
 
     for (bin, args) in candidates {
-        if which::which(bin).is_ok() {
-            if std::process::Command::new(bin).args(*args).spawn().is_ok() {
-                return true;
-            }
+        if which::which(bin).is_ok() && std::process::Command::new(bin).args(*args).spawn().is_ok()
+        {
+            return true;
         }
     }
     false
 }
-
 
 fn apply_transformed_paste(
     transformed: String,
@@ -863,7 +861,8 @@ fn apply_transformed_paste(
         }
         clipboard_history_core::copy_to_system_clipboard(&transformed).await;
         if auto_paste {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let delay_ms = AppConfig::load_or_default().paste.effective_delay_ms();
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
             let cascade = InjectorCascade::new();
             let (name, success) = cascade.execute_paste().await;
             info!(

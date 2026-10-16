@@ -3,7 +3,7 @@ use crate::error::{CoreError, Result};
 use crate::search::parser::ParsedSearchQuery;
 use crate::storage::schema::INITIAL_SCHEMA;
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, TransactionBehavior};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -49,6 +49,13 @@ impl SqliteRepository {
         &self.db_path
     }
 
+    /// Returns the currently configured SQLite busy timeout in milliseconds.
+    pub fn busy_timeout_ms(&self) -> Result<u64> {
+        let conn = self.conn();
+        let timeout: i64 = conn.query_row("PRAGMA busy_timeout", [], |r| r.get(0))?;
+        Ok(timeout as u64)
+    }
+
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         Self::init_connection(&conn)?;
@@ -59,6 +66,8 @@ impl SqliteRepository {
     }
 
     fn init_connection(conn: &Connection) -> Result<()> {
+        conn.busy_timeout(std::time::Duration::from_millis(5000))?;
+        let _ = conn.pragma_update(None, "busy_timeout", 5000);
         let _ = conn.pragma_update(None, "journal_mode", "WAL");
         let _ = conn.pragma_update(None, "synchronous", "NORMAL");
         let _ = conn.pragma_update(None, "secure_delete", "ON");
@@ -166,7 +175,7 @@ impl SqliteRepository {
             return Ok(Vec::new());
         }
         let mut conn = self.conn();
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut results = Vec::with_capacity(entries.len());
 
         {
@@ -557,7 +566,7 @@ impl SqliteRepository {
             return Ok(0);
         }
         let mut conn = self.conn();
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut deleted = 0;
         {
             let mut exact_stmt = tx.prepare_cached("DELETE FROM entries WHERE id = ?1")?;
@@ -601,7 +610,7 @@ impl SqliteRepository {
             return Ok(0);
         }
         let mut conn = self.conn();
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut updated = 0;
         let flag = if pinned { 1 } else { 0 };
         {

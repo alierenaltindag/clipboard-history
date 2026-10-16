@@ -32,6 +32,11 @@
     <binary>clipboard-history-gui</binary>
   </provides>
   <releases>
+    <release version="1.2.0" date="2026-10-16">
+      <description>
+        <p>Introduces universal full-history GUI search over the entire SQLite database via IPC, intelligent terminal-aware paste injection (Ctrl+Shift+V vs Ctrl+V), SQLite 5000ms busy_timeout and immediate transaction lock protection, and Wayland zombie process leak prevention.</p>
+      </description>
+    </release>
     <release version="1.1.1" date="2026-10-16">
       <description>
         <p>Introduces network sync propagation for Clear All operations, ensuring history is cleaned synchronously across all paired devices, with support for preserving pinned items.</p>

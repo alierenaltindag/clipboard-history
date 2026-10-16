@@ -27,7 +27,19 @@ impl PasteInjector for CopyOnlyInjector {
     }
 
     async fn inject(&self) -> bool {
-        info!("Item copied to system clipboard. Ready for manual paste (Ctrl+V).");
+        self.inject_context(false).await
+    }
+
+    async fn inject_context(&self, is_terminal: bool) -> bool {
+        let shortcut = if is_terminal {
+            "Ctrl+Shift+V"
+        } else {
+            "Ctrl+V"
+        };
+        info!(
+            "Item copied to system clipboard. Ready for manual paste ({}).",
+            shortcut
+        );
         true
     }
 }

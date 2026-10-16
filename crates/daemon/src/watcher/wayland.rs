@@ -17,9 +17,11 @@ impl WaylandWatcher {
     }
 
     async fn run_wl_paste(args: &[&str]) -> Option<Vec<u8>> {
-        let cmd = Command::new("wl-paste").args(args).output();
+        let mut cmd = Command::new("wl-paste");
+        cmd.args(args);
+        cmd.kill_on_drop(true);
 
-        match tokio::time::timeout(Duration::from_millis(1500), cmd).await {
+        match tokio::time::timeout(Duration::from_millis(1500), cmd.output()).await {
             Ok(Ok(output)) if output.status.success() => Some(output.stdout),
             _ => None,
         }
@@ -156,6 +158,7 @@ impl WaylandWatcher {
                 .args(&args)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
+                .kill_on_drop(true)
                 .spawn()
             {
                 Ok(c) => c,

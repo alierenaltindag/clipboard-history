@@ -1,0 +1,642 @@
+use std::process::Command;
+use tracing::debug;
+
+pub struct WindowFocusDetector {
+    is_x11: bool,
+}
+
+impl WindowFocusDetector {
+    pub fn new() -> Self {
+        let is_x11 = std::env::var("DISPLAY").is_ok()
+            && std::env::var("WAYLAND_DISPLAY").is_err()
+            && std::env::var("XDG_SESSION_TYPE").unwrap_or_default() != "wayland";
+        Self { is_x11 }
+    }
+
+    /// Queries the currently active window title and class if accessible.
+    pub fn get_active_window_info(&self) -> Option<(String, String)> {
+        if self.is_x11 {
+            self.get_x11_active_window()
+        } else {
+            self.get_wayland_active_window()
+        }
+    }
+
+    /// Checks if the active window matches any configured incognito/secret pattern.
+    #[allow(dead_code)]
+    pub fn is_incognito_active(&self, patterns: &[String]) -> bool {
+        if let Some((title, class)) = self.get_active_window_info() {
+            Self::matches_incognito_pattern(&title, &class, patterns)
+        } else {
+            false
+        }
+    }
+
+    /// Evaluates whether a given window title or class matches configured incognito patterns.
+    pub fn matches_incognito_pattern(title: &str, class: &str, patterns: &[String]) -> bool {
+        if patterns.is_empty() {
+            return false;
+        }
+
+        let title_lower = title.to_lowercase();
+        let class_lower = class.to_lowercase();
+
+        for pat in patterns {
+            let clean_pat = pat.trim().trim_matches('*').to_lowercase();
+            if !clean_pat.is_empty()
+                && (title_lower.contains(&clean_pat) || class_lower.contains(&clean_pat))
+            {
+                debug!(
+                    "Active window (title='{}', class='{}') matched incognito pattern '{}'",
+                    title, class, pat
+                );
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Evaluates whether a window is a terminal emulator based on its window title and class / app_id.
+    pub fn is_terminal_window(title: &str, class: &str) -> bool {
+        let terminal_classes = [
+            "alacritty",
+            "kitty",
+            "gnome-terminal",
+            "gnome-terminal-server",
+            "org.gnome.terminal",
+            "org.gnome.console",
+            "kgx",
+            "ptyxis",
+            "org.gnome.ptyxis",
+            "xterm",
+            "uxterm",
+            "foot",
+            "footclient",
+            "wezterm",
+            "wezterm-gui",
+            "org.wezfurlong.wezterm",
+            "konsole",
+            "org.kde.konsole",
+            "xfce4-terminal",
+            "tilix",
+            "terminator",
+            "urxvt",
+            "rxvt",
+            "st",
+            "st-256color",
+            "hyper",
+            "ghostty",
+            "rio",
+            "tabby",
+            "contour",
+            "blackbox",
+            "warp",
+            "warp-terminal",
+            "guake",
+            "yakuake",
+            "tilda",
+            "terminology",
+            "pantheon-terminal",
+            "lxterminal",
+            "mate-terminal",
+            "deepin-terminal",
+            "qterminal",
+            "x-terminal-emulator",
+            "termite",
+            "sakura",
+        ];
+
+        let gui_classes = [
+            "firefox",
+            "google-chrome",
+            "chromium",
+            "brave-browser",
+            "brave",
+            "vivaldi",
+            "vivaldi-stable",
+            "opera",
+            "microsoft-edge",
+            "epiphany",
+            "tor-browser",
+            "code",
+            "code-oss",
+            "vscodium",
+            "jetbrains-idea",
+            "webstorm",
+            "rustrover",
+            "pycharm",
+            "clion",
+            "goland",
+            "idea",
+            "android-studio",
+            "sublime_text",
+            "gedit",
+            "org.gnome.nautilus",
+            "nautilus",
+            "slack",
+            "discord",
+            "vlc",
+            "libreoffice-writer",
+            "steam",
+            "postman",
+            "obs-studio",
+            "distrobox",
+            "fastfetch",
+            "calibre",
+            "blender",
+            "gimp",
+            "wireshark",
+            "insomnia",
+            "inkscape",
+            "audacity",
+            "transmission",
+            "ghostwriter",
+        ];
+
+        let class_lower = class.trim().to_lowercase();
+        if class_lower.is_empty() {
+            let title_lower = title.trim().to_lowercase();
+            if title_lower.is_empty() {
+                return false;
+            }
+            for term in &terminal_classes {
+                if title_lower == *term || title_lower.ends_with(&format!(" - {}", term)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // Exclude all JetBrains family IDEs and variants
+        if class_lower.starts_with("jetbrains") || class_lower.contains("jetbrains") {
+            return false;
+        }
+
+        // Explicit GUI applications must not be classified as terminals
+        for gui in &gui_classes {
+            if class_lower == *gui
+                || class_lower.starts_with(&format!("{}.", gui))
+                || class_lower.ends_with(&format!(".{}", gui))
+                || class_lower.contains(gui)
+            {
+                return false;
+            }
+        }
+
+        let matches_term = |target: &str, term: &str| -> bool {
+            if term.len() <= 3 {
+                target == term
+                    || target.starts_with(&format!("{}-", term))
+                    || target.ends_with(&format!("-{}", term))
+                    || target.starts_with(&format!("{}.", term))
+                    || target.ends_with(&format!(".{}", term))
+            } else {
+                target == term
+                    || target.starts_with(&format!("{}.", term))
+                    || target.ends_with(&format!(".{}", term))
+                    || target.starts_with(&format!("{}-", term))
+                    || target.ends_with(&format!("-{}", term))
+                    || target.contains(&format!("{}-", term))
+                    || target.contains(&format!("-{}", term))
+                    || target.contains(&format!(".{}", term))
+            }
+        };
+
+        for term in &terminal_classes {
+            if matches_term(&class_lower, term) {
+                return true;
+            }
+            for part in class_lower.split_whitespace() {
+                if matches_term(part, term) {
+                    return true;
+                }
+            }
+        }
+
+        if class_lower.contains("terminal") || class_lower.contains("console") {
+            return true;
+        }
+
+        false
+    }
+
+    fn get_x11_active_window(&self) -> Option<(String, String)> {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
+
+        if let Ok((conn, screen_num)) = x11rb::connect(None) {
+            if let Some(screen) = conn.setup().roots.get(screen_num) {
+                let root = screen.root;
+
+                if let (Ok(active_reply), Ok(wm_reply), Ok(utf8_reply)) = (
+                    conn.intern_atom(false, b"_NET_ACTIVE_WINDOW"),
+                    conn.intern_atom(false, b"_NET_WM_NAME"),
+                    conn.intern_atom(false, b"UTF8_STRING"),
+                ) {
+                    if let (Ok(active_atom), Ok(wm_atom), Ok(utf8_atom)) = (
+                        active_reply.reply().map(|r| r.atom),
+                        wm_reply.reply().map(|r| r.atom),
+                        utf8_reply.reply().map(|r| r.atom),
+                    ) {
+                        if let Ok(active_win_reply) =
+                            conn.get_property(false, root, active_atom, AtomEnum::WINDOW, 0, 1)
+                        {
+                            if let Ok(rep) = active_win_reply.reply() {
+                                if let Some(active_win) =
+                                    rep.value32().and_then(|mut iter| iter.next())
+                                {
+                                    if active_win != 0 {
+                                        let title = if let Ok(reply) = conn.get_property(
+                                            false, active_win, wm_atom, utf8_atom, 0, 1024,
+                                        ) {
+                                            if let Ok(r) = reply.reply() {
+                                                String::from_utf8_lossy(&r.value).to_string()
+                                            } else {
+                                                String::new()
+                                            }
+                                        } else {
+                                            String::new()
+                                        };
+
+                                        let class = if let Ok(reply) = conn.get_property(
+                                            false,
+                                            active_win,
+                                            AtomEnum::WM_CLASS,
+                                            AtomEnum::STRING,
+                                            0,
+                                            1024,
+                                        ) {
+                                            if let Ok(r) = reply.reply() {
+                                                String::from_utf8_lossy(&r.value).replace('\0', " ")
+                                            } else {
+                                                String::new()
+                                            }
+                                        } else {
+                                            String::new()
+                                        };
+
+                                        return Some((title, class));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback using xdotool if available
+        if let Ok(output) = Command::new("xdotool").args(["getactivewindow"]).output() {
+            if output.status.success() {
+                let win_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let title = Command::new("xdotool")
+                    .args(["getwindowname", &win_id])
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_default();
+                let class = Command::new("xprop")
+                    .args(["-id", &win_id, "WM_CLASS"])
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| {
+                        let out = String::from_utf8_lossy(&o.stdout);
+                        if let Some(pos) = out.find('=') {
+                            out[pos + 1..].replace(['"', ','], "").trim().to_string()
+                        } else {
+                            String::new()
+                        }
+                    })
+                    .unwrap_or_default();
+                return Some((title, class));
+            }
+        }
+        None
+    }
+
+    fn get_wayland_active_window(&self) -> Option<(String, String)> {
+        // 1. Try hyprctl (Hyprland)
+        if which::which("hyprctl").is_ok() {
+            if let Ok(output) = Command::new("hyprctl")
+                .args(["activewindow", "-j"])
+                .output()
+            {
+                if output.status.success() {
+                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+                        let title = val["title"].as_str().unwrap_or_default().to_string();
+                        let class = val["class"].as_str().unwrap_or_default().to_string();
+                        if !title.is_empty() || !class.is_empty() {
+                            return Some((title, class));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Try swaymsg (Sway)
+        if which::which("swaymsg").is_ok() {
+            if let Ok(output) = Command::new("swaymsg").args(["-t", "get_tree"]).output() {
+                if output.status.success() {
+                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+                        if let Some((title, app_id)) = find_focused_sway_node(&val) {
+                            return Some((title, app_id));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Try KDE Plasma via kdotool
+        if which::which("kdotool").is_ok() {
+            if let Ok(output) = Command::new("kdotool").arg("getactivewindow").output() {
+                if output.status.success() {
+                    let win_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    let name = Command::new("kdotool")
+                        .args(["getwindowname", &win_id])
+                        .output()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                        .unwrap_or_default();
+                    let class = Command::new("kdotool")
+                        .args(["getwindowclassname", &win_id])
+                        .output()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                        .unwrap_or_default();
+                    if !name.is_empty() || !class.is_empty() {
+                        return Some((name, class));
+                    }
+                }
+            }
+        }
+
+        // 4. Try KDE Plasma via qdbus
+        if which::which("qdbus").is_ok() {
+            if let Ok(output) = Command::new("qdbus")
+                .args(["org.kde.KWin", "/KWin", "org.kde.KWin.activeWindow"])
+                .output()
+            {
+                if output.status.success() {
+                    let win_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if !win_name.is_empty() {
+                        return Some((win_name.clone(), win_name));
+                    }
+                }
+            }
+        }
+
+        // 5. Try GNOME Shell Introspect via gdbus
+        if which::which("gdbus").is_ok() {
+            if let Ok(output) = Command::new("gdbus")
+                .args([
+                    "call",
+                    "--session",
+                    "--dest",
+                    "org.gnome.Shell.Introspect",
+                    "--object-path",
+                    "/org/gnome/Shell/Introspect",
+                    "--method",
+                    "org.gnome.Shell.Introspect.GetWindows",
+                ])
+                .output()
+            {
+                if output.status.success() {
+                    let out_str = String::from_utf8_lossy(&output.stdout);
+                    if let Some(focus_idx) = out_str
+                        .find("'has-focus': <true>")
+                        .or_else(|| out_str.find("'focus': <true>"))
+                    {
+                        let start = out_str[..focus_idx].rfind('{').unwrap_or(0);
+                        let end = out_str[focus_idx..]
+                            .find('}')
+                            .map(|e| focus_idx + e)
+                            .unwrap_or(out_str.len());
+                        let dict_str = &out_str[start..end];
+                        let title = extract_gdbus_string(dict_str, "title");
+                        let class = extract_gdbus_string(dict_str, "wm-class")
+                            .or_else(|| extract_gdbus_string(dict_str, "app-id"));
+                        if title.is_some() || class.is_some() {
+                            return Some((title.unwrap_or_default(), class.unwrap_or_default()));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 6. Fallback to Xwayland / xdotool
+        self.get_x11_active_window()
+    }
+}
+
+impl Default for WindowFocusDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn find_focused_sway_node(val: &serde_json::Value) -> Option<(String, String)> {
+    if val["focused"].as_bool().unwrap_or(false) {
+        let name = val["name"].as_str().unwrap_or_default().to_string();
+        let app_id = val["app_id"]
+            .as_str()
+            .or_else(|| val["window_properties"]["class"].as_str())
+            .unwrap_or_default()
+            .to_string();
+        return Some((name, app_id));
+    }
+
+    if let Some(nodes) = val["nodes"].as_array() {
+        for node in nodes {
+            if let Some(res) = find_focused_sway_node(node) {
+                return Some(res);
+            }
+        }
+    }
+
+    if let Some(floating) = val["floating_nodes"].as_array() {
+        for node in floating {
+            if let Some(res) = find_focused_sway_node(node) {
+                return Some(res);
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_gdbus_string(haystack: &str, key: &str) -> Option<String> {
+    let key_pat = format!("'{}': <'", key);
+    if let Some(pos) = haystack.find(&key_pat) {
+        let remainder = &haystack[pos + key_pat.len()..];
+        if let Some(end) = remainder.find('\'') {
+            return Some(remainder[..end].to_string());
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_matches_incognito_pattern() {
+        let patterns = vec![
+            "*incognito*".to_string(),
+            "*private browsing*".to_string(),
+            "*tor browser*".to_string(),
+            "*keepass*".to_string(),
+        ];
+
+        // Should match incognito title in Chrome/Chromium
+        assert!(WindowFocusDetector::matches_incognito_pattern(
+            "New Tab - Google Chrome (Incognito)",
+            "google-chrome",
+            &patterns
+        ));
+
+        // Should match Firefox private browsing
+        assert!(WindowFocusDetector::matches_incognito_pattern(
+            "Mozilla Firefox (Private Browsing)",
+            "firefox",
+            &patterns
+        ));
+
+        // Should match by window class
+        assert!(WindowFocusDetector::matches_incognito_pattern(
+            "Passwords Database",
+            "org.keepassxc.KeePassXC",
+            &patterns
+        ));
+
+        // Should not match regular window
+        assert!(!WindowFocusDetector::matches_incognito_pattern(
+            "Cargo.toml - ClipboardHistory - Visual Studio Code",
+            "code",
+            &patterns
+        ));
+
+        // Empty patterns should never match
+        assert!(!WindowFocusDetector::matches_incognito_pattern(
+            "Incognito Window",
+            "chrome",
+            &[]
+        ));
+    }
+
+    #[test]
+    fn test_find_focused_sway_node() {
+        let tree_json = serde_json::json!({
+            "nodes": [
+                {
+                    "nodes": [
+                        {
+                            "focused": false,
+                            "name": "Terminal",
+                            "app_id": "alacritty"
+                        },
+                        {
+                            "focused": true,
+                            "name": "Mozilla Firefox Private Browsing",
+                            "app_id": "firefox"
+                        }
+                    ]
+                }
+            ]
+        });
+
+        let focused = find_focused_sway_node(&tree_json);
+        assert_eq!(
+            focused,
+            Some((
+                "Mozilla Firefox Private Browsing".to_string(),
+                "firefox".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_is_terminal_window() {
+        // Terminal emulators must match
+        for term in &[
+            "alacritty",
+            "kitty",
+            "gnome-terminal-server",
+            "org.gnome.Terminal",
+            "xterm",
+            "foot",
+            "konsole",
+            "wezterm-gui",
+            "ptyxis",
+            "ghostty",
+            "st-256color",
+            "footclient",
+            "org.kde.konsole",
+            "tilix",
+            "terminator",
+        ] {
+            assert!(
+                WindowFocusDetector::is_terminal_window("", term),
+                "Terminal '{}' should be detected",
+                term
+            );
+        }
+
+        // Case insensitivity
+        for term in &["ALACRITTY", "Kitty", "Gnome-Terminal", "XTERM", "WezTerm"] {
+            assert!(
+                WindowFocusDetector::is_terminal_window("", term),
+                "Terminal '{}' should be detected case-insensitively",
+                term
+            );
+        }
+
+        // Non-terminal GUI applications must NOT match
+        for non_term in &[
+            "firefox",
+            "google-chrome",
+            "chromium",
+            "code",
+            "jetbrains-idea",
+            "jetbrains-webstorm",
+            "jetbrains-pycharm",
+            "vscodium",
+            "code-oss",
+            "steam",
+            "postman",
+            "obs-studio",
+            "webstorm",
+            "rustrover",
+            "distrobox",
+            "fastfetch",
+            "gedit",
+            "org.gnome.Nautilus",
+            "slack",
+            "discord",
+        ] {
+            assert!(
+                !WindowFocusDetector::is_terminal_window("Terminal Guide", non_term),
+                "App '{}' should NOT be detected as terminal",
+                non_term
+            );
+        }
+
+        // Short terminals must match accurately
+        for short_term in &["st", "rio", "kgx"] {
+            assert!(
+                WindowFocusDetector::is_terminal_window("", short_term),
+                "Short terminal '{}' should be detected",
+                short_term
+            );
+        }
+
+        // Fallback by title when class is empty
+        assert!(WindowFocusDetector::is_terminal_window("alacritty", ""));
+        assert!(WindowFocusDetector::is_terminal_window(
+            "bash - alacritty",
+            ""
+        ));
+
+        // Empty title and class
+        assert!(!WindowFocusDetector::is_terminal_window("", ""));
+    }
+}

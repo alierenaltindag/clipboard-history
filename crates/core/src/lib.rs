@@ -10,6 +10,7 @@ pub mod security;
 pub mod storage;
 pub mod sync;
 pub mod transforms;
+pub mod window_focus;
 
 pub use blob::{BlobStore, ThumbnailGenerator};
 pub use clipboard::copy_to_system_clipboard;
@@ -35,3 +36,4 @@ pub use transforms::{
     ColorInfo, ConcatDelimiter, DiffEngine, DiffLine, DiffResult, DiffTag, OcrEngine,
     SnippetExpander, TextTransforms, UrlCleaner,
 };
+pub use window_focus::WindowFocusDetector;

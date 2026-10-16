@@ -19,3 +19,6 @@
 *.sublime-project
 *.sublime-workspace
 
+# Multi-agent teamwork scratch
+.agents/
+

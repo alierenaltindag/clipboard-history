@@ -28,11 +28,19 @@ impl PasteInjector for YdotoolInjector {
     }
 
     async fn inject(&self) -> bool {
-        debug!("Injecting paste via ydotool");
-        // Keycode 29 = KEY_LEFTCTRL, 47 = KEY_V
-        // 29:1 (press ctrl), 47:1 (press v), 47:0 (release v), 29:0 (release ctrl)
+        self.inject_context(false).await
+    }
+
+    async fn inject_context(&self, is_terminal: bool) -> bool {
+        debug!("Injecting paste via ydotool (is_terminal={})", is_terminal);
+        // Keycode 29 = KEY_LEFTCTRL, 42 = KEY_LEFTSHIFT, 47 = KEY_V
+        let args: &[&str] = if is_terminal {
+            &["key", "29:1", "42:1", "47:1", "47:0", "42:0", "29:0"]
+        } else {
+            &["key", "29:1", "47:1", "47:0", "29:0"]
+        };
         Command::new("ydotool")
-            .args(["key", "29:1", "47:1", "47:0", "29:0"])
+            .args(args)
             .status()
             .await
             .map(|s| s.success())

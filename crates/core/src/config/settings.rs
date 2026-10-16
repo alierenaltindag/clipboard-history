@@ -205,6 +205,15 @@ impl Default for PasteConfig {
     }
 }
 
+impl PasteConfig {
+    pub fn effective_delay_ms(&self) -> u64 {
+        let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok()
+            || std::env::var("XDG_SESSION_TYPE").unwrap_or_default() == "wayland";
+        let min_delay = if is_wayland { 120 } else { 50 };
+        self.paste_delay_ms.max(min_delay)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotkeyConfig {
     pub shortcut: String,
@@ -378,5 +387,32 @@ impl AppConfig {
         let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
         info!("Saved configuration to {}", path.display());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_effective_delay_ms_minimums() {
+        let mut cfg = PasteConfig {
+            auto_paste: true,
+            paste_delay_ms: 20,
+            preferred_injector: None,
+            move_pasted_to_top: false,
+        };
+
+        let delay = cfg.effective_delay_ms();
+        // Since we are running on Linux (either Wayland or X11/headless), delay should be at least 50ms,
+        // and if Wayland is set, at least 120ms.
+        let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok()
+            || std::env::var("XDG_SESSION_TYPE").unwrap_or_default() == "wayland";
+        let expected_min = if is_wayland { 120 } else { 50 };
+        assert_eq!(delay, expected_min);
+
+        // High delay should be preserved
+        cfg.paste_delay_ms = 350;
+        assert_eq!(cfg.effective_delay_ms(), 350);
     }
 }

@@ -28,9 +28,20 @@ impl PasteInjector for WtypeInjector {
     }
 
     async fn inject(&self) -> bool {
-        debug!("Injecting paste via wtype");
+        self.inject_context(false).await
+    }
+
+    async fn inject_context(&self, is_terminal: bool) -> bool {
+        debug!("Injecting paste via wtype (is_terminal={})", is_terminal);
+        let args: &[&str] = if is_terminal {
+            &[
+                "-M", "ctrl", "-M", "shift", "v", "-m", "shift", "-m", "ctrl",
+            ]
+        } else {
+            &["-M", "ctrl", "v", "-m", "ctrl"]
+        };
         Command::new("wtype")
-            .args(["-M", "ctrl", "v", "-m", "ctrl"])
+            .args(args)
             .status()
             .await
             .map(|s| s.success())

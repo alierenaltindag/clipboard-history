@@ -506,10 +506,11 @@ impl DbusMenuServer {
                     clipboard_history_core::copy_to_system_clipboard(&text).await;
                     info!("Copied item {} to system clipboard from tray", index + 1);
 
-                    let auto_paste = self.config.read().await.paste.auto_paste;
-                    if auto_paste {
+                    let paste_cfg = self.config.read().await.paste.clone();
+                    if paste_cfg.auto_paste {
+                        let delay_ms = paste_cfg.effective_delay_ms();
                         tokio::spawn(async move {
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                             let cascade = InjectorCascade::new();
                             let (name, success) = cascade.execute_paste().await;
                             info!(

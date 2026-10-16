@@ -452,8 +452,16 @@ async fn test_tesseract_turkish_language_priority() {
     let langs = OcrEngine::get_installed_languages().await;
     if langs.iter().any(|l| l == "tur") {
         let determined = OcrEngine::determine_ocr_languages(&langs).unwrap();
-        assert!(determined.contains("tur"), "Must prioritize Turkish when 'tur' is installed, got: {}", determined);
-        assert!(!determined.contains("osd"), "Must not include 'osd' in recognition languages, got: {}", determined);
+        assert!(
+            determined.contains("tur"),
+            "Must prioritize Turkish when 'tur' is installed, got: {}",
+            determined
+        );
+        assert!(
+            !determined.contains("osd"),
+            "Must not include 'osd' in recognition languages, got: {}",
+            determined
+        );
     }
 }
 
@@ -467,7 +475,9 @@ async fn test_turkish_ocr_accuracy_on_real_sample() {
 
     let sample_path = "/home/laptop-ubuntu/.local/share/clipboard-history/blobs/68c773c53335bfbff222c9f068dd18b59ce19d5a372a8dba80265a14b622d5ab.blob";
     if let Ok(bytes) = std::fs::read(sample_path) {
-        let extracted = OcrEngine::extract_text(&bytes).await.expect("OCR extraction failed");
+        let extracted = OcrEngine::extract_text(&bytes)
+            .await
+            .expect("OCR extraction failed");
         println!("\n================== EXTRACTED OCR TEXT ==================");
         println!("{}", extracted);
         println!("=======================================================\n");
@@ -476,7 +486,6 @@ async fn test_turkish_ocr_accuracy_on_real_sample() {
         assert!(extracted.contains("İngilizce") || extracted.contains("ingilizce"));
     }
 }
-
 
 #[test]
 fn test_security_config_defaults_and_toggle() {
@@ -2171,4 +2180,205 @@ fn test_touch_entry_moves_to_top_and_sync_updates_peer() {
         "Peer must reflect updated position at top"
     );
     assert_eq!(peer_list[1].id, created2.id);
+}
+
+#[test]
+fn test_sqlite_busy_timeout_pragma_configured() {
+    use clipboard_history_core::storage::SqliteRepository;
+
+    // Verify in-memory database
+    let mem_repo = SqliteRepository::open_in_memory().expect("Failed to open in-memory db");
+    assert_eq!(
+        mem_repo.busy_timeout_ms().expect("Query busy_timeout"),
+        5000,
+        "In-memory DB must have busy_timeout set to 5000ms"
+    );
+
+    // Verify on-disk database
+    let temp_dir = tempfile::tempdir().expect("Create tempdir");
+    let db_path = temp_dir.path().join("test_timeout.db");
+    let disk_repo = SqliteRepository::open(&db_path).expect("Failed to open disk db");
+    assert_eq!(
+        disk_repo.busy_timeout_ms().expect("Query busy_timeout"),
+        5000,
+        "Disk DB must have busy_timeout set to 5000ms"
+    );
+}
+
+#[test]
+fn test_sqlite_concurrent_read_write_lock_resilience() {
+    use clipboard_history_core::blob::BlobStore;
+    use clipboard_history_core::domain::ClipboardEntry;
+    use clipboard_history_core::storage::SqliteRepository;
+    use std::thread;
+
+    let temp_dir = tempfile::tempdir().expect("Create tempdir");
+    let db_path = temp_dir.path().join("concurrent_stress.db");
+
+    // Initialize database schema
+    {
+        let repo = SqliteRepository::open(&db_path).expect("Open initial repo");
+        let initial_entry = ClipboardEntry::new_text(
+            "Initial Content".to_string(),
+            BlobStore::compute_hash(b"Initial Content"),
+            vec!["text/plain".to_string()],
+            Some("init".to_string()),
+        );
+        repo.insert_or_update(&initial_entry)
+            .expect("Initial insert");
+    }
+
+    let thread_count = 10;
+    let ops_per_thread = 25;
+    let mut handles = Vec::new();
+
+    for t in 0..thread_count {
+        let path = db_path.clone();
+        handles.push(thread::spawn(move || {
+            let repo = SqliteRepository::open(&path)
+                .unwrap_or_else(|e| panic!("Thread {} failed to open DB: {}", t, e));
+
+            for i in 0..ops_per_thread {
+                let text = format!("Thread {} - Content {}", t, i);
+                let hash = BlobStore::compute_hash(text.as_bytes());
+                let entry = ClipboardEntry::new_text(
+                    text.clone(),
+                    hash,
+                    vec!["text/plain".to_string()],
+                    Some(format!("app_{}", t)),
+                );
+
+                match i % 4 {
+                    0 => {
+                        // Batch insert with immediate transaction
+                        let res = repo.batch_insert_or_update(&[entry]);
+                        assert!(
+                            res.is_ok(),
+                            "Thread {} batch_insert failed: {:?}",
+                            t,
+                            res.err()
+                        );
+                    }
+                    1 => {
+                        // Single insert/update
+                        let res = repo.insert_or_update(&entry);
+                        assert!(
+                            res.is_ok(),
+                            "Thread {} single insert failed: {:?}",
+                            t,
+                            res.err()
+                        );
+                    }
+                    2 => {
+                        // Search
+                        let res = repo.search("Thread", 10, 0);
+                        assert!(res.is_ok(), "Thread {} search failed: {:?}", t, res.err());
+                    }
+                    _ => {
+                        // List
+                        let res = repo.list(10, 0, None, false);
+                        assert!(res.is_ok(), "Thread {} list failed: {:?}", t, res.err());
+                    }
+                }
+            }
+        }));
+    }
+
+    for (t, handle) in handles.into_iter().enumerate() {
+        handle
+            .join()
+            .unwrap_or_else(|e| panic!("Thread {} panicked: {:?}", t, e));
+    }
+
+    // Verify database state integrity
+    let final_repo = SqliteRepository::open(&db_path).expect("Open final repo");
+    let total_count = final_repo.count().expect("Final count");
+    assert!(
+        total_count > 1,
+        "Expected multiple concurrent entries persisted cleanly, found {}",
+        total_count
+    );
+}
+
+#[test]
+fn test_sqlite_transient_lock_wait_success() {
+    use clipboard_history_core::blob::BlobStore;
+    use clipboard_history_core::domain::ClipboardEntry;
+    use clipboard_history_core::storage::SqliteRepository;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let temp_dir = tempfile::tempdir().expect("Create tempdir");
+    let db_path = temp_dir.path().join("lock_wait.db");
+
+    let lock_held = Arc::new(AtomicBool::new(false));
+    let lock_held_clone = Arc::clone(&lock_held);
+
+    let path_a = db_path.clone();
+    let holder_handle = thread::spawn(move || {
+        let repo_a = SqliteRepository::open(&path_a).expect("Repo A open");
+        // Insert entry using batch_insert_or_update, which uses IMMEDIATE transaction
+        let text_a = "Lock Holder Entry".to_string();
+        let hash_a = BlobStore::compute_hash(text_a.as_bytes());
+        let entry_a = ClipboardEntry::new_text(
+            text_a,
+            hash_a,
+            vec!["text/plain".to_string()],
+            Some("holder".to_string()),
+        );
+
+        let mut entries = vec![entry_a];
+        for k in 0..50 {
+            let t = format!("Batch {}", k);
+            let h = BlobStore::compute_hash(t.as_bytes());
+            entries.push(ClipboardEntry::new_text(
+                t,
+                h,
+                vec!["text/plain".to_string()],
+                None,
+            ));
+        }
+        lock_held_clone.store(true, Ordering::SeqCst);
+        let _ = repo_a
+            .batch_insert_or_update(&entries)
+            .expect("Batch write A");
+        thread::sleep(Duration::from_millis(300));
+    });
+
+    // Wait until holder thread begins writing
+    while !lock_held.load(Ordering::SeqCst) {
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    // Attempt concurrent write from Repo B while Repo A is active
+    let path_b = db_path.clone();
+    let repo_b = SqliteRepository::open(&path_b).expect("Repo B open");
+    let text_b = "Contending Entry".to_string();
+    let hash_b = BlobStore::compute_hash(text_b.as_bytes());
+    let entry_b = ClipboardEntry::new_text(
+        text_b,
+        hash_b,
+        vec!["text/plain".to_string()],
+        Some("contender".to_string()),
+    );
+
+    let start = Instant::now();
+    let res = repo_b.insert_or_update(&entry_b);
+    let elapsed = start.elapsed();
+
+    assert!(
+        res.is_ok(),
+        "Contending write must succeed without SQLITE_BUSY: {:?}",
+        res.err()
+    );
+    // Confirm write completed within the 5000ms window
+    assert!(
+        elapsed < Duration::from_millis(5000),
+        "Write should have completed within 5000ms busy_timeout, took {:?}",
+        elapsed
+    );
+
+    holder_handle.join().expect("Holder thread panicked");
 }

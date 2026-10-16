@@ -13,42 +13,46 @@ impl X11XTestInjector {
         Self
     }
 
-    fn find_keycodes(conn: &RustConnection) -> Option<(u8, u8)> {
+    fn find_keycodes(conn: &RustConnection) -> (u8, u8, u8) {
         let setup = conn.setup();
         let min_keycode = setup.min_keycode;
         let max_keycode = setup.max_keycode;
         let count = max_keycode - min_keycode + 1;
 
-        let mapping = conn
-            .get_keyboard_mapping(min_keycode, count)
-            .ok()?
-            .reply()
-            .ok()?;
-        let keysyms_per_keycode = mapping.keysyms_per_keycode as usize;
-        if keysyms_per_keycode == 0 {
-            return Some((37, 55));
-        }
-
         let mut ctrl_keycode = None;
+        let mut shift_keycode = None;
         let mut v_keycode = None;
 
-        for (idx, chunk) in mapping.keysyms.chunks(keysyms_per_keycode).enumerate() {
-            let keycode = min_keycode + idx as u8;
-            for &sym in chunk {
-                if sym == 0xffe3 || sym == 0xffe4 {
-                    // XK_Control_L or XK_Control_R
-                    ctrl_keycode = Some(keycode);
-                } else if sym == 0x0076 || sym == 0x0056 {
-                    // XK_v or XK_V
-                    v_keycode = Some(keycode);
+        if let Some(reply) = conn
+            .get_keyboard_mapping(min_keycode, count)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+        {
+            let keysyms_per_keycode = reply.keysyms_per_keycode as usize;
+            if keysyms_per_keycode > 0 {
+                for (idx, chunk) in reply.keysyms.chunks(keysyms_per_keycode).enumerate() {
+                    let keycode = min_keycode + idx as u8;
+                    for &sym in chunk {
+                        if sym == 0xffe3 || sym == 0xffe4 {
+                            // XK_Control_L or XK_Control_R
+                            ctrl_keycode = Some(keycode);
+                        } else if sym == 0xffe1 || sym == 0xffe2 {
+                            // XK_Shift_L or XK_Shift_R
+                            shift_keycode = Some(keycode);
+                        } else if sym == 0x0076 || sym == 0x0056 {
+                            // XK_v or XK_V
+                            v_keycode = Some(keycode);
+                        }
+                    }
                 }
             }
         }
 
-        match (ctrl_keycode, v_keycode) {
-            (Some(c), Some(v)) => Some((c, v)),
-            _ => Some((37, 55)), // Standard PC defaults for Control_L and 'v'
-        }
+        (
+            ctrl_keycode.unwrap_or(37),
+            shift_keycode.unwrap_or(50),
+            v_keycode.unwrap_or(55),
+        )
     }
 }
 
@@ -76,7 +80,14 @@ impl PasteInjector for X11XTestInjector {
     }
 
     async fn inject(&self) -> bool {
-        debug!("Injecting paste via X11 XTest fake input");
+        self.inject_context(false).await
+    }
+
+    async fn inject_context(&self, is_terminal: bool) -> bool {
+        debug!(
+            "Injecting paste via X11 XTest fake input (is_terminal={})",
+            is_terminal
+        );
         let (conn, _) = match RustConnection::connect(None) {
             Ok(c) => c,
             Err(e) => {
@@ -85,7 +96,7 @@ impl PasteInjector for X11XTestInjector {
             }
         };
 
-        let (ctrl_key, v_key) = Self::find_keycodes(&conn).unwrap_or((37, 55));
+        let (ctrl_key, shift_key, v_key) = Self::find_keycodes(&conn);
 
         const KEY_PRESS: u8 = 2;
         const KEY_RELEASE: u8 = 3;
@@ -93,10 +104,18 @@ impl PasteInjector for X11XTestInjector {
         let res = (|| -> Result<(), Box<dyn std::error::Error>> {
             // Press Ctrl
             conn.xtest_fake_input(KEY_PRESS, ctrl_key, 0, 0, 0, 0, 0)?;
+            if is_terminal {
+                // Press Shift
+                conn.xtest_fake_input(KEY_PRESS, shift_key, 0, 0, 0, 0, 0)?;
+            }
             // Press V
             conn.xtest_fake_input(KEY_PRESS, v_key, 0, 0, 0, 0, 0)?;
             // Release V
             conn.xtest_fake_input(KEY_RELEASE, v_key, 0, 0, 0, 0, 0)?;
+            if is_terminal {
+                // Release Shift
+                conn.xtest_fake_input(KEY_RELEASE, shift_key, 0, 0, 0, 0, 0)?;
+            }
             // Release Ctrl
             conn.xtest_fake_input(KEY_RELEASE, ctrl_key, 0, 0, 0, 0, 0)?;
             conn.flush()?;

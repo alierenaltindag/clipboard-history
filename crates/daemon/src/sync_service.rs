@@ -595,8 +595,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_broadcast_sync_message_noop_when_disabled() {
-        let mut cfg = clipboard_history_core::config::SyncConfig::default();
-        cfg.enabled = false;
+        let cfg = clipboard_history_core::config::SyncConfig {
+            enabled: false,
+            ..Default::default()
+        };
         let msg = SyncMessage::ClearHistorySync {
             origin_device: "test-dev".to_string(),
             include_pinned: true,

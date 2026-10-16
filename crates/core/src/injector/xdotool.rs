@@ -28,9 +28,18 @@ impl PasteInjector for XdotoolInjector {
     }
 
     async fn inject(&self) -> bool {
-        debug!("Injecting paste via xdotool");
+        self.inject_context(false).await
+    }
+
+    async fn inject_context(&self, is_terminal: bool) -> bool {
+        debug!("Injecting paste via xdotool (is_terminal={})", is_terminal);
+        let key_combination = if is_terminal {
+            "ctrl+shift+v"
+        } else {
+            "ctrl+v"
+        };
         Command::new("xdotool")
-            .args(["key", "--clearmodifiers", "ctrl+v"])
+            .args(["key", "--clearmodifiers", key_combination])
             .status()
             .await
             .map(|s| s.success())

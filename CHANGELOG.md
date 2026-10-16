@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-10-16
+
+### Added
+- **Universal Full-History GUI Search**:
+  - Connected the GUI search input to asynchronous IPC search (`IpcRequest::Search`) querying the entire SQLite FTS5 database via daemon IPC.
+  - Monotonic sequence counter (`search_seq`) to prevent asynchronous race conditions and discard stale out-of-order query responses.
+  - Instantaneous (<1ms) synchronous restoration of recent chronological cache upon clearing search input.
+- **Context-Aware Terminal Paste Injection**:
+  - Added intelligent active window classification covering 46+ terminal emulators (`alacritty`, `kitty`, `gnome-terminal`, `konsole`, `wezterm`, `foot`, `tilix`, etc.).
+  - Bounded and delimited matching to eliminate false positives on graphical apps (Steam, Postman, JetBrains IDEs).
+  - Automatically dispatches `Ctrl+Shift+V` for terminals and `Ctrl+V` for standard desktop applications across all injectors.
+
+### Fixed
+- **Database Concurrency & Transient Lock Resilience**:
+  - Configured SQLite connection initialization with 5000ms `busy_timeout` via connection setup and live `PRAGMA busy_timeout = 5000`.
+  - Upgraded write transactions to `TransactionBehavior::Immediate`, preventing lock upgrade deadlocks and `SQLITE_BUSY` errors during concurrent access from daemon, GUI, and CLI.
+- **Wayland Process Safety & Focus Delay Calibration**:
+  - Enforced `cmd.kill_on_drop(true)` on `wl-paste` child processes, preventing zombie process leaks during clipboard execution timeouts.
+  - Calibrated auto-paste delay with a minimum 120ms floor on Wayland sessions to ensure compositor window focus settles before keystroke injection.
+- **Code Quality & Clippy Cleanliness**:
+  - Resolved all workspace compiler and clippy warnings under strict `-D warnings` mode.
+
 ## [1.1.1] - 2026-10-16
 
 ### Added
