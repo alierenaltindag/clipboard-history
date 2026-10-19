@@ -315,17 +315,52 @@ impl DaemonServer {
                 },
 
                 IpcRequest::PinEntry { id } => {
-                    let hash_opt = repo.get_by_id(&id).ok().map(|e| e.content_hash);
+                    let entry_res = repo.get_by_id(&id);
+                    let (hash_opt, mut entry_opt) = match entry_res {
+                        Ok(e) => (Some(e.content_hash.clone()), Some(e)),
+                        Err(_) => {
+                            if let Ok(Some(s)) = repo.get_snippet(&id) {
+                                let hash = format!("snippet_{}", s.label);
+                                let mut clip = ClipboardEntry::new_text(
+                                    s.content.clone(),
+                                    hash.clone(),
+                                    vec!["text/plain".to_string()],
+                                    Some("Snippet".to_string()),
+                                );
+                                clip.is_pinned = true;
+                                (Some(hash), Some(clip))
+                            } else {
+                                (None, None)
+                            }
+                        }
+                    };
                     match repo.set_pinned(&id, true) {
                         Ok(_) => {
                             if let Some(content_hash) = hash_opt {
                                 let sync_cfg = config.read().await.sync.clone();
                                 if sync_cfg.enabled {
                                     let active_peers = peer_tracker.get_all_peers().await;
+                                    let (blob_payload, thumbnail_payload) = if let Some(ref mut entry) = entry_opt {
+                                        entry.is_pinned = true;
+                                        crate::sync_service::decrypt_entry_for_transit(entry, &repo, &crypto);
+                                        if entry.entry_type == clipboard_history_core::domain::EntryType::Image {
+                                            let enc = config.read().await.security.encryption_enabled;
+                                            let b = crate::sync_service::read_image_blob(entry, &blob_store, &crypto, enc);
+                                            let t = crate::sync_service::read_thumbnail_blob(entry, b.as_deref(), &blob_store, &crypto, enc);
+                                            (b, t)
+                                        } else {
+                                            (None, None)
+                                        }
+                                    } else {
+                                        (None, None)
+                                    };
                                     let msg = clipboard_history_core::sync::SyncMessage::PinSync {
                                         origin_device: sync_cfg.device_name.clone(),
                                         content_hash,
                                         is_pinned: true,
+                                        entry: entry_opt.map(Box::new),
+                                        blob_payload,
+                                        thumbnail_payload,
                                     };
                                     crate::sync_service::broadcast_sync_message(
                                         &sync_cfg,
@@ -341,7 +376,10 @@ impl DaemonServer {
                 }
 
                 IpcRequest::UnpinEntry { id } => {
-                    let hash_opt = repo.get_by_id(&id).ok().map(|e| e.content_hash);
+                    let hash_opt = match repo.get_by_id(&id) {
+                        Ok(e) => Some(e.content_hash),
+                        Err(_) => repo.get_snippet(&id).ok().flatten().map(|s| format!("snippet_{}", s.label)),
+                    };
                     match repo.set_pinned(&id, false) {
                         Ok(_) => {
                             if let Some(content_hash) = hash_opt {
@@ -352,6 +390,9 @@ impl DaemonServer {
                                         origin_device: sync_cfg.device_name.clone(),
                                         content_hash,
                                         is_pinned: false,
+                                        entry: None,
+                                        blob_payload: None,
+                                        thumbnail_payload: None,
                                     };
                                     crate::sync_service::broadcast_sync_message(
                                         &sync_cfg,
@@ -813,7 +854,25 @@ impl DaemonServer {
                         Some("cli".to_string()),
                     );
                     match repo.insert_or_update(&entry) {
-                        Ok(_) => IpcResponse::Success,
+                        Ok(saved) => {
+                            let sync_cfg = config.read().await.sync.clone();
+                            if sync_cfg.enabled {
+                                let active_peers = peer_tracker.get_all_peers().await;
+                                let msg = clipboard_history_core::sync::SyncMessage::EntrySync {
+                                    origin_device: sync_cfg.device_name.clone(),
+                                    entry: Box::new(saved),
+                                    blob_payload: None,
+                                    thumbnail_payload: None,
+                                    is_history_batch: false,
+                                };
+                                crate::sync_service::broadcast_sync_message(
+                                    &sync_cfg,
+                                    &active_peers,
+                                    msg,
+                                );
+                            }
+                            IpcResponse::Success
+                        }
                         Err(e) => IpcResponse::Error(e.to_string()),
                     }
                 }
@@ -916,22 +975,50 @@ impl DaemonServer {
                 },
 
                 IpcRequest::BatchPin { ids, pinned } => {
-                    let mut hashes = Vec::new();
+                    let mut items = Vec::new();
                     for id in &ids {
-                        if let Ok(entry) = repo.get_by_id(id) {
-                            hashes.push(entry.content_hash);
+                        if let Ok(mut e) = repo.get_by_id(id) {
+                            let hash = e.content_hash.clone();
+                            e.is_pinned = pinned;
+                            crate::sync_service::decrypt_entry_for_transit(&mut e, &repo, &crypto);
+                            items.push((hash, Some(e)));
+                        } else if let Ok(Some(s)) = repo.get_snippet(id) {
+                            let hash = format!("snippet_{}", s.label);
+                            let mut clip = ClipboardEntry::new_text(
+                                s.content.clone(),
+                                hash.clone(),
+                                vec!["text/plain".to_string()],
+                                Some("Snippet".to_string()),
+                            );
+                            clip.is_pinned = pinned;
+                            items.push((hash, Some(clip)));
                         }
                     }
                     match repo.batch_set_pinned(&ids, pinned) {
                         Ok(count) => {
                             let sync_cfg = config.read().await.sync.clone();
-                            if sync_cfg.enabled && !hashes.is_empty() {
+                            if sync_cfg.enabled && !items.is_empty() {
                                 let active_peers = peer_tracker.get_all_peers().await;
-                                for content_hash in hashes {
+                                let enc = config.read().await.security.encryption_enabled;
+                                for (content_hash, entry_opt) in items {
+                                    let (blob_payload, thumbnail_payload) = if let Some(ref entry) = entry_opt {
+                                        if entry.entry_type == clipboard_history_core::domain::EntryType::Image {
+                                            let b = crate::sync_service::read_image_blob(entry, &blob_store, &crypto, enc);
+                                            let t = crate::sync_service::read_thumbnail_blob(entry, b.as_deref(), &blob_store, &crypto, enc);
+                                            (b, t)
+                                        } else {
+                                            (None, None)
+                                        }
+                                    } else {
+                                        (None, None)
+                                    };
                                     let msg = clipboard_history_core::sync::SyncMessage::PinSync {
                                         origin_device: sync_cfg.device_name.clone(),
                                         content_hash,
                                         is_pinned: pinned,
+                                        entry: if pinned { entry_opt.map(Box::new) } else { None },
+                                        blob_payload,
+                                        thumbnail_payload,
                                     };
                                     crate::sync_service::broadcast_sync_message(
                                         &sync_cfg,
@@ -975,6 +1062,66 @@ impl DaemonServer {
                 IpcRequest::TouchEntry { id } => {
                     let _ = repo.touch_entry(&id);
                     IpcResponse::Success
+                }
+
+                IpcRequest::CheckForUpdates => {
+                    let current_version = env!("CARGO_PKG_VERSION");
+                    match clipboard_history_core::updater::check_for_updates(current_version).await {
+                        Ok(Some(release)) => IpcResponse::UpdateCheckResult {
+                            update_available: true,
+                            current_version: current_version.to_string(),
+                            latest_version: release.version,
+                            release_notes: release.release_notes,
+                        },
+                        Ok(None) => IpcResponse::UpdateCheckResult {
+                            update_available: false,
+                            current_version: current_version.to_string(),
+                            latest_version: current_version.to_string(),
+                            release_notes: None,
+                        },
+                        Err(e) => IpcResponse::Error(e.to_string()),
+                    }
+                }
+
+                IpcRequest::ApplyUpdate => {
+                    let current_version = env!("CARGO_PKG_VERSION");
+                    match clipboard_history_core::updater::check_for_updates(current_version).await {
+                        Ok(Some(release)) => {
+                            match clipboard_history_core::updater::download_and_verify(&release).await {
+                                Ok(tar_path) => {
+                                    match clipboard_history_core::updater::install_update_from_tarball(&tar_path) {
+                                        Ok(_) => {
+                                            crate::notification::dispatch_update_success_notification(&release.version).await;
+                                            tokio::spawn(async {
+                                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                                let _ = clipboard_history_core::updater::restart_daemon_service().await;
+                                            });
+                                            IpcResponse::UpdateApplyResult {
+                                                success: true,
+                                                message: format!("Successfully installed version {}", release.version),
+                                            }
+                                        }
+                                        Err(e) => IpcResponse::UpdateApplyResult {
+                                            success: false,
+                                            message: format!("Failed to install update: {}", e),
+                                        },
+                                    }
+                                }
+                                Err(e) => IpcResponse::UpdateApplyResult {
+                                    success: false,
+                                    message: format!("Failed to download update: {}", e),
+                                },
+                            }
+                        }
+                        Ok(None) => IpcResponse::UpdateApplyResult {
+                            success: false,
+                            message: "Already running the latest version.".to_string(),
+                        },
+                        Err(e) => IpcResponse::UpdateApplyResult {
+                            success: false,
+                            message: format!("Check failed: {}", e),
+                        },
+                    }
                 }
 
                 IpcRequest::ToggleWindow => {

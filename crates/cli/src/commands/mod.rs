@@ -2,6 +2,7 @@ pub mod daemon_ctrl;
 pub mod entries;
 pub mod snippets;
 pub mod transforms;
+pub mod update;
 
 pub use daemon_ctrl::{
     handle_daemon, handle_pause, handle_resume, handle_status, handle_toggle, DaemonAction,
@@ -12,6 +13,7 @@ pub use entries::{
 };
 pub use snippets::{handle_snippets, SnippetAction};
 pub use transforms::{handle_clean_url, handle_diff, handle_join, handle_ocr};
+pub use update::{handle_update, UpdateAction};
 
 pub fn print_daemon_offline_error() {
     eprintln!("Error: Could not connect to clipboard-history-daemon.");

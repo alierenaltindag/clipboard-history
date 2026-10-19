@@ -271,6 +271,28 @@ impl SyncConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateConfig {
+    pub auto_check: bool,
+    pub check_interval_hours: u64,
+    pub last_check_timestamp: u64,
+    pub last_notified_version: Option<String>,
+    pub ignored_version: Option<String>,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            auto_check: true,
+            check_interval_hours: 24,
+            last_check_timestamp: 0,
+            last_notified_version: None,
+            ignored_version: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     pub general: GeneralConfig,
@@ -279,6 +301,8 @@ pub struct AppConfig {
     pub paste: PasteConfig,
     pub hotkey: HotkeyConfig,
     pub sync: SyncConfig,
+    #[serde(default)]
+    pub updates: UpdateConfig,
 }
 
 impl AppConfig {

@@ -431,9 +431,33 @@ pub async fn perform_mutual_history_sync(
             SyncMessage::PinSync {
                 content_hash,
                 is_pinned,
+                entry,
+                blob_payload,
+                thumbnail_payload,
                 ..
             } => {
-                let _ = repo.set_pinned_by_hash(&content_hash, is_pinned);
+                if is_pinned {
+                    let res = repo.set_pinned_by_hash(&content_hash, true);
+                    if res.is_err() {
+                        if let Some(entry_box) = entry {
+                            let _ = handle_incoming_entry_sync(
+                                *entry_box,
+                                blob_payload,
+                                thumbnail_payload,
+                                true,
+                                &repo,
+                                &blob_store,
+                                &crypto,
+                                encryption_enabled,
+                                &echo_tracker,
+                            )
+                            .await;
+                            let _ = repo.set_pinned_by_hash(&content_hash, true);
+                        }
+                    }
+                } else {
+                    let _ = repo.set_pinned_by_hash(&content_hash, false);
+                }
             }
             SyncMessage::HistorySyncComplete { count, .. } => {
                 debug!(

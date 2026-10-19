@@ -62,10 +62,16 @@ pub enum SyncMessage {
         origin_device: String,
         include_pinned: bool,
     },
-    /// Sync pin/unpin status for an entry across paired devices
+    /// Sync pin/unpin status for an entry across paired devices (with optional payload for newly pinned items)
     PinSync {
         origin_device: String,
         content_hash: String,
         is_pinned: bool,
+        #[serde(default)]
+        entry: Option<Box<ClipboardEntry>>,
+        #[serde(default)]
+        blob_payload: Option<Vec<u8>>,
+        #[serde(default)]
+        thumbnail_payload: Option<Vec<u8>>,
     },
 }

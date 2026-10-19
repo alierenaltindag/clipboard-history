@@ -302,6 +302,53 @@ impl SettingsDialog {
         sync_page.add(&security_guide_group);
         dialog.add(&sync_page);
 
+        // ==========================================
+        // PAGE 4: Updates
+        // ==========================================
+        let updates_page = libadwaita::PreferencesPage::new();
+        updates_page.set_title("Updates");
+        updates_page.set_icon_name(Some("system-software-update-symbolic"));
+
+        let update_group = libadwaita::PreferencesGroup::new();
+        update_group.set_title("Software Updates");
+        update_group.set_description(Some(
+            "Check for new Clipboard History releases on GitHub and update automatically",
+        ));
+
+        let auto_check_row = libadwaita::SwitchRow::new();
+        auto_check_row.set_title("Check for Updates Automatically");
+        auto_check_row.set_subtitle("Automatically query GitHub once a day in background daemon");
+        auto_check_row.set_active(config.updates.auto_check);
+        update_group.add(&auto_check_row);
+
+        let current_version_row = libadwaita::ActionRow::new();
+        current_version_row.set_title("Installed Version");
+        current_version_row.set_subtitle(&format!("v{}", env!("CARGO_PKG_VERSION")));
+        update_group.add(&current_version_row);
+
+        let status_row = libadwaita::ActionRow::new();
+        status_row.set_title("Update Status");
+        status_row.set_subtitle("Check not performed yet");
+
+        let check_btn = gtk4::Button::with_label("Check Now");
+        check_btn.set_valign(gtk4::Align::Center);
+        check_btn.add_css_class("suggested-action");
+
+        let install_btn = gtk4::Button::with_label("Install Update");
+        install_btn.set_valign(gtk4::Align::Center);
+        install_btn.add_css_class("destructive-action");
+        install_btn.set_visible(false);
+
+        let btn_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        btn_box.set_valign(gtk4::Align::Center);
+        btn_box.append(&check_btn);
+        btn_box.append(&install_btn);
+        status_row.add_suffix(&btn_box);
+        update_group.add(&status_row);
+
+        updates_page.add(&update_group);
+        dialog.add(&updates_page);
+
         // Connect setting listeners to save to config.toml and sync with daemon via IPC
         let cfg_cell = Rc::new(RefCell::new(config));
 
@@ -400,6 +447,95 @@ impl SettingsDialog {
         dev_name_row.connect_changed(move |row| {
             cfg_dev.borrow_mut().sync.device_name = row.text().to_string();
             Self::save_and_sync(&cfg_dev.borrow());
+        });
+
+        let cfg_update = Rc::clone(&cfg_cell);
+        auto_check_row.connect_active_notify(move |row| {
+            cfg_update.borrow_mut().updates.auto_check = row.is_active();
+            Self::save_and_sync(&cfg_update.borrow());
+        });
+
+        // Check for updates button
+        let status_row_chk = status_row.clone();
+        let check_btn_chk = check_btn.clone();
+        let install_btn_chk = install_btn.clone();
+        check_btn.connect_clicked(move |_| {
+            check_btn_chk.set_sensitive(false);
+            status_row_chk.set_subtitle("Checking GitHub for new releases...");
+
+            let s_row = status_row_chk.clone();
+            let c_btn = check_btn_chk.clone();
+            let i_btn = install_btn_chk.clone();
+            glib::MainContext::default().spawn_local(async move {
+                match IpcClient::connect().await {
+                    Ok(client) => match client.send(&IpcRequest::CheckForUpdates).await {
+                        Ok(IpcResponse::UpdateCheckResult {
+                            update_available,
+                            latest_version,
+                            ..
+                        }) => {
+                            if update_available {
+                                s_row.set_subtitle(&format!(
+                                    "New version available: v{}!",
+                                    latest_version
+                                ));
+                                i_btn.set_visible(true);
+                            } else {
+                                s_row.set_subtitle("You are using the latest version.");
+                                i_btn.set_visible(false);
+                            }
+                        }
+                        Ok(IpcResponse::Error(err)) => {
+                            s_row.set_subtitle(&format!("Check error: {}", err));
+                        }
+                        _ => {
+                            s_row.set_subtitle("Unexpected response from daemon.");
+                        }
+                    },
+                    Err(e) => {
+                        s_row.set_subtitle(&format!("Daemon connection error: {}", e));
+                    }
+                }
+                c_btn.set_sensitive(true);
+            });
+        });
+
+        // Install update button
+        let status_row_inst = status_row.clone();
+        let install_btn_inst = install_btn.clone();
+        install_btn.connect_clicked(move |_| {
+            install_btn_inst.set_sensitive(false);
+            status_row_inst.set_subtitle("Downloading and verifying package from GitHub...");
+
+            let s_row = status_row_inst.clone();
+            let i_btn = install_btn_inst.clone();
+            glib::MainContext::default().spawn_local(async move {
+                match IpcClient::connect().await {
+                    Ok(client) => match client.send(&IpcRequest::ApplyUpdate).await {
+                        Ok(IpcResponse::UpdateApplyResult { success, message }) => {
+                            if success {
+                                s_row.set_subtitle(&format!("Success: {}. Restarting daemon...", message));
+                                i_btn.set_visible(false);
+                            } else {
+                                s_row.set_subtitle(&format!("Installation failed: {}", message));
+                                i_btn.set_sensitive(true);
+                            }
+                        }
+                        Ok(IpcResponse::Error(err)) => {
+                            s_row.set_subtitle(&format!("Update error: {}", err));
+                            i_btn.set_sensitive(true);
+                        }
+                        _ => {
+                            s_row.set_subtitle("Unexpected response from daemon.");
+                            i_btn.set_sensitive(true);
+                        }
+                    },
+                    Err(e) => {
+                        s_row.set_subtitle(&format!("Daemon connection error: {}", e));
+                        i_btn.set_sensitive(true);
+                    }
+                }
+            });
         });
 
         // Query discovered peers from daemon with manual scan and pairing support

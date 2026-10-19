@@ -59,6 +59,24 @@ box {
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
+/* Update Notification Banner */
+.update-banner {
+    background: linear-gradient(135deg, rgba(30, 64, 175, 0.4), rgba(59, 130, 246, 0.25));
+    border: 1px solid rgba(59, 130, 246, 0.45);
+    border-radius: 8px;
+    padding: 6px 10px;
+    color: #e0f2fe;
+    font-size: 12px;
+}
+
+.update-banner button.small-button {
+    padding: 3px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 6px;
+    min-height: 24px;
+}
+
 .header-icon {
     color: #60cdff;
     opacity: 0.9;

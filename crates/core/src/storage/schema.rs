@@ -43,7 +43,6 @@ CREATE TABLE IF NOT EXISTS snippets (
 
 CREATE INDEX IF NOT EXISTS idx_snippets_category ON snippets (category);
 CREATE INDEX IF NOT EXISTS idx_snippets_last_used ON snippets (last_used_at DESC);
-CREATE INDEX IF NOT EXISTS idx_snippets_is_pinned ON snippets (is_pinned DESC);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
     id UNINDEXED,

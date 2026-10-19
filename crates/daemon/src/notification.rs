@@ -166,3 +166,150 @@ async fn fallback_notify_send(
         }
     }
 }
+
+/// Dispatches an actionable desktop notification for an available new version.
+pub async fn dispatch_update_notification(release: clipboard_history_core::updater::ReleaseInfo) {
+    let body = format!(
+        "Yeni bir sürüm ({}) yayınlandı!\nŞimdi güncellemek ister misiniz?",
+        release.tag_name
+    );
+
+    if try_dbus_update_notification(&release, &body).await.is_ok() {
+        return;
+    }
+
+    tokio::spawn(async move {
+        fallback_update_notify_send(&release, &body).await;
+    });
+}
+
+async fn try_dbus_update_notification(
+    release: &clipboard_history_core::updater::ReleaseInfo,
+    body: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let connection = zbus::Connection::session().await?;
+    let proxy = zbus::Proxy::new(
+        &connection,
+        "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications",
+    )
+    .await?;
+
+    let mut hints: HashMap<&str, zbus::zvariant::Value> = HashMap::new();
+    hints.insert("urgency", zbus::zvariant::Value::U8(1));
+
+    let actions = vec!["update", "Şimdi Güncelle", "dismiss", "Daha Sonra"];
+    let mut signal_stream = proxy.receive_signal("ActionInvoked").await?;
+
+    let notif_id: u32 = proxy
+        .call(
+            "Notify",
+            &(
+                "Clipboard History",
+                0u32,
+                "system-software-update",
+                "Yeni Sürüm Mevcut",
+                body,
+                actions,
+                hints,
+                30_000i32,
+            ),
+        )
+        .await?;
+
+    info!("Dispatched FreeDesktop update notification (id={})", notif_id);
+
+    let release_clone = release.clone();
+    tokio::spawn(async move {
+        let timeout_fut = tokio::time::sleep(Duration::from_secs(30));
+        tokio::pin!(timeout_fut);
+
+        loop {
+            tokio::select! {
+                _ = &mut timeout_fut => break,
+                Some(msg) = signal_stream.next() => {
+                    if let Ok((id, action_key)) = msg.body().deserialize::<(u32, String)>() {
+                        if id == notif_id {
+                            if action_key == "update" {
+                                execute_confirmed_update(&release_clone).await;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    Ok(())
+}
+
+async fn fallback_update_notify_send(
+    release: &clipboard_history_core::updater::ReleaseInfo,
+    body: &str,
+) {
+    let res = tokio::process::Command::new("notify-send")
+        .args([
+            "-a",
+            "Clipboard History",
+            "-i",
+            "system-software-update",
+            "-u",
+            "normal",
+            "-A",
+            "update=Şimdi Güncelle",
+            "-A",
+            "dismiss=Daha Sonra",
+            "Yeni Sürüm Mevcut",
+            body,
+        ])
+        .output()
+        .await;
+
+    if let Ok(out) = res {
+        let action = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if action == "update" {
+            execute_confirmed_update(release).await;
+        }
+    }
+}
+
+async fn execute_confirmed_update(release: &clipboard_history_core::updater::ReleaseInfo) {
+    info!("Starting user-confirmed update for release {}", release.tag_name);
+    match clipboard_history_core::updater::download_and_verify(release).await {
+        Ok(tarball_path) => {
+            match clipboard_history_core::updater::install_update_from_tarball(&tarball_path) {
+                Ok(installed) => {
+                    info!("Updated binaries: {:?}", installed);
+                    dispatch_update_success_notification(&release.version).await;
+                    tokio::time::sleep(Duration::from_millis(1000)).await;
+                    let _ = clipboard_history_core::updater::restart_daemon_service().await;
+                }
+                Err(e) => {
+                    tracing::error!("Failed to install update: {}", e);
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!("Failed to download update: {}", e);
+        }
+    }
+}
+
+/// Dispatches a simple success desktop notification when an update finishes.
+pub async fn dispatch_update_success_notification(version: &str) {
+    let msg = format!("Clipboard History v{} sürümüne başarıyla güncellendi.", version);
+    let _ = tokio::process::Command::new("notify-send")
+        .args([
+            "-a",
+            "Clipboard History",
+            "-i",
+            "emblem-default",
+            "Güncelleme Başarılı",
+            &msg,
+        ])
+        .output()
+        .await;
+}
+

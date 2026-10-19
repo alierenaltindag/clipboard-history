@@ -5,6 +5,7 @@ mod peer_discovery;
 mod server;
 pub mod sync_service;
 mod tray;
+mod updater_service;
 mod watcher;
 mod window_focus;
 
@@ -220,6 +221,9 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             error!("IPC server error: {}", e);
         }
     });
+
+    // Start background periodic update checker
+    updater_service::start_update_checker(Arc::clone(&config_arc));
 
     // Detect Display Server
     let session_type = std::env::var("XDG_SESSION_TYPE")
@@ -653,6 +657,9 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                     origin_device,
                                     content_hash,
                                     is_pinned,
+                                    entry,
+                                    blob_payload,
+                                    thumbnail_payload,
                                 } => {
                                     let is_trusted =
                                         current_sync.is_peer_trusted(&clean_ip, &origin_device);
@@ -668,7 +675,30 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                         "Processing PinSync from peer '{}' for hash '{}': is_pinned={}",
                                         origin_device, content_hash, is_pinned
                                     );
-                                    let _ = sync_repo.set_pinned_by_hash(&content_hash, is_pinned);
+                                    if is_pinned {
+                                        let res = sync_repo.set_pinned_by_hash(&content_hash, true);
+                                        if res.is_err() {
+                                            if let Some(entry_box) = entry {
+                                                let enc_enabled =
+                                                    sync_cfg_arc.read().await.security.encryption_enabled;
+                                                let _ = sync_service::handle_incoming_entry_sync(
+                                                    *entry_box,
+                                                    blob_payload,
+                                                    thumbnail_payload,
+                                                    true,
+                                                    &sync_repo,
+                                                    &sync_blob_store,
+                                                    &sync_crypto,
+                                                    enc_enabled,
+                                                    &echo_tracker_rx,
+                                                )
+                                                .await;
+                                                let _ = sync_repo.set_pinned_by_hash(&content_hash, true);
+                                            }
+                                        }
+                                    } else {
+                                        let _ = sync_repo.set_pinned_by_hash(&content_hash, false);
+                                    }
                                 }
 
                                 SyncMessage::Ping => {

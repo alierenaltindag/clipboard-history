@@ -32,6 +32,11 @@
     <binary>clipboard-history-gui</binary>
   </provides>
   <releases>
+    <release version="1.2.3" date="2026-10-19">
+      <description>
+        <p>Distributes newly pinned items, unpin states, and snippets across paired devices via Network Sync, and adds GitHub auto-update checks and notification banner.</p>
+      </description>
+    </release>
     <release version="1.2.2" date="2026-10-19">
       <description>
         <p>Fixes pin state reversion where unpinned entries in clipboard history and canned snippets reverted back to pinned state, adds SyncMessage::PinSync protocol broadcast across paired devices, and prevents history sync from overwriting local unpinned status.</p>

@@ -37,6 +37,9 @@ pub enum CoreError {
 
     #[error("Crypto error: {0}")]
     Crypto(#[from] crate::security::CryptoError),
+
+    #[error("Updater error: {0}")]
+    Update(String),
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;

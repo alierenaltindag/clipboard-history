@@ -132,6 +132,88 @@ impl ClipboardWindow {
         window_handle.set_child(Some(&header_box));
         main_box.append(&window_handle);
 
+        // 3. Update notification banner (shown when a newer version is available)
+        let update_banner = GtkBox::new(Orientation::Horizontal, 8);
+        update_banner.add_css_class("update-banner");
+        update_banner.set_margin_start(10);
+        update_banner.set_margin_end(10);
+        update_banner.set_margin_top(4);
+        update_banner.set_margin_bottom(4);
+        update_banner.set_valign(gtk4::Align::Center);
+        update_banner.set_visible(false);
+
+        let update_icon = gtk4::Image::from_icon_name("system-software-update-symbolic");
+        update_icon.set_pixel_size(16);
+        update_banner.append(&update_icon);
+
+        let update_label = Label::new(Some("Yeni sürüm mevcut!"));
+        update_label.set_hexpand(true);
+        update_label.set_xalign(0.0);
+        update_banner.append(&update_label);
+
+        let update_btn = Button::with_label("Güncelle");
+        update_btn.add_css_class("suggested-action");
+        update_btn.add_css_class("small-button");
+        update_banner.append(&update_btn);
+
+        let close_banner_btn = Button::from_icon_name("window-close-symbolic");
+        close_banner_btn.add_css_class("flat");
+        close_banner_btn.set_tooltip_text(Some("Kapat"));
+        update_banner.append(&close_banner_btn);
+
+        let banner_to_hide = update_banner.clone();
+        close_banner_btn.connect_clicked(move |_| {
+            banner_to_hide.set_visible(false);
+        });
+
+        let u_label = update_label.clone();
+        let u_btn = update_btn.clone();
+        update_btn.connect_clicked(move |_| {
+            u_btn.set_sensitive(false);
+            u_label.set_text("Güncelleniyor...");
+            let l_ref = u_label.clone();
+            let b_ref = u_btn.clone();
+            glib::MainContext::default().spawn_local(async move {
+                if let Ok(client) = IpcClient::connect().await {
+                    match client.send(&IpcRequest::ApplyUpdate).await {
+                        Ok(IpcResponse::UpdateApplyResult { success, message }) => {
+                            if success {
+                                l_ref.set_text(&format!("Başarılı: {}", message));
+                            } else {
+                                l_ref.set_text(&format!("Hata: {}", message));
+                                b_ref.set_sensitive(true);
+                            }
+                        }
+                        _ => {
+                            l_ref.set_text("Güncelleme başarısız oldu.");
+                            b_ref.set_sensitive(true);
+                        }
+                    }
+                }
+            });
+        });
+
+        main_box.append(&update_banner);
+
+        // Check if an update is available in background when auto-check is enabled
+        let banner_show = update_banner.clone();
+        let label_show = update_label.clone();
+        if config.updates.auto_check {
+            glib::MainContext::default().spawn_local(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                if let Ok(client) = IpcClient::connect().await {
+                    if let Ok(IpcResponse::UpdateCheckResult {
+                        update_available: true,
+                        latest_version,
+                        ..
+                    }) = client.send(&IpcRequest::CheckForUpdates).await {
+                        label_show.set_text(&format!("Yeni sürüm (v{}) hazır!", latest_version));
+                        banner_show.set_visible(true);
+                    }
+                }
+            });
+        }
+
         // Track pointer and mouse interactions to prevent accidental auto-dismiss during dragging
         let mouse_down_inside = Rc::new(RefCell::new(false));
         let last_release_time = Rc::new(RefCell::new(std::time::Instant::now()));
@@ -1525,6 +1607,23 @@ impl ClipboardWindow {
             glib::Propagation::Proceed
         });
         window.add_controller(key_controller);
+
+        // Periodic background poll while window is open so synced peer changes reflect live
+        let refresh_holder_periodic = Rc::clone(&refresh_holder);
+        let win_weak = window.downgrade();
+        let query_check = Rc::clone(&current_query);
+        glib::timeout_add_local(std::time::Duration::from_millis(1500), move || {
+            if let Some(w) = win_weak.upgrade() {
+                if w.is_visible() && query_check.borrow().is_empty() {
+                    if let Some(rf) = refresh_holder_periodic.borrow().as_ref() {
+                        rf();
+                    }
+                }
+                glib::ControlFlow::Continue
+            } else {
+                glib::ControlFlow::Break
+            }
+        });
 
         Self {
             window,

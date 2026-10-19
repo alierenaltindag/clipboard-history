@@ -120,6 +120,9 @@ pub enum IpcRequest {
     TouchEntry {
         id: String,
     },
+    // Update operations
+    CheckForUpdates,
+    ApplyUpdate,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,5 +168,15 @@ pub enum IpcResponse {
         device_name: String,
     },
     DiffResult(Box<crate::transforms::DiffResult>),
+    UpdateCheckResult {
+        update_available: bool,
+        current_version: String,
+        latest_version: String,
+        release_notes: Option<String>,
+    },
+    UpdateApplyResult {
+        success: bool,
+        message: String,
+    },
     Error(String),
 }

@@ -2579,6 +2579,9 @@ async fn test_pin_sync_message_transmission_and_handling() {
             origin_device: "remote-peer".to_string(),
             content_hash: hash_sender,
             is_pinned: true,
+            entry: None,
+            blob_payload: None,
+            thumbnail_payload: None,
         };
         send_sync_message(&mut sender_io, pin, &pin_msg)
             .await
@@ -2595,6 +2598,7 @@ async fn test_pin_sync_message_transmission_and_handling() {
                 origin_device,
                 content_hash,
                 is_pinned,
+                ..
             } => {
                 assert_eq!(origin_device, "remote-peer");
                 assert_eq!(content_hash, hash_expected);
@@ -2613,6 +2617,88 @@ async fn test_pin_sync_message_transmission_and_handling() {
 
     repo.set_pinned_by_hash(&hash, false).expect("set_pinned_by_hash false");
     assert!(!repo.get_by_id(&saved.id).unwrap().is_pinned);
+}
+
+#[tokio::test]
+async fn test_network_sync_pin_new_item_distribution() {
+    use clipboard_history_core::sync::SyncMessage;
+    let repo_a = SqliteRepository::open_in_memory().unwrap();
+    let repo_b = SqliteRepository::open_in_memory().unwrap();
+
+    // Device A creates a newly pinned item that Device B does not have yet
+    let text = "Unique newly pinned secret text 4242";
+    let hash = BlobStore::compute_hash(text.as_bytes());
+    let mut entry_a = ClipboardEntry::new_text(
+        text.to_string(),
+        hash.clone(),
+        vec!["text/plain".to_string()],
+        Some("cli".to_string()),
+    );
+    entry_a.is_pinned = true;
+    let saved_a = repo_a.insert_or_update(&entry_a).expect("insert on A");
+    assert!(saved_a.is_pinned);
+
+    // Verify Device B does NOT have this entry at all
+    assert!(repo_b.get_by_hash(&hash).unwrap().is_none());
+
+    // Device A sends PinSync with entry payload to Device B
+    let pin_msg = SyncMessage::PinSync {
+        origin_device: "device-a".to_string(),
+        content_hash: hash.clone(),
+        is_pinned: true,
+        entry: Some(Box::new(saved_a.clone())),
+        blob_payload: None,
+        thumbnail_payload: None,
+    };
+
+    // Simulate Device B receiving this PinSync
+    if let SyncMessage::PinSync {
+        content_hash,
+        is_pinned,
+        entry,
+        ..
+    } = pin_msg
+    {
+        if is_pinned {
+            let res = repo_b.set_pinned_by_hash(&content_hash, true);
+            if res.is_err() {
+                if let Some(entry_box) = entry {
+                    let _ = repo_b.insert_or_update(&entry_box);
+                    let _ = repo_b.set_pinned_by_hash(&content_hash, true);
+                }
+            }
+        }
+    }
+
+    // Device B should now have the entry, and it must be pinned!
+    let entry_b = repo_b.get_by_hash(&hash).unwrap().expect("entry must exist on B");
+    assert!(entry_b.is_pinned);
+    assert_eq!(entry_b.preview, text);
+
+    // Now Device A unpins it and sends PinSync { is_pinned: false }
+    repo_a.set_pinned_by_hash(&hash, false).expect("unpin on A");
+    let unpin_msg = SyncMessage::PinSync {
+        origin_device: "device-a".to_string(),
+        content_hash: hash.clone(),
+        is_pinned: false,
+        entry: None,
+        blob_payload: None,
+        thumbnail_payload: None,
+    };
+
+    // Simulate Device B receiving unpin
+    if let SyncMessage::PinSync {
+        content_hash,
+        is_pinned: false,
+        ..
+    } = unpin_msg
+    {
+        let _ = repo_b.set_pinned_by_hash(&content_hash, false);
+    }
+
+    // Device B should now have it unpinned!
+    let entry_b_unpinned = repo_b.get_by_hash(&hash).unwrap().expect("entry must exist on B");
+    assert!(!entry_b_unpinned.is_pinned);
 }
 
 #[test]

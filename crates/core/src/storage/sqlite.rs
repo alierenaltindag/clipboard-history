@@ -81,6 +81,10 @@ impl SqliteRepository {
             "ALTER TABLE snippets ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 1",
             [],
         );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_snippets_is_pinned ON snippets (is_pinned DESC)",
+            [],
+        );
         Ok(())
     }
 
@@ -475,6 +479,7 @@ impl SqliteRepository {
         let is_prefix =
             trimmed.len() >= 6 && trimmed.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
         let flag = if pinned { 1 } else { 0 };
+        let now_str = Utc::now().to_rfc3339();
 
         let affected = if is_prefix {
             let pattern = format!(
@@ -485,13 +490,13 @@ impl SqliteRepository {
                     .replace('_', "\\_")
             );
             conn.execute(
-                "UPDATE entries SET is_pinned = ?1 WHERE id = ?2 OR id LIKE ?3 ESCAPE '\\'",
-                params![flag, trimmed, pattern],
+                "UPDATE entries SET is_pinned = ?1, last_used_at = ?2 WHERE id = ?3 OR id LIKE ?4 ESCAPE '\\'",
+                params![flag, now_str, trimmed, pattern],
             )?
         } else {
             conn.execute(
-                "UPDATE entries SET is_pinned = ?1 WHERE id = ?2",
-                params![flag, trimmed],
+                "UPDATE entries SET is_pinned = ?1, last_used_at = ?2 WHERE id = ?3",
+                params![flag, now_str, trimmed],
             )?
         };
 
@@ -506,13 +511,13 @@ impl SqliteRepository {
                         .replace('_', "\\_")
                 );
                 conn.execute(
-                    "UPDATE snippets SET is_pinned = ?1 WHERE id = ?2 OR id LIKE ?3 ESCAPE '\\'",
-                    params![flag, trimmed, pattern],
+                    "UPDATE snippets SET is_pinned = ?1, last_used_at = ?2 WHERE id = ?3 OR id LIKE ?4 ESCAPE '\\'",
+                    params![flag, now_str, trimmed, pattern],
                 )?
             } else {
                 conn.execute(
-                    "UPDATE snippets SET is_pinned = ?1 WHERE id = ?2",
-                    params![flag, trimmed],
+                    "UPDATE snippets SET is_pinned = ?1, last_used_at = ?2 WHERE id = ?3",
+                    params![flag, now_str, trimmed],
                 )?
             };
 
@@ -533,11 +538,21 @@ impl SqliteRepository {
         }
         let conn = self.conn();
         let flag = if pinned { 1 } else { 0 };
+        let now_str = Utc::now().to_rfc3339();
         let affected = conn.execute(
-            "UPDATE entries SET is_pinned = ?1 WHERE content_hash = ?2",
-            params![flag, trimmed],
+            "UPDATE entries SET is_pinned = ?1, last_used_at = ?2 WHERE content_hash = ?3",
+            params![flag, now_str, trimmed],
         )?;
         if affected == 0 {
+            if let Some(label) = trimmed.strip_prefix("snippet_") {
+                let snip_affected = conn.execute(
+                    "UPDATE snippets SET is_pinned = ?1, last_used_at = ?2 WHERE label = ?3",
+                    params![flag, now_str, label],
+                )?;
+                if snip_affected > 0 {
+                    return Ok(());
+                }
+            }
             Err(CoreError::NotFound(content_hash.to_string()))
         } else {
             Ok(())
@@ -682,16 +697,17 @@ impl SqliteRepository {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut updated = 0;
         let flag = if pinned { 1 } else { 0 };
+        let now_str = Utc::now().to_rfc3339();
         {
             let mut exact_stmt =
-                tx.prepare_cached("UPDATE entries SET is_pinned = ?1 WHERE id = ?2")?;
+                tx.prepare_cached("UPDATE entries SET is_pinned = ?1, last_used_at = ?2 WHERE id = ?3")?;
             let mut prefix_stmt = tx.prepare_cached(
-                "UPDATE entries SET is_pinned = ?1 WHERE id = ?2 OR id LIKE ?3 ESCAPE '\\'",
+                "UPDATE entries SET is_pinned = ?1, last_used_at = ?2 WHERE id = ?3 OR id LIKE ?4 ESCAPE '\\'",
             )?;
             let mut exact_snip_stmt =
-                tx.prepare_cached("UPDATE snippets SET is_pinned = ?1 WHERE id = ?2")?;
+                tx.prepare_cached("UPDATE snippets SET is_pinned = ?1, last_used_at = ?2 WHERE id = ?3")?;
             let mut prefix_snip_stmt = tx.prepare_cached(
-                "UPDATE snippets SET is_pinned = ?1 WHERE id = ?2 OR id LIKE ?3 ESCAPE '\\'",
+                "UPDATE snippets SET is_pinned = ?1, last_used_at = ?2 WHERE id = ?3 OR id LIKE ?4 ESCAPE '\\'",
             )?;
 
             for id in ids {
@@ -709,16 +725,16 @@ impl SqliteRepository {
                             .replace('%', "\\%")
                             .replace('_', "\\_")
                     );
-                    let n = prefix_stmt.execute(params![flag, trimmed, pattern])?;
+                    let n = prefix_stmt.execute(params![flag, now_str, trimmed, pattern])?;
                     if n == 0 {
-                        prefix_snip_stmt.execute(params![flag, trimmed, pattern])?
+                        prefix_snip_stmt.execute(params![flag, now_str, trimmed, pattern])?
                     } else {
                         n
                     }
                 } else {
-                    let n = exact_stmt.execute(params![flag, trimmed])?;
+                    let n = exact_stmt.execute(params![flag, now_str, trimmed])?;
                     if n == 0 {
-                        exact_snip_stmt.execute(params![flag, trimmed])?
+                        exact_snip_stmt.execute(params![flag, now_str, trimmed])?
                     } else {
                         n
                     }
