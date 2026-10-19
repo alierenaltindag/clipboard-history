@@ -1,5 +1,6 @@
 mod circuit_breaker;
 mod eviction;
+mod notification;
 mod peer_discovery;
 mod server;
 pub mod sync_service;
@@ -393,36 +394,13 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                     let req_id_notify = request_id.clone();
                                     let pending_notify = pending_pairings_conn.clone();
                                     tokio::spawn(async move {
-                                        let body = format!(
-                                            "'{}' ({}) wants to sync clipboard with this computer.",
-                                            dev_clone, ip_str
-                                        );
-                                        let res = tokio::process::Command::new("notify-send")
-                                            .args([
-                                                "-a",
-                                                "Clipboard History",
-                                                "-i",
-                                                "network-wireless-symbolic",
-                                                "-u",
-                                                "critical",
-                                                "--action=accept=Accept",
-                                                "--action=reject=Decline",
-                                                "Clipboard Pairing Request",
-                                                &body,
-                                            ])
-                                            .output()
-                                            .await;
-                                        if let Ok(out) = res {
-                                            let action = String::from_utf8_lossy(&out.stdout)
-                                                .trim()
-                                                .to_string();
-                                            if action == "accept" || action == "reject" {
-                                                let mut map = pending_notify.write().await;
-                                                if let Some(item) = map.remove(&req_id_notify) {
-                                                    let _ = item.tx.send(action == "accept");
-                                                }
-                                            }
-                                        }
+                                        notification::dispatch_pairing_notification(
+                                            dev_clone,
+                                            ip_str,
+                                            req_id_notify,
+                                            pending_notify,
+                                        )
+                                        .await;
                                     });
 
                                     let accepted = match tokio::time::timeout(
@@ -513,14 +491,28 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 
                                 SyncMessage::UnpairRequest { origin_device } => {
                                     let mut cfg = sync_cfg_arc.write().await;
-                                    cfg.sync
-                                        .trusted_peers
-                                        .retain(|p| p != &clean_ip && p != &origin_device);
+                                    cfg.sync.trusted_peers.retain(|p| {
+                                        p != &clean_ip
+                                            && !p.starts_with(&format!("{}:", clean_ip))
+                                            && p != &origin_device
+                                    });
+                                    cfg.sync.peer_addresses.retain(|p| {
+                                        p != &clean_ip
+                                            && !p.starts_with(&format!("{}:", clean_ip))
+                                            && p != &origin_device
+                                    });
                                     let _ = cfg.save(AppConfig::config_path());
                                     info!(
-                                        "Peer '{}' ({}) requested unpairing. Removed from trusted_peers.",
+                                        "Peer '{}' ({}) requested unpairing. Removed from trusted_peers and peer_addresses.",
                                         origin_device, clean_ip
                                     );
+
+                                    let resp = SyncMessage::UnpairResponse {
+                                        success: true,
+                                        message: "Unpaired successfully".to_string(),
+                                    };
+                                    let _ = send_sync_message(&mut writer, "CH_PAIRING_V1", &resp).await;
+                                    break;
                                 }
 
                                 SyncMessage::AuthRequest {
@@ -530,7 +522,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                 } => {
                                     let is_trusted =
                                         current_sync.is_peer_trusted(&clean_ip, &remote_dev);
-                                    if pairing_pin == pin || is_trusted {
+                                    if is_trusted && (pairing_pin == pin || !pin.is_empty()) {
                                         authenticated = true;
                                         let _ = send_sync_message(
                                             &mut writer,
@@ -549,7 +541,11 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                             &SyncMessage::AuthResponse {
                                                 success: false,
                                                 device_name: dev_name.clone(),
-                                                message: "Invalid PIN".to_string(),
+                                                message: if !is_trusted {
+                                                    "Peer not paired. Please send a pairing request first.".to_string()
+                                                } else {
+                                                    "Invalid PIN".to_string()
+                                                },
                                             },
                                         )
                                         .await;

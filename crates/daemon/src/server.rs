@@ -452,42 +452,127 @@ impl DaemonServer {
                 }
 
                 IpcRequest::UnpairPeer { peer_identifier } => {
-                    let mut cfg = config.write().await;
                     let clean_id = if let Some(idx) = peer_identifier.find(':') {
                         peer_identifier[..idx].to_string()
                     } else {
                         peer_identifier.clone()
                     };
-                    cfg.sync
-                        .trusted_peers
-                        .retain(|p| p != &peer_identifier && p != &clean_id);
+
+                    let all_peers = peer_tracker.get_all_peers().await;
+                    let mut matching_names = Vec::new();
+                    let mut matching_addrs = Vec::new();
+
+                    for (addr, name) in &all_peers {
+                        let clean_a = if let Some(idx) = addr.find(':') {
+                            &addr[..idx]
+                        } else {
+                            addr.as_str()
+                        };
+                        if addr == &peer_identifier
+                            || clean_a == clean_id
+                            || name == &peer_identifier
+                            || (!clean_id.is_empty() && name == &clean_id)
+                        {
+                            matching_names.push(name.clone());
+                            matching_addrs.push(addr.clone());
+                            matching_addrs.push(clean_a.to_string());
+                        }
+                    }
+
+                    let mut cfg = config.write().await;
+                    cfg.sync.trusted_peers.retain(|p| {
+                        let clean_p = if let Some(idx) = p.find(':') {
+                            &p[..idx]
+                        } else {
+                            p.as_str()
+                        };
+                        p != &peer_identifier
+                            && clean_p != clean_id
+                            && !clean_p.starts_with(&clean_id)
+                            && !matching_names.contains(p)
+                            && !matching_addrs.contains(p)
+                    });
+                    cfg.sync.peer_addresses.retain(|p| {
+                        let clean_p = if let Some(idx) = p.find(':') {
+                            &p[..idx]
+                        } else {
+                            p.as_str()
+                        };
+                        p != &peer_identifier
+                            && clean_p != clean_id
+                            && !clean_p.starts_with(&clean_id)
+                            && !matching_names.contains(p)
+                            && !matching_addrs.contains(p)
+                    });
                     let _ = cfg.save(AppConfig::config_path());
+                    let my_dev = cfg.sync.device_name.clone();
                     drop(cfg);
 
-                    let target = peer_identifier.clone();
-                    let my_dev = config.read().await.sync.device_name.clone();
+                    let mut candidate_addrs = Vec::new();
+                    if peer_identifier.contains(':') {
+                        let parts: Vec<&str> = peer_identifier.split(':').collect();
+                        let ip = parts[0];
+                        let port: u16 = parts[1].parse().unwrap_or(54123);
+                        let alt_port = if port == 54123 { 54124 } else { 54123 };
+                        candidate_addrs.push(peer_identifier.clone());
+                        candidate_addrs.push(format!("{}:{}", ip, alt_port));
+                    } else if peer_identifier.contains('.') {
+                        candidate_addrs.push(format!("{}:54123", peer_identifier));
+                        candidate_addrs.push(format!("{}:54124", peer_identifier));
+                    }
+
+                    for a in matching_addrs {
+                        if a.contains(':') {
+                            let (ip, alt_port) = {
+                                let parts: Vec<&str> = a.split(':').collect();
+                                let ip = parts[0].to_string();
+                                let port: u16 = parts[1].parse().unwrap_or(54123);
+                                let alt = if port == 54123 { 54124 } else { 54123 };
+                                (ip, alt)
+                            };
+                            let alt = format!("{}:{}", ip, alt_port);
+                            if !candidate_addrs.contains(&a) {
+                                candidate_addrs.push(a);
+                            }
+                            if !candidate_addrs.contains(&alt) {
+                                candidate_addrs.push(alt);
+                            }
+                        } else if a.contains('.') {
+                            let p1 = format!("{}:54123", a);
+                            let p2 = format!("{}:54124", a);
+                            if !candidate_addrs.contains(&p1) {
+                                candidate_addrs.push(p1);
+                            }
+                            if !candidate_addrs.contains(&p2) {
+                                candidate_addrs.push(p2);
+                            }
+                        }
+                    }
+
                     tokio::spawn(async move {
-                        use clipboard_history_core::sync::{send_sync_message, SyncMessage};
-                        let target_addr = if target.contains(':') {
-                            target
-                        } else {
-                            format!("{}:54123", target)
-                        };
-                        if let Ok(Ok(mut stream)) = tokio::time::timeout(
-                            std::time::Duration::from_secs(3),
-                            tokio::net::TcpStream::connect(&target_addr),
-                        )
-                        .await
-                        {
-                            let (_, mut writer) = stream.split();
-                            let _ = send_sync_message(
-                                &mut writer,
-                                "CH_PAIRING_V1",
-                                &SyncMessage::UnpairRequest {
-                                    origin_device: my_dev,
-                                },
+                        use clipboard_history_core::sync::{read_sync_message, send_sync_message, SyncMessage};
+                        use std::time::Duration;
+
+                        for target_addr in candidate_addrs {
+                            if let Ok(Ok(mut stream)) = tokio::time::timeout(
+                                Duration::from_secs(3),
+                                tokio::net::TcpStream::connect(&target_addr),
                             )
-                            .await;
+                            .await
+                            {
+                                let (mut reader, mut writer) = stream.split();
+                                let unpair_req = SyncMessage::UnpairRequest {
+                                    origin_device: my_dev.clone(),
+                                };
+                                if send_sync_message(&mut writer, "CH_PAIRING_V1", &unpair_req).await.is_ok() {
+                                    let _ = tokio::time::timeout(
+                                        Duration::from_secs(3),
+                                        read_sync_message(&mut reader, "CH_PAIRING_V1"),
+                                    )
+                                    .await;
+                                    break;
+                                }
+                            }
                         }
                     });
 

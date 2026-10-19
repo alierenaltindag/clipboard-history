@@ -8,28 +8,50 @@ use gtk4::{
 use std::cell::RefCell;
 use std::rc::Rc;
 
-#[allow(dead_code)]
 pub struct DiffDialog;
 
-#[allow(dead_code)]
 impl DiffDialog {
     pub fn show(
-        parent: &Window,
+        parent: Option<&Window>,
         initial_text_a: String,
         initial_text_b: String,
         label_a: String,
         label_b: String,
     ) {
-        let dialog = Window::builder()
+        let mut builder = Window::builder()
             .title("Clipboard Diff Viewer")
-            .transient_for(parent)
-            .modal(true)
-            .default_width(680)
-            .default_height(560)
-            .build();
+            .default_width(700)
+            .default_height(580);
+
+        if let Some(p) = parent {
+            builder = builder.transient_for(p).modal(true);
+        }
+
+        let dialog = builder.build();
+
+        // Close on Escape key
+        let key_ctrl = gtk4::EventControllerKey::new();
+        let d_close = dialog.clone();
+        key_ctrl.connect_key_pressed(move |_, key, _, _| {
+            if key == gdk4::Key::Escape {
+                d_close.close();
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        dialog.add_controller(key_ctrl);
 
         let header = HeaderBar::new();
         header.set_show_title_buttons(true);
+
+        let close_btn = Button::with_label("Close");
+        close_btn.add_css_class("flat");
+        let d_btn_close = dialog.clone();
+        close_btn.connect_clicked(move |_| {
+            d_btn_close.close();
+        });
+        header.pack_start(&close_btn);
 
         let window_title =
             libadwaita::WindowTitle::new("Clipboard Diff Comparison", "Comparing 2 items");
@@ -192,13 +214,19 @@ impl DiffDialog {
             render_for_swap();
         });
 
-        // Copy button
+        // Copy button with feedback
         let state_for_copy = state.clone();
+        let copy_btn_clone = copy_btn.clone();
         copy_btn.connect_clicked(move |_| {
             let st = state_for_copy.borrow();
             if let Some(display) = gdk4::Display::default() {
                 display.clipboard().set_text(&st.2.unified);
             }
+            copy_btn_clone.set_label("✓ Copied!");
+            let b_reset = copy_btn_clone.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || {
+                b_reset.set_label("📋 Copy Diff");
+            });
         });
 
         dialog.set_child(Some(&root));

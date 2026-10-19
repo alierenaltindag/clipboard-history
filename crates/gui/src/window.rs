@@ -3,9 +3,11 @@
 use crate::injector::InjectorCascade;
 use crate::list_row::EntryRow;
 use crate::search::{CategoryFilter, FuzzySearchEngine};
-use crate::transforms_dialog::show_transforms_popover;
+use crate::transforms_dialog::{
+    show_transforms_popover, ActionCallback, EntryCallback, TransformsOptions,
+};
 use clipboard_history_core::config::AppConfig;
-use clipboard_history_core::domain::ClipboardEntry;
+use clipboard_history_core::domain::{ClipboardEntry, EntryType};
 use clipboard_history_core::ipc::{IpcClient, IpcRequest, IpcResponse};
 use clipboard_history_core::transforms::TextTransforms;
 use gdk4::Key;
@@ -255,6 +257,9 @@ impl ClipboardWindow {
         let toggle_pin_holder: Rc<RefCell<Option<Rc<dyn Fn(&str)>>>> = Rc::new(RefCell::new(None));
         let delete_entry_holder: Rc<RefCell<Option<Rc<dyn Fn(&str)>>>> =
             Rc::new(RefCell::new(None));
+        let diff_marked: Rc<RefCell<Option<ClipboardEntry>>> = Rc::new(RefCell::new(None));
+        let mark_diff_holder: Rc<RefCell<Option<Rc<dyn Fn(&ClipboardEntry)>>>> =
+            Rc::new(RefCell::new(None));
         let pinned_collapsed: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
         let refresh_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
 
@@ -271,6 +276,8 @@ impl ClipboardWindow {
             let daemon_conn_clone = Rc::clone(&daemon_connected);
             let toggle_pin_cell = Rc::clone(&toggle_pin_holder);
             let delete_entry_cell = Rc::clone(&delete_entry_holder);
+            let mark_diff_cell = Rc::clone(&mark_diff_holder);
+            let diff_marked_cell = Rc::clone(&diff_marked);
             let pinned_collapsed_clone = Rc::clone(&pinned_collapsed);
             let refresh_holder_clone = Rc::clone(&refresh_holder);
 
@@ -362,6 +369,34 @@ impl ClipboardWindow {
                             }
                         })
                     };
+                    let mark_fn = {
+                        let cell = mark_diff_cell.clone();
+                        Rc::new(move |e: &ClipboardEntry| {
+                            if let Some(f) = cell.borrow().as_ref() {
+                                f(e);
+                            }
+                        })
+                    };
+
+                    let get_diff_target =
+                        |entry: &ClipboardEntry| -> Option<ClipboardEntry> {
+                            if let Some(ref marked) = *diff_marked_cell.borrow() {
+                                if marked.id != entry.id && marked.entry_type != EntryType::Image {
+                                    return Some(marked.clone());
+                                }
+                            }
+                            let cur_pos = items.iter().position(|e| e.id == entry.id)?;
+                            items
+                                .iter()
+                                .skip(cur_pos + 1)
+                                .find(|e| e.entry_type != EntryType::Image && e.id != entry.id)
+                                .or_else(|| {
+                                    items.iter().take(cur_pos).rev().find(|e| {
+                                        e.entry_type != EntryType::Image && e.id != entry.id
+                                    })
+                                })
+                                .cloned()
+                        };
 
                     let (pinned, unpinned): (Vec<_>, Vec<_>) =
                         items.iter().cloned().partition(|e| e.is_pinned);
@@ -400,14 +435,19 @@ impl ClipboardWindow {
 
                         if !is_collapsed {
                             for (idx, entry) in pinned.iter().enumerate() {
+                                let diff_target = get_diff_target(entry);
                                 let entry_row = create_configured_entry_row(
                                     entry,
                                     idx,
-                                    &win_clone,
-                                    &config_clone,
-                                    &list_box_clone,
-                                    pin_fn.clone(),
-                                    del_fn.clone(),
+                                    RowConfig {
+                                        window: &win_clone,
+                                        config: &config_clone,
+                                        list_box: &list_box_clone,
+                                        on_pin: pin_fn.clone(),
+                                        on_del: del_fn.clone(),
+                                        diff_target,
+                                        on_mark_diff: Some(mark_fn.clone()),
+                                    },
                                 );
                                 if first_selectable_row.is_none() {
                                     first_selectable_row = Some(entry_row.row.clone());
@@ -432,14 +472,19 @@ impl ClipboardWindow {
                         }
 
                         for (idx, entry) in unpinned.iter().take(50).enumerate() {
+                            let diff_target = get_diff_target(entry);
                             let entry_row = create_configured_entry_row(
                                 entry,
                                 idx,
-                                &win_clone,
-                                &config_clone,
-                                &list_box_clone,
-                                pin_fn.clone(),
-                                del_fn.clone(),
+                                RowConfig {
+                                    window: &win_clone,
+                                    config: &config_clone,
+                                    list_box: &list_box_clone,
+                                    on_pin: pin_fn.clone(),
+                                    on_del: del_fn.clone(),
+                                    diff_target,
+                                    on_mark_diff: Some(mark_fn.clone()),
+                                },
                             );
                             if first_selectable_row.is_none() {
                                 first_selectable_row = Some(entry_row.row.clone());
@@ -588,6 +633,22 @@ impl ClipboardWindow {
             })
         };
         *delete_entry_holder.borrow_mut() = Some(Rc::clone(&delete_entry));
+
+        let mark_for_diff: Rc<dyn Fn(&ClipboardEntry)> = {
+            let diff_marked_cell = Rc::clone(&diff_marked);
+            let toast_ov = toast_overlay.clone();
+            let fn_refresh = Rc::clone(&filter_and_render);
+            Rc::new(move |entry: &ClipboardEntry| {
+                *diff_marked_cell.borrow_mut() = Some(entry.clone());
+                let preview = entry.preview.chars().take(30).collect::<String>();
+                toast_ov.add_toast(libadwaita::Toast::new(&format!(
+                    "Marked Diff Baseline: \"{}...\"",
+                    preview
+                )));
+                fn_refresh();
+            })
+        };
+        *mark_diff_holder.borrow_mut() = Some(Rc::clone(&mark_for_diff));
 
         // Connect win.undo-delete action to window via SimpleActionGroup
         let undo_action = gio::SimpleAction::new("undo-delete", None);
@@ -966,6 +1027,8 @@ impl ClipboardWindow {
         let delete_entry_key = Rc::clone(&delete_entry);
         let undo_delete_key = Rc::clone(&undo_delete);
         let toast_key = toast_overlay.clone();
+        let diff_marked_key = Rc::clone(&diff_marked);
+        let mark_for_diff_key = Rc::clone(&mark_for_diff);
 
         key_controller.connect_key_pressed(move |_, key, _, state| {
             // Dismiss popup
@@ -1095,13 +1158,38 @@ impl ClipboardWindow {
                     let entry_id = selected_row.widget_name();
                     let items = filtered_key.borrow();
                     if let Some(entry) = items.iter().find(|e| e.id == entry_id.as_str()) {
+                        let diff_target = if let Some(ref marked) = *diff_marked_key.borrow() {
+                            if marked.id != entry.id && marked.entry_type != EntryType::Image {
+                                Some(marked.clone())
+                            } else {
+                                None
+                            }
+                        } else {
+                            let cur_pos = items.iter().position(|e| e.id == entry.id);
+                            cur_pos.and_then(|pos| {
+                                items
+                                    .iter()
+                                    .skip(pos + 1)
+                                    .find(|e| e.entry_type != EntryType::Image && e.id != entry.id)
+                                    .or_else(|| {
+                                        items.iter().take(pos).rev().find(|e| {
+                                            e.entry_type != EntryType::Image && e.id != entry.id
+                                        })
+                                    })
+                                    .cloned()
+                            })
+                        };
                         show_transforms_popover(
                             &selected_row,
                             entry,
                             &win_key,
                             &cfg_key,
-                            Some(Rc::clone(&toggle_pin_key)),
-                            Some(Rc::clone(&delete_entry_key)),
+                            TransformsOptions {
+                                diff_target,
+                                on_pin: Some(Rc::clone(&toggle_pin_key)),
+                                on_del: Some(Rc::clone(&delete_entry_key)),
+                                on_mark_diff: Some(Rc::clone(&mark_for_diff_key)),
+                            },
                         );
                         return glib::Propagation::Stop;
                     }
@@ -1178,9 +1266,93 @@ impl ClipboardWindow {
                 }
             }
 
-            // P key: toggle pin (unfocused or with Ctrl/Alt)
             let has_ctrl_or_alt = state.contains(gdk4::ModifierType::CONTROL_MASK)
                 || state.contains(gdk4::ModifierType::ALT_MASK);
+
+            // D key: Diff viewer comparing selected row with marked baseline (or adjacent item)
+            let is_d = key == Key::d || key == Key::D;
+            if is_d && (!search_entry_key.has_focus() || has_ctrl_or_alt) {
+                if let Some(selected_row) = list_box_key.selected_row() {
+                    let entry_id = selected_row.widget_name();
+                    let items = filtered_key.borrow();
+                    if let Some(entry) = items.iter().find(|e| e.id == entry_id.as_str()) {
+                        if entry.entry_type != EntryType::Image {
+                            let diff_target = if let Some(ref marked) = *diff_marked_key.borrow() {
+                                if marked.id != entry.id && marked.entry_type != EntryType::Image {
+                                    Some(marked.clone())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                let cur_pos = items.iter().position(|e| e.id == entry.id);
+                                cur_pos.and_then(|pos| {
+                                    items
+                                        .iter()
+                                        .skip(pos + 1)
+                                        .find(|e| e.entry_type != EntryType::Image && e.id != entry.id)
+                                        .or_else(|| {
+                                            items.iter().take(pos).rev().find(|e| {
+                                                e.entry_type != EntryType::Image && e.id != entry.id
+                                            })
+                                        })
+                                        .cloned()
+                                })
+                            };
+
+                            if let Some(target) = diff_target {
+                                let text_curr = entry
+                                    .text_content
+                                    .clone()
+                                    .unwrap_or_else(|| entry.preview.clone());
+                                let text_other = target
+                                    .text_content
+                                    .clone()
+                                    .unwrap_or_else(|| target.preview.clone());
+                                let label_curr = format!(
+                                    "Selected: {}",
+                                    entry.preview.chars().take(28).collect::<String>()
+                                );
+                                let label_other = format!(
+                                    "Baseline: {}",
+                                    target.preview.chars().take(28).collect::<String>()
+                                );
+
+                                win_key.set_visible(false);
+                                crate::diff_dialog::DiffDialog::show(
+                                    None,
+                                    text_other,
+                                    text_curr,
+                                    label_other,
+                                    label_curr,
+                                );
+                                return glib::Propagation::Stop;
+                            } else {
+                                toast_key.add_toast(libadwaita::Toast::new(
+                                    "Need at least 2 text clips to compare diff",
+                                ));
+                                return glib::Propagation::Stop;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // M key: mark current selected item as diff baseline
+            let is_m = key == Key::m || key == Key::M;
+            if is_m && (!search_entry_key.has_focus() || has_ctrl_or_alt) {
+                if let Some(selected_row) = list_box_key.selected_row() {
+                    let entry_id = selected_row.widget_name();
+                    let items = filtered_key.borrow();
+                    if let Some(entry) = items.iter().find(|e| e.id == entry_id.as_str()) {
+                        if entry.entry_type != EntryType::Image {
+                            mark_for_diff_key(entry);
+                            return glib::Propagation::Stop;
+                        }
+                    }
+                }
+            }
+
+            // P key: toggle pin (unfocused or with Ctrl/Alt)
             let is_p = key == Key::p || key == Key::P;
             if is_p && (!search_entry_key.has_focus() || has_ctrl_or_alt) {
                 if let Some(selected_row) = list_box_key.selected_row() {
@@ -1847,15 +2019,21 @@ impl ClipboardWindow {
     }
 }
 
+struct RowConfig<'a> {
+    window: &'a Window,
+    config: &'a AppConfig,
+    list_box: &'a ListBox,
+    on_pin: ActionCallback,
+    on_del: ActionCallback,
+    diff_target: Option<ClipboardEntry>,
+    on_mark_diff: Option<EntryCallback>,
+}
+
 /// Helper to construct and configure an EntryRow with full actions, pin, and delete button handlers
 fn create_configured_entry_row(
     entry: &ClipboardEntry,
     index: usize,
-    window: &Window,
-    config: &AppConfig,
-    list_box: &ListBox,
-    on_pin: Rc<dyn Fn(&str)>,
-    on_del: Rc<dyn Fn(&str)>,
+    cfg: RowConfig<'_>,
 ) -> EntryRow {
     let entry_row = EntryRow::new(entry, index);
     entry_row.row.set_widget_name(&entry.id);
@@ -1863,7 +2041,7 @@ fn create_configured_entry_row(
     // Auto-select row on mouse hover so keyboard shortcuts (Q, P, Del, Enter) target the hovered card
     let motion_controller = EventControllerMotion::new();
     let row_hover = entry_row.row.clone();
-    let list_box_hover = list_box.clone();
+    let list_box_hover = cfg.list_box.clone();
     motion_controller.connect_enter(move |_, _x, _y| {
         list_box_hover.select_row(Some(&row_hover));
     });
@@ -1871,18 +2049,26 @@ fn create_configured_entry_row(
 
     // Actions / Transforms button (···)
     let entry_for_popover = entry.clone();
-    let win_for_pop = window.clone();
-    let cfg_for_pop = config.clone();
-    let pin_h = Rc::clone(&on_pin);
-    let del_h = Rc::clone(&on_del);
+    let win_for_pop = cfg.window.clone();
+    let cfg_for_pop = cfg.config.clone();
+    let options = TransformsOptions {
+        diff_target: cfg.diff_target,
+        on_pin: Some(cfg.on_pin),
+        on_del: Some(cfg.on_del),
+        on_mark_diff: cfg.on_mark_diff,
+    };
     entry_row.actions_btn.connect_clicked(move |btn| {
         show_transforms_popover(
             btn,
             &entry_for_popover,
             &win_for_pop,
             &cfg_for_pop,
-            Some(Rc::clone(&pin_h)),
-            Some(Rc::clone(&del_h)),
+            TransformsOptions {
+                diff_target: options.diff_target.clone(),
+                on_pin: options.on_pin.as_ref().map(Rc::clone),
+                on_del: options.on_del.as_ref().map(Rc::clone),
+                on_mark_diff: options.on_mark_diff.as_ref().map(Rc::clone),
+            },
         );
     });
 

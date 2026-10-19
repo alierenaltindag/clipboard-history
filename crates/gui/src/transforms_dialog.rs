@@ -8,12 +8,23 @@ use clipboard_history_core::ipc::IpcClient;
 use clipboard_history_core::transforms::{TextTransforms, UrlCleaner};
 use gdk4::prelude::*;
 use gtk4::prelude::*;
-use gtk4::{Align, Box as GtkBox, Button, Label, Orientation, Popover, Window};
+use gtk4::{Align, Box as GtkBox, Button, Entry, Label, Orientation, Popover, Window};
 use std::rc::Rc;
 use tracing::info;
 
 #[cfg(feature = "gtk")]
 pub type ActionCallback = Rc<dyn Fn(&str)>;
+#[cfg(feature = "gtk")]
+pub type EntryCallback = Rc<dyn Fn(&ClipboardEntry)>;
+
+#[cfg(feature = "gtk")]
+#[derive(Default)]
+pub struct TransformsOptions {
+    pub diff_target: Option<ClipboardEntry>,
+    pub on_pin: Option<ActionCallback>,
+    pub on_del: Option<ActionCallback>,
+    pub on_mark_diff: Option<EntryCallback>,
+}
 
 #[cfg(feature = "gtk")]
 pub fn show_transforms_popover(
@@ -21,9 +32,15 @@ pub fn show_transforms_popover(
     entry: &ClipboardEntry,
     main_window: &Window,
     config: &AppConfig,
-    on_pin: Option<ActionCallback>,
-    on_del: Option<ActionCallback>,
+    options: TransformsOptions,
 ) {
+    let TransformsOptions {
+        diff_target,
+        on_pin,
+        on_del,
+        on_mark_diff,
+    } = options;
+
     let popover = Popover::new();
     popover.set_parent(parent);
     popover.set_autohide(true);
@@ -140,6 +157,96 @@ pub fn show_transforms_popover(
             p.popdown();
             del_fn(&id);
         });
+    }
+
+    // ==========================================
+    // Visual Diff Comparison Section (Text only)
+    // ==========================================
+    if entry.entry_type != EntryType::Image {
+        if let Some(ref target) = diff_target {
+            if target.entry_type != EntryType::Image && target.id != entry.id {
+                let diff_row = GtkBox::new(Orientation::Horizontal, 6);
+                diff_row.set_margin_top(4);
+                diff_row.set_margin_bottom(2);
+
+                let diff_btn = Button::with_label("🔀 Compare Diff (D)");
+                diff_btn.add_css_class("popover-transform-btn");
+                diff_btn.add_css_class("suggested-action");
+                diff_btn.set_hexpand(true);
+                let target_preview = target.preview.chars().take(35).collect::<String>();
+                diff_btn.set_tooltip_text(Some(&format!(
+                    "Compare diff with: \"{}...\"",
+                    target_preview
+                )));
+
+                let text_curr = text_content.clone();
+                let text_other = target
+                    .text_content
+                    .clone()
+                    .unwrap_or_else(|| target.preview.clone());
+                let label_curr = format!(
+                    "Selected: {}",
+                    entry.preview.chars().take(28).collect::<String>()
+                );
+                let label_other = format!(
+                    "Baseline: {}",
+                    target.preview.chars().take(28).collect::<String>()
+                );
+                let win_diff = main_window.clone();
+                let pop_diff = popover.clone();
+
+                diff_btn.connect_clicked(move |_| {
+                    pop_diff.popdown();
+                    win_diff.set_visible(false);
+                    crate::diff_dialog::DiffDialog::show(
+                        None,
+                        text_other.clone(),
+                        text_curr.clone(),
+                        label_other.clone(),
+                        label_curr.clone(),
+                    );
+                });
+                diff_row.append(&diff_btn);
+
+                if let Some(ref mark_fn) = on_mark_diff {
+                    let mark_btn = Button::with_label("📑 Mark");
+                    mark_btn.add_css_class("popover-transform-btn");
+                    mark_btn.set_tooltip_text(Some(
+                        "Mark this entry as Diff baseline to compare with any other item",
+                    ));
+                    let entry_to_mark = entry.clone();
+                    let pop_mark = popover.clone();
+                    let mark_call = Rc::clone(mark_fn);
+                    mark_btn.connect_clicked(move |_| {
+                        pop_mark.popdown();
+                        mark_call(&entry_to_mark);
+                    });
+                    diff_row.append(&mark_btn);
+                }
+
+                container.append(&diff_row);
+            }
+        } else if let Some(ref mark_fn) = on_mark_diff {
+            let diff_row = GtkBox::new(Orientation::Horizontal, 6);
+            diff_row.set_margin_top(4);
+            diff_row.set_margin_bottom(2);
+
+            let mark_btn = Button::with_label("📑 Mark for Diff Comparison");
+            mark_btn.add_css_class("popover-transform-btn");
+            mark_btn.set_hexpand(true);
+            mark_btn.set_tooltip_text(Some(
+                "Mark this entry as Diff baseline to compare with any other item",
+            ));
+            let entry_to_mark = entry.clone();
+            let pop_mark = popover.clone();
+            let mark_call = Rc::clone(mark_fn);
+            mark_btn.connect_clicked(move |_| {
+                pop_mark.popdown();
+                mark_call(&entry_to_mark);
+            });
+            diff_row.append(&mark_btn);
+            container.append(&diff_row);
+        }
     }
 
     let move_to_top = config.paste.move_pasted_to_top;
@@ -743,17 +850,86 @@ pub fn show_qr_dialog(parent: &Window, text: &str) {
 }
 
 #[cfg(feature = "gtk")]
+pub fn detect_ocr_install_command() -> (&'static str, &'static str) {
+    if which::which("pacman").is_ok() {
+        (
+            "Arch Linux / CachyOS",
+            "sudo pacman -S --needed tesseract tesseract-data-eng tesseract-data-tur",
+        )
+    } else if which::which("apt-get").is_ok() || which::which("apt").is_ok() {
+        (
+            "Debian / Ubuntu",
+            "sudo apt update && sudo apt install -y tesseract-ocr tesseract-ocr-tur tesseract-ocr-eng",
+        )
+    } else if which::which("dnf").is_ok() {
+        (
+            "Fedora / RHEL",
+            "sudo dnf install -y tesseract tesseract-langpack-tur tesseract-langpack-eng",
+        )
+    } else if which::which("zypper").is_ok() {
+        (
+            "openSUSE",
+            "sudo zypper install -y tesseract tesseract-ocr-traineddata-tur tesseract-ocr-traineddata-eng",
+        )
+    } else {
+        (
+            "Arch Linux / CachyOS",
+            "sudo pacman -S --needed tesseract tesseract-data-eng tesseract-data-tur",
+        )
+    }
+}
+
+#[cfg(feature = "gtk")]
+fn create_ocr_install_script(distro_name: &str, install_cmd: &str) -> std::io::Result<std::path::PathBuf> {
+    let script_path = std::env::temp_dir().join("clipboard-history-install-ocr.sh");
+    let script_content = format!(
+r#"#!/usr/bin/env bash
+set -e
+
+echo "================================================================="
+echo "  Clipboard History: Installing Tesseract OCR ({})"
+echo "================================================================="
+echo ""
+echo "Running: {}"
+{}
+echo ""
+echo "=== Downloading high-accuracy OCR models (tessdata_best) ==="
+mkdir -p "${{HOME}}/.local/share/clipboard-history/tessdata"
+curl -L -o "${{HOME}}/.local/share/clipboard-history/tessdata/tur.traineddata" "https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/tur.traineddata" || true
+curl -L -o "${{HOME}}/.local/share/clipboard-history/tessdata/eng.traineddata" "https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/eng.traineddata" || true
+echo ""
+echo "================================================================="
+echo "  Installation completed successfully!"
+echo "  Press Enter to close this window..."
+echo "================================================================="
+read -r _dummy
+"#,
+        distro_name, install_cmd, install_cmd
+    );
+
+    std::fs::write(&script_path, script_content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+    }
+    Ok(script_path)
+}
+
+#[cfg(feature = "gtk")]
 pub fn show_ocr_missing_dialog(parent: &Window, on_install: Option<std::rc::Rc<dyn Fn()>>) {
+    let (distro_name, install_cmd) = detect_ocr_install_command();
+
     let dialog = Window::builder()
         .title("Tesseract OCR Required")
         .transient_for(parent)
         .modal(true)
-        .default_width(400)
-        .default_height(240)
+        .default_width(480)
+        .default_height(280)
         .resizable(false)
         .build();
 
-    let root = GtkBox::new(Orientation::Vertical, 14);
+    let root = GtkBox::new(Orientation::Vertical, 12);
     root.set_margin_start(18);
     root.set_margin_end(18);
     root.set_margin_top(16);
@@ -764,16 +940,32 @@ pub fn show_ocr_missing_dialog(parent: &Window, on_install: Option<std::rc::Rc<d
     title.set_xalign(0.0);
     root.append(&title);
 
-    let msg = Label::new(Some(
-        "Tesseract OCR is required to extract text from images.\n\nWould you like to install it now? A terminal window will open to complete the installation with sudo privileges.",
-    ));
+    let msg = Label::new(Some(&format!(
+        "Tesseract OCR is required to extract text from images.\n\nYou can launch the installation terminal directly or copy the command for your system ({}):",
+        distro_name
+    )));
     msg.set_wrap(true);
     msg.set_xalign(0.0);
     root.append(&msg);
 
+    // Monospace command entry
+    let cmd_entry = Entry::new();
+    cmd_entry.set_text(install_cmd);
+    cmd_entry.set_editable(false);
+    cmd_entry.set_hexpand(true);
+    cmd_entry.add_css_class("monospace");
+    root.append(&cmd_entry);
+
+    // Dynamic status label for feedback / errors
+    let status_label = Label::new(None);
+    status_label.set_wrap(true);
+    status_label.set_xalign(0.0);
+    status_label.set_visible(false);
+    root.append(&status_label);
+
     let btn_box = GtkBox::new(Orientation::Horizontal, 8);
     btn_box.set_halign(gtk4::Align::End);
-    btn_box.set_margin_top(10);
+    btn_box.set_margin_top(6);
 
     let cancel_btn = Button::with_label("Cancel");
     let d_cancel = dialog.clone();
@@ -782,15 +974,37 @@ pub fn show_ocr_missing_dialog(parent: &Window, on_install: Option<std::rc::Rc<d
     });
     btn_box.append(&cancel_btn);
 
+    // Copy command button
+    let copy_btn = Button::with_label("📋 Copy Command");
+    let c_btn = copy_btn.clone();
+    let cmd_str = install_cmd.to_string();
+    copy_btn.connect_clicked(move |_| {
+        if let Some(display) = gdk4::Display::default() {
+            display.clipboard().set_text(&cmd_str);
+        }
+        c_btn.set_label("✓ Copied!");
+        let b = c_btn.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
+            b.set_label("📋 Copy Command");
+        });
+    });
+    btn_box.append(&copy_btn);
+
     let install_btn = Button::with_label("🚀 Install in Terminal");
     install_btn.add_css_class("suggested-action");
     let d_install = dialog.clone();
+    let s_label = status_label.clone();
     install_btn.connect_clicked(move |_| {
-        d_install.close();
-        if let Some(ref cb) = on_install {
-            cb();
+        if launch_ocr_terminal_install() {
+            if let Some(ref cb) = on_install {
+                cb();
+            }
+            d_install.close();
+        } else {
+            s_label.set_text("⚠️ Could not detect or launch a terminal emulator automatically.\nPlease click 'Copy Command' above and run it in your terminal.");
+            s_label.add_css_class("error");
+            s_label.set_visible(true);
         }
-        launch_ocr_terminal_install();
     });
     btn_box.append(&install_btn);
 
@@ -802,41 +1016,68 @@ pub fn show_ocr_missing_dialog(parent: &Window, on_install: Option<std::rc::Rc<d
 
 #[cfg(feature = "gtk")]
 fn launch_ocr_terminal_install() -> bool {
-    let install_cmd = if which::which("apt-get").is_ok() {
-        "echo '=== Installing Tesseract OCR (Debian/Ubuntu) ==='; sudo apt update && sudo apt install -y tesseract-ocr tesseract-ocr-tur tesseract-ocr-eng"
-    } else if which::which("pacman").is_ok() {
-        "echo '=== Installing Tesseract OCR (Arch Linux) ==='; sudo pacman -S --needed tesseract tesseract-data-eng tesseract-data-tur"
-    } else if which::which("dnf").is_ok() {
-        "echo '=== Installing Tesseract OCR (Fedora/RHEL) ==='; sudo dnf install -y tesseract tesseract-langpack-tur tesseract-langpack-eng"
-    } else if which::which("zypper").is_ok() {
-        "echo '=== Installing Tesseract OCR (openSUSE) ==='; sudo zypper install -y tesseract tesseract-ocr-traineddata-tur tesseract-ocr-traineddata-eng"
-    } else {
-        "echo '=== Installing Tesseract OCR ==='; sudo apt update && sudo apt install -y tesseract-ocr tesseract-ocr-tur tesseract-ocr-eng"
+    let (distro_name, install_cmd) = detect_ocr_install_command();
+    let script_path = match create_ocr_install_script(distro_name, install_cmd) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("Failed to create OCR install script: {}", e);
+            return false;
+        }
     };
+    let script_str = script_path.to_string_lossy().to_string();
 
-    let bash_script = format!(
-        "{}; echo ''; echo '=== Downloading high-accuracy Turkish OCR models (tessdata_best) ==='; mkdir -p \"${{HOME}}/.local/share/clipboard-history/tessdata\"; curl -L -o \"${{HOME}}/.local/share/clipboard-history/tessdata/tur.traineddata\" https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/tur.traineddata || true; curl -L -o \"${{HOME}}/.local/share/clipboard-history/tessdata/eng.traineddata\" https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/eng.traineddata || true; echo ''; read -p 'Installation finished! Press Enter to close this terminal...' dummy",
-        install_cmd
-    );
+    let mut candidate_commands: Vec<(String, Vec<String>)> = Vec::new();
 
-    let candidates: &[(&str, &[&str])] = &[
-        ("gnome-terminal", &["--", "bash", "-c", &bash_script]),
-        ("ptyxis", &["--", "bash", "-c", &bash_script]),
-        ("konsole", &["-e", "bash", "-c", &bash_script]),
-        ("xfce4-terminal", &["-x", "bash", "-c", &bash_script]),
-        ("x-terminal-emulator", &["-e", "bash", "-c", &bash_script]),
-        ("alacritty", &["-e", "bash", "-c", &bash_script]),
-        ("kitty", &["bash", "-c", &bash_script]),
-        ("foot", &["bash", "-c", &bash_script]),
-        ("xterm", &["-e", "bash", "-c", &bash_script]),
-    ];
-
-    for (bin, args) in candidates {
-        if which::which(bin).is_ok() && std::process::Command::new(bin).args(*args).spawn().is_ok()
-        {
-            return true;
+    // 1. $TERMINAL environment variable if configured by user
+    if let Ok(user_term) = std::env::var("TERMINAL") {
+        let trimmed = user_term.trim();
+        if !trimmed.is_empty() {
+            candidate_commands.push((trimmed.to_string(), vec!["-e".to_string(), "bash".to_string(), script_str.clone()]));
+            candidate_commands.push((trimmed.to_string(), vec!["--".to_string(), "bash".to_string(), script_str.clone()]));
+            candidate_commands.push((trimmed.to_string(), vec!["bash".to_string(), script_str.clone()]));
         }
     }
+
+    // 2. Standard freedesktop terminal launcher (supported on Arch, CachyOS, Fedora, etc.)
+    candidate_commands.push(("xdg-terminal-exec".to_string(), vec!["--".to_string(), "bash".to_string(), script_str.clone()]));
+    candidate_commands.push(("xdg-terminal-exec".to_string(), vec!["bash".to_string(), script_str.clone()]));
+
+    // 3. Modern & Popular Linux Terminals (including CachyOS favorites)
+    candidate_commands.push(("ghostty".to_string(), vec!["-e".to_string(), "bash".to_string(), script_str.clone()]));
+    candidate_commands.push(("alacritty".to_string(), vec!["-e".to_string(), "bash".to_string(), script_str.clone()]));
+    candidate_commands.push(("kitty".to_string(), vec!["--".to_string(), "bash".to_string(), script_str.clone()]));
+    candidate_commands.push(("wezterm".to_string(), vec!["start".to_string(), "--".to_string(), "bash".to_string(), script_str.clone()]));
+    candidate_commands.push(("ptyxis".to_string(), vec!["--".to_string(), "bash".to_string(), script_str.clone()]));
+    candidate_commands.push(("kgx".to_string(), vec!["-e".to_string(), format!("bash {}", script_str)]));
+    candidate_commands.push(("gnome-terminal".to_string(), vec!["--".to_string(), "bash".to_string(), script_str.clone()]));
+    candidate_commands.push(("konsole".to_string(), vec!["-e".to_string(), "bash".to_string(), script_str.clone()]));
+    candidate_commands.push(("xfce4-terminal".to_string(), vec!["-x".to_string(), "bash".to_string(), script_str.clone()]));
+    candidate_commands.push(("foot".to_string(), vec!["bash".to_string(), script_str.clone()]));
+    candidate_commands.push(("footclient".to_string(), vec!["bash".to_string(), script_str.clone()]));
+    candidate_commands.push(("terminator".to_string(), vec!["-x".to_string(), "bash".to_string(), script_str.clone()]));
+    candidate_commands.push(("tilix".to_string(), vec!["-e".to_string(), "bash".to_string(), script_str.clone()]));
+    candidate_commands.push(("qterminal".to_string(), vec!["-e".to_string(), "bash".to_string(), script_str.clone()]));
+    candidate_commands.push(("mate-terminal".to_string(), vec!["-e".to_string(), format!("bash {}", script_str)]));
+    candidate_commands.push(("lxterminal".to_string(), vec!["-e".to_string(), format!("bash {}", script_str)]));
+    candidate_commands.push(("x-terminal-emulator".to_string(), vec!["-e".to_string(), "bash".to_string(), script_str.clone()]));
+    candidate_commands.push(("xterm".to_string(), vec!["-e".to_string(), "bash".to_string(), script_str.clone()]));
+    candidate_commands.push(("urxvt".to_string(), vec!["-e".to_string(), "bash".to_string(), script_str.clone()]));
+    candidate_commands.push(("rxvt".to_string(), vec!["-e".to_string(), "bash".to_string(), script_str.clone()]));
+
+    for (bin, args) in candidate_commands {
+        if which::which(&bin).is_ok() {
+            match std::process::Command::new(&bin).args(&args).spawn() {
+                Ok(_) => {
+                    tracing::info!("Successfully launched OCR install script using terminal: {}", bin);
+                    return true;
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to spawn terminal '{}': {}", bin, e);
+                }
+            }
+        }
+    }
+
     false
 }
 
@@ -871,4 +1112,27 @@ fn apply_transformed_paste(
             );
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_ocr_install_command() {
+        let (distro, cmd) = detect_ocr_install_command();
+        assert!(!distro.is_empty());
+        assert!(!cmd.is_empty());
+        assert!(cmd.contains("tesseract"));
+    }
+
+    #[test]
+    fn test_create_ocr_install_script() {
+        let script = create_ocr_install_script("TestDistro", "echo test").unwrap();
+        assert!(script.exists());
+        let content = std::fs::read_to_string(&script).unwrap();
+        assert!(content.contains("TestDistro"));
+        assert!(content.contains("echo test"));
+        let _ = std::fs::remove_file(script);
+    }
 }

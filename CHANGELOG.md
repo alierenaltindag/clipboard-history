@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-10-19
+
+### Fixed
+- **Network Sync State Consistency & Mutual Unpairing**:
+  - Implemented complete unpair cleanup across all peer identifiers (`clean_ip`, `IP:port`, and device name from discovery tracker) in both `trusted_peers` and `peer_addresses`.
+  - Added bi-directional `SyncMessage::UnpairResponse` protocol handshake to ensure unpair signals are transmitted, processed, acknowledged, and persisted across peers on ports `54123` and `54124`.
+  - Fixed asymmetric connection state between differing distributions (CachyOS/Arch and Ubuntu).
+  - Invalidated cached authorization upon unpair: strictly enforce trust verification in `AuthRequest` so unshared or revoked peers cannot authenticate.
+  - Automatically reload configuration in GUI Settings dialog (`IpcRequest::GetConfig`) to prevent stale `manual_peers` from retaining unpaired state.
+
+### Added
+- **Cross-Distribution Actionable Pairing Notifications & Prompts**:
+  - Integrated FreeDesktop Notifications D-Bus specification (`org.freedesktop.Notifications`) using `zbus` with actionable buttons (`Accept` / `Decline`) and asynchronous `ActionInvoked` signal listening.
+  - Provided robust fallback across Linux distributions supporting both `-A` (Arch/CachyOS) and `--action` (Ubuntu/Debian) flags.
+  - Added native GTK4/Libadwaita modal pairing dialog in the GUI application that presents an interactive prompt whenever a peer sends a pairing request.
+
 ## [1.2.0] - 2026-10-16
 
 ### Added

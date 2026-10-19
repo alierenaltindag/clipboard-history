@@ -12,13 +12,12 @@ Restart=on-failure
 RestartSec=2s
 Environment=RUST_LOG=info
 Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
-PassEnvironment=WAYLAND_DISPLAY DISPLAY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XAUTHORITY XDG_RUNTIME_DIR
+PassEnvironment=WAYLAND_DISPLAY DISPLAY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XAUTHORITY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
 Slice=app.slice
 TimeoutStopSec=5s
 UMask=0077
 
 # Security hardening directives
-NoNewPrivileges=true
 LockPersonality=true
 
 [Install]

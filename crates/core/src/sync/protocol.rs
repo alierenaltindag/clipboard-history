@@ -43,6 +43,10 @@ pub enum SyncMessage {
     UnpairRequest {
         origin_device: String,
     },
+    UnpairResponse {
+        success: bool,
+        message: String,
+    },
     /// Request mutual history sync from peer
     HistorySyncRequest {
         origin_device: String,

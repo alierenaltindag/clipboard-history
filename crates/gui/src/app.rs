@@ -34,6 +34,59 @@ impl ClipboardApp {
             let config = AppConfig::load_or_default();
             let win = ClipboardWindow::new(app, config);
             *win_startup.borrow_mut() = Some(win);
+
+            // Periodically check for incoming pairing requests and display actionable prompt modal
+            let active_dialogs: Rc<RefCell<std::collections::HashSet<String>>> =
+                Rc::new(RefCell::new(std::collections::HashSet::new()));
+            let active_dialog_windows: Rc<RefCell<std::collections::HashMap<String, gtk4::Window>>> =
+                Rc::new(RefCell::new(std::collections::HashMap::new()));
+            let win_ref_dialog = Rc::clone(&win_startup);
+
+            glib::timeout_add_local(std::time::Duration::from_millis(1500), move || {
+                let active_set = Rc::clone(&active_dialogs);
+                let active_wins = Rc::clone(&active_dialog_windows);
+                let win_r = Rc::clone(&win_ref_dialog);
+                glib::MainContext::default().spawn_local(async move {
+                    use clipboard_history_core::ipc::{IpcClient, IpcRequest, IpcResponse};
+                    if let Ok(client) = IpcClient::connect().await {
+                        if let Ok(IpcResponse::PendingPairings(requests)) =
+                            client.send(&IpcRequest::GetPendingPairingRequests).await
+                        {
+                            let current_ids: std::collections::HashSet<String> =
+                                requests.iter().map(|r| r.request_id.clone()).collect();
+
+                            // Close any open pairing dialogs whose requests are no longer pending
+                            active_wins.borrow_mut().retain(|id, win| {
+                                if !current_ids.contains(id) {
+                                    win.close();
+                                    false
+                                } else {
+                                    true
+                                }
+                            });
+                            active_set.borrow_mut().retain(|id| current_ids.contains(id));
+
+                            for req in requests {
+                                if !active_set.borrow().contains(&req.request_id) {
+                                    active_set.borrow_mut().insert(req.request_id.clone());
+                                    let req_id = req.request_id.clone();
+                                    let active_rm = Rc::clone(&active_set);
+                                    let win_guard = win_r.borrow();
+                                    let parent = win_guard.as_ref().map(|w| &w.window);
+                                    let dlg = crate::pairing_dialog::PairingDialog::show(
+                                        parent,
+                                        req,
+                                        active_rm,
+                                    );
+                                    drop(win_guard);
+                                    active_wins.borrow_mut().insert(req_id, dlg);
+                                }
+                            }
+                        }
+                    }
+                });
+                glib::ControlFlow::Continue
+            });
         });
 
         let win_activate = Rc::clone(&window_cell);

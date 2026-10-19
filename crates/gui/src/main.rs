@@ -2,6 +2,7 @@ mod app;
 mod diff_dialog;
 mod injector;
 mod list_row;
+mod pairing_dialog;
 mod search;
 mod settings_dialog;
 mod snippet_dialog;

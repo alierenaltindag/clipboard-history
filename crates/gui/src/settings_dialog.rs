@@ -420,6 +420,11 @@ impl SettingsDialog {
                     let mut discovered_peers = Vec::new();
 
                     if let Ok(client) = IpcClient::connect().await {
+                        if let Ok(IpcResponse::Config(c)) =
+                            client.send(&IpcRequest::GetConfig).await
+                        {
+                            *cfg_inner.borrow_mut() = *c;
+                        }
                         if let Ok(IpcResponse::PendingPairings(p)) =
                             client.send(&IpcRequest::GetPendingPairingRequests).await
                         {
@@ -570,7 +575,7 @@ impl SettingsDialog {
                     };
 
                     for p in discovered_peers {
-                        let (name, addr) = if let Some(idx) = p.find(" (") {
+                        let (name, addr) = if let Some(idx) = p.rfind(" (") {
                             let name = p[..idx].trim().to_string();
                             let rest = p[idx + 2..].trim_end_matches(')').trim().to_string();
                             (name, rest)
@@ -643,7 +648,7 @@ impl SettingsDialog {
                             });
                             row.add_suffix(&unpair_btn);
                         } else {
-                            let pair_btn = gtk4::Button::with_label("Send Sync Request");
+                            let pair_btn = gtk4::Button::with_label("Send Pair Request");
                             pair_btn.add_css_class("suggested-action");
 
                             let addr_pair = peer.addr.clone();

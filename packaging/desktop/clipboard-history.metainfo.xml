@@ -32,6 +32,11 @@
     <binary>clipboard-history-gui</binary>
   </provides>
   <releases>
+    <release version="1.2.1" date="2026-10-19">
+      <description>
+        <p>Fixes Network Sync state inconsistency and unpair asymmetry across Linux distributions (CachyOS/Arch and Ubuntu), adds bi-directional UnpairResponse protocol handshake, enforces strict authorization boundaries on unshared peers, and provides FreeDesktop D-Bus notifications with a native GTK4/Libadwaita pairing modal dialog.</p>
+      </description>
+    </release>
     <release version="1.2.0" date="2026-10-16">
       <description>
         <p>Introduces universal full-history GUI search over the entire SQLite database via IPC, intelligent terminal-aware paste injection (Ctrl+Shift+V vs Ctrl+V), SQLite 5000ms busy_timeout and immediate transaction lock protection, and Wayland zombie process leak prevention.</p>

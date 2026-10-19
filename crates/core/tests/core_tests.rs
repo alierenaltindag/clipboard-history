@@ -1484,6 +1484,133 @@ async fn test_pairing_message_roundtrip() {
 }
 
 #[tokio::test]
+async fn test_unpair_message_roundtrip() {
+    use clipboard_history_core::sync::{read_sync_message, send_sync_message, SyncMessage};
+
+    let (mut peer_a_io, mut peer_b_io) = tokio::io::duplex(4096);
+
+    let sender_handle = tokio::spawn(async move {
+        let unpair_req = SyncMessage::UnpairRequest {
+            origin_device: "ubuntu-desktop".to_string(),
+        };
+        send_sync_message(&mut peer_a_io, "CH_PAIRING_V1", &unpair_req)
+            .await
+            .unwrap();
+
+        // Await UnpairResponse
+        let resp = read_sync_message(&mut peer_a_io, "CH_PAIRING_V1")
+            .await
+            .unwrap();
+        match resp {
+            SyncMessage::UnpairResponse { success, message } => {
+                assert!(success);
+                assert_eq!(message, "Unpaired successfully");
+            }
+            _ => panic!("Expected UnpairResponse"),
+        }
+    });
+
+    let receiver_handle = tokio::spawn(async move {
+        let incoming = read_sync_message(&mut peer_b_io, "123456").await.unwrap();
+        match incoming {
+            SyncMessage::UnpairRequest { origin_device } => {
+                assert_eq!(origin_device, "ubuntu-desktop");
+
+                let resp = SyncMessage::UnpairResponse {
+                    success: true,
+                    message: "Unpaired successfully".to_string(),
+                };
+                send_sync_message(&mut peer_b_io, "CH_PAIRING_V1", &resp)
+                    .await
+                    .unwrap();
+            }
+            _ => panic!("Expected UnpairRequest"),
+        }
+    });
+
+    sender_handle.await.unwrap();
+    receiver_handle.await.unwrap();
+}
+
+#[test]
+fn test_mutual_unpair_state_consistency() {
+    use clipboard_history_core::config::SyncConfig;
+
+    // Simulate Device A (Ubuntu) and Device B (CachyOS) in a Paired state
+    let mut dev_a_sync = SyncConfig {
+        device_name: "ubuntu-desktop".to_string(),
+        trusted_peers: vec![
+            "192.168.1.50".to_string(),
+            "192.168.1.50:54123".to_string(),
+            "cachyos-laptop".to_string(),
+        ],
+        peer_addresses: vec!["192.168.1.50:54123".to_string()],
+        ..Default::default()
+    };
+
+    let mut dev_b_sync = SyncConfig {
+        device_name: "cachyos-laptop".to_string(),
+        trusted_peers: vec![
+            "192.168.1.20".to_string(),
+            "192.168.1.20:54123".to_string(),
+            "ubuntu-desktop".to_string(),
+        ],
+        peer_addresses: vec!["192.168.1.20:54123".to_string()],
+        ..Default::default()
+    };
+
+    // Before unpairing: both report paired / trusted
+    assert!(dev_a_sync.is_peer_trusted("192.168.1.50:54123", "cachyos-laptop"));
+    assert!(dev_b_sync.is_peer_trusted("192.168.1.20:54123", "ubuntu-desktop"));
+
+    // User on Device A triggers unpair for Device B ("192.168.1.50:54123")
+    let target_unpair = "192.168.1.50:54123";
+    let clean_id = "192.168.1.50";
+    let dev_name = "cachyos-laptop";
+
+    // Device A state cleanup
+    dev_a_sync.trusted_peers.retain(|p| {
+        p != target_unpair
+            && p != clean_id
+            && !p.starts_with(&format!("{}:", clean_id))
+            && p != dev_name
+    });
+    dev_a_sync.peer_addresses.retain(|p| {
+        p != target_unpair
+            && p != clean_id
+            && !p.starts_with(&format!("{}:", clean_id))
+            && p != dev_name
+    });
+
+    // Device B receives UnpairRequest from clean_ip "192.168.1.20" with origin_device "ubuntu-desktop"
+    let clean_ip_b = "192.168.1.20";
+    let origin_dev_b = "ubuntu-desktop";
+    dev_b_sync.trusted_peers.retain(|p| {
+        p != clean_ip_b
+            && !p.starts_with(&format!("{}:", clean_ip_b))
+            && p != origin_dev_b
+    });
+    dev_b_sync.peer_addresses.retain(|p| {
+        p != clean_ip_b
+            && !p.starts_with(&format!("{}:", clean_ip_b))
+            && p != origin_dev_b
+    });
+
+    // After unpairing: strict symmetry across both peers
+    assert!(!dev_a_sync.is_peer_trusted("192.168.1.50:54123", "cachyos-laptop"));
+    assert!(!dev_a_sync.is_peer_trusted("192.168.1.50", ""));
+    assert!(!dev_a_sync.is_peer_trusted("", "cachyos-laptop"));
+    assert!(dev_a_sync.peer_addresses.is_empty());
+    assert!(dev_a_sync.trusted_peers.is_empty());
+
+    assert!(!dev_b_sync.is_peer_trusted("192.168.1.20:54123", "ubuntu-desktop"));
+    assert!(!dev_b_sync.is_peer_trusted("192.168.1.20", ""));
+    assert!(!dev_b_sync.is_peer_trusted("", "ubuntu-desktop"));
+    assert!(dev_b_sync.peer_addresses.is_empty());
+    assert!(dev_b_sync.trusted_peers.is_empty());
+}
+
+#[tokio::test]
 async fn test_history_sync_protocol_messages() {
     use clipboard_history_core::sync::{read_sync_message, send_sync_message, SyncMessage};
 
