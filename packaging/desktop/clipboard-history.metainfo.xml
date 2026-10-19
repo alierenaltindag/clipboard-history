@@ -32,6 +32,11 @@
     <binary>clipboard-history-gui</binary>
   </provides>
   <releases>
+    <release version="1.2.4" date="2026-10-19">
+      <description>
+        <p>Complete English localization for auto-update controls and desktop notifications, robust offline fallback for update checking, database migration fixes, and release packaging.</p>
+      </description>
+    </release>
     <release version="1.2.3" date="2026-10-19">
       <description>
         <p>Distributes newly pinned items, unpin states, and snippets across paired devices via Network Sync, and adds GitHub auto-update checks and notification banner.</p>

@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.4] - 2026-10-19
+
+### Fixed
+- **Complete English Localization for Update System**:
+  - Fully translated all user-facing update notifications, action buttons ("Update Now", "Later"), window banner ("A newer version is available!", "Update Now", "Dismiss"), and status labels to English.
+  - Replaced all legacy Turkish strings in desktop notifications and GUI components.
+- **Robust Offline Fallback for Update Checks**:
+  - Implemented direct GitHub API check in GUI Preferences and CLI when daemon is offline or connection fails.
+  - Resolved "Unexpected response from daemon" by improving error handling and adding automatic fallback.
+- **SQLite Database Schema Migration Resilience**:
+  - Fixed `is_pinned` snippet index initialization order to prevent `no such column: is_pinned` on databases created by earlier versions.
+
 ## [1.2.3] - 2026-10-19
 
 ### Fixed

@@ -467,35 +467,58 @@ impl SettingsDialog {
             let c_btn = check_btn_chk.clone();
             let i_btn = install_btn_chk.clone();
             glib::MainContext::default().spawn_local(async move {
-                match IpcClient::connect().await {
-                    Ok(client) => match client.send(&IpcRequest::CheckForUpdates).await {
-                        Ok(IpcResponse::UpdateCheckResult {
-                            update_available,
-                            latest_version,
-                            ..
-                        }) => {
-                            if update_available {
-                                s_row.set_subtitle(&format!(
-                                    "New version available: v{}!",
-                                    latest_version
-                                ));
-                                i_btn.set_visible(true);
-                            } else {
-                                s_row.set_subtitle("You are using the latest version.");
-                                i_btn.set_visible(false);
+                let mut checked = false;
+                if let Ok(client) = IpcClient::connect().await {
+                    if let Ok(resp) = client.send(&IpcRequest::CheckForUpdates).await {
+                        checked = true;
+                        match resp {
+                            IpcResponse::UpdateCheckResult {
+                                update_available,
+                                latest_version,
+                                ..
+                            } => {
+                                if update_available {
+                                    s_row.set_subtitle(&format!(
+                                        "New version available: v{}!",
+                                        latest_version
+                                    ));
+                                    i_btn.set_visible(true);
+                                } else {
+                                    s_row.set_subtitle("You are using the latest version.");
+                                    i_btn.set_visible(false);
+                                }
+                            }
+                            IpcResponse::Error(err) => {
+                                s_row.set_subtitle(&format!("Check error: {}", err));
+                            }
+                            other => {
+                                s_row.set_subtitle(&format!("Daemon response: {:?}", other));
                             }
                         }
-                        Ok(IpcResponse::Error(err)) => {
-                            s_row.set_subtitle(&format!("Check error: {}", err));
-                        }
-                        _ => {
-                            s_row.set_subtitle("Unexpected response from daemon.");
-                        }
-                    },
-                    Err(e) => {
-                        s_row.set_subtitle(&format!("Daemon connection error: {}", e));
                     }
                 }
+
+                if !checked {
+                    // Fallback to direct check if daemon is offline
+                    let current_version = env!("CARGO_PKG_VERSION");
+                    match clipboard_history_core::updater::check_for_updates(current_version).await {
+                        Ok(Some(release)) => {
+                            s_row.set_subtitle(&format!(
+                                "New version available: v{}!",
+                                release.version
+                            ));
+                            i_btn.set_visible(true);
+                        }
+                        Ok(None) => {
+                            s_row.set_subtitle("You are using the latest version.");
+                            i_btn.set_visible(false);
+                        }
+                        Err(e) => {
+                            s_row.set_subtitle(&format!("Update check failed: {}", e));
+                        }
+                    }
+                }
+
                 c_btn.set_sensitive(true);
             });
         });
@@ -510,29 +533,68 @@ impl SettingsDialog {
             let s_row = status_row_inst.clone();
             let i_btn = install_btn_inst.clone();
             glib::MainContext::default().spawn_local(async move {
-                match IpcClient::connect().await {
-                    Ok(client) => match client.send(&IpcRequest::ApplyUpdate).await {
-                        Ok(IpcResponse::UpdateApplyResult { success, message }) => {
-                            if success {
-                                s_row.set_subtitle(&format!("Success: {}. Restarting daemon...", message));
-                                i_btn.set_visible(false);
-                            } else {
-                                s_row.set_subtitle(&format!("Installation failed: {}", message));
+                let mut installed = false;
+                if let Ok(client) = IpcClient::connect().await {
+                    if let Ok(resp) = client.send(&IpcRequest::ApplyUpdate).await {
+                        installed = true;
+                        match resp {
+                            IpcResponse::UpdateApplyResult { success, message } => {
+                                if success {
+                                    s_row.set_subtitle(&format!("Success: {}. Restarting daemon...", message));
+                                    i_btn.set_visible(false);
+                                } else {
+                                    s_row.set_subtitle(&format!("Installation failed: {}", message));
+                                    i_btn.set_sensitive(true);
+                                }
+                            }
+                            IpcResponse::Error(err) => {
+                                s_row.set_subtitle(&format!("Update error: {}", err));
+                                i_btn.set_sensitive(true);
+                            }
+                            other => {
+                                s_row.set_subtitle(&format!("Daemon response: {:?}", other));
                                 i_btn.set_sensitive(true);
                             }
                         }
-                        Ok(IpcResponse::Error(err)) => {
-                            s_row.set_subtitle(&format!("Update error: {}", err));
+                    }
+                }
+
+                if !installed {
+                    // Direct standalone fallback if daemon was not reachable
+                    let current_version = env!("CARGO_PKG_VERSION");
+                    match clipboard_history_core::updater::check_for_updates(current_version).await {
+                        Ok(Some(release)) => {
+                            match clipboard_history_core::updater::download_and_verify(&release).await {
+                                Ok(tar_path) => {
+                                    match clipboard_history_core::updater::install_update_from_tarball(&tar_path) {
+                                        Ok(_) => {
+                                            let _ = clipboard_history_core::updater::restart_daemon_service().await;
+                                            s_row.set_subtitle(&format!(
+                                                "Successfully updated to v{}. Restarted daemon.",
+                                                release.version
+                                            ));
+                                            i_btn.set_visible(false);
+                                        }
+                                        Err(e) => {
+                                            s_row.set_subtitle(&format!("Installation error: {}", e));
+                                            i_btn.set_sensitive(true);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    s_row.set_subtitle(&format!("Download error: {}", e));
+                                    i_btn.set_sensitive(true);
+                                }
+                            }
+                        }
+                        Ok(None) => {
+                            s_row.set_subtitle("Already running the latest version.");
+                            i_btn.set_visible(false);
+                        }
+                        Err(e) => {
+                            s_row.set_subtitle(&format!("Check error: {}", e));
                             i_btn.set_sensitive(true);
                         }
-                        _ => {
-                            s_row.set_subtitle("Unexpected response from daemon.");
-                            i_btn.set_sensitive(true);
-                        }
-                    },
-                    Err(e) => {
-                        s_row.set_subtitle(&format!("Daemon connection error: {}", e));
-                        i_btn.set_sensitive(true);
                     }
                 }
             });

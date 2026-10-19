@@ -223,8 +223,8 @@ view,
 .history-scrolled viewport,
 .history-scrolled > viewport,
 .history-listbox {
-    background-color: transparent !important;
-    background: transparent !important;
+    background-color: transparent;
+    background: transparent;
     color: #f4f4f5;
     border: none;
     outline: none;
@@ -233,8 +233,8 @@ view,
 
 /* ListBox & History Cards */
 listview, listbox, .history-listbox {
-    background: transparent !important;
-    background-color: transparent !important;
+    background: transparent;
+    background-color: transparent;
     padding: 4px 0;
     border: none;
     outline: none;

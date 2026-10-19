@@ -170,7 +170,7 @@ async fn fallback_notify_send(
 /// Dispatches an actionable desktop notification for an available new version.
 pub async fn dispatch_update_notification(release: clipboard_history_core::updater::ReleaseInfo) {
     let body = format!(
-        "Yeni bir sürüm ({}) yayınlandı!\nŞimdi güncellemek ister misiniz?",
+        "A new version ({}) is available!\nWould you like to update now?",
         release.tag_name
     );
 
@@ -199,7 +199,7 @@ async fn try_dbus_update_notification(
     let mut hints: HashMap<&str, zbus::zvariant::Value> = HashMap::new();
     hints.insert("urgency", zbus::zvariant::Value::U8(1));
 
-    let actions = vec!["update", "Şimdi Güncelle", "dismiss", "Daha Sonra"];
+    let actions = vec!["update", "Update Now", "dismiss", "Later"];
     let mut signal_stream = proxy.receive_signal("ActionInvoked").await?;
 
     let notif_id: u32 = proxy
@@ -209,7 +209,7 @@ async fn try_dbus_update_notification(
                 "Clipboard History",
                 0u32,
                 "system-software-update",
-                "Yeni Sürüm Mevcut",
+                "Update Available",
                 body,
                 actions,
                 hints,
@@ -258,10 +258,10 @@ async fn fallback_update_notify_send(
             "-u",
             "normal",
             "-A",
-            "update=Şimdi Güncelle",
+            "update=Update Now",
             "-A",
-            "dismiss=Daha Sonra",
-            "Yeni Sürüm Mevcut",
+            "dismiss=Later",
+            "Update Available",
             body,
         ])
         .output()
@@ -299,14 +299,14 @@ async fn execute_confirmed_update(release: &clipboard_history_core::updater::Rel
 
 /// Dispatches a simple success desktop notification when an update finishes.
 pub async fn dispatch_update_success_notification(version: &str) {
-    let msg = format!("Clipboard History v{} sürümüne başarıyla güncellendi.", version);
+    let msg = format!("Clipboard History has been successfully updated to v{}.", version);
     let _ = tokio::process::Command::new("notify-send")
         .args([
             "-a",
             "Clipboard History",
             "-i",
             "emblem-default",
-            "Güncelleme Başarılı",
+            "Update Successful",
             &msg,
         ])
         .output()

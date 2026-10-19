@@ -146,19 +146,19 @@ impl ClipboardWindow {
         update_icon.set_pixel_size(16);
         update_banner.append(&update_icon);
 
-        let update_label = Label::new(Some("Yeni sürüm mevcut!"));
+        let update_label = Label::new(Some("A newer version is available!"));
         update_label.set_hexpand(true);
         update_label.set_xalign(0.0);
         update_banner.append(&update_label);
 
-        let update_btn = Button::with_label("Güncelle");
+        let update_btn = Button::with_label("Update Now");
         update_btn.add_css_class("suggested-action");
         update_btn.add_css_class("small-button");
         update_banner.append(&update_btn);
 
         let close_banner_btn = Button::from_icon_name("window-close-symbolic");
         close_banner_btn.add_css_class("flat");
-        close_banner_btn.set_tooltip_text(Some("Kapat"));
+        close_banner_btn.set_tooltip_text(Some("Dismiss"));
         update_banner.append(&close_banner_btn);
 
         let banner_to_hide = update_banner.clone();
@@ -170,7 +170,7 @@ impl ClipboardWindow {
         let u_btn = update_btn.clone();
         update_btn.connect_clicked(move |_| {
             u_btn.set_sensitive(false);
-            u_label.set_text("Güncelleniyor...");
+            u_label.set_text("Updating...");
             let l_ref = u_label.clone();
             let b_ref = u_btn.clone();
             glib::MainContext::default().spawn_local(async move {
@@ -178,14 +178,14 @@ impl ClipboardWindow {
                     match client.send(&IpcRequest::ApplyUpdate).await {
                         Ok(IpcResponse::UpdateApplyResult { success, message }) => {
                             if success {
-                                l_ref.set_text(&format!("Başarılı: {}", message));
+                                l_ref.set_text(&format!("Success: {}", message));
                             } else {
-                                l_ref.set_text(&format!("Hata: {}", message));
+                                l_ref.set_text(&format!("Error: {}", message));
                                 b_ref.set_sensitive(true);
                             }
                         }
                         _ => {
-                            l_ref.set_text("Güncelleme başarısız oldu.");
+                            l_ref.set_text("Update failed.");
                             b_ref.set_sensitive(true);
                         }
                     }
@@ -207,7 +207,7 @@ impl ClipboardWindow {
                         latest_version,
                         ..
                     }) = client.send(&IpcRequest::CheckForUpdates).await {
-                        label_show.set_text(&format!("Yeni sürüm (v{}) hazır!", latest_version));
+                        label_show.set_text(&format!("Version v{} is available!", latest_version));
                         banner_show.set_visible(true);
                     }
                 }
