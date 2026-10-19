@@ -64,7 +64,20 @@ impl IpcClient {
                 socket_path.display()
             )));
         }
-        Ok(Self { socket_path })
+
+        // Verify socket is actively listening, not just a stale file on disk
+        match timeout(Duration::from_millis(250), UnixStream::connect(&socket_path)).await {
+            Ok(Ok(_stream)) => Ok(Self { socket_path }),
+            Ok(Err(e)) => Err(CoreError::Ipc(format!(
+                "Cannot connect to socket {}: {}",
+                socket_path.display(),
+                e
+            ))),
+            Err(_) => Err(CoreError::Ipc(format!(
+                "Connection to socket {} timed out",
+                socket_path.display()
+            ))),
+        }
     }
 
     pub fn new<P: Into<std::path::PathBuf>>(socket_path: P) -> Self {

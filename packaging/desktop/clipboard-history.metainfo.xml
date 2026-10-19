@@ -32,6 +32,11 @@
     <binary>clipboard-history-gui</binary>
   </provides>
   <releases>
+    <release version="1.2.5" date="2026-10-19">
+      <description>
+        <p>Intelligent daemon service manager with multi-path binary discovery, auto-healing systemd user units, stale socket cleanup, service diagnostics and troubleshooting dialog, and expanded compositor compatibility.</p>
+      </description>
+    </release>
     <release version="1.2.4" date="2026-10-19">
       <description>
         <p>Complete English localization for auto-update controls and desktop notifications, robust offline fallback for update checking, database migration fixes, and release packaging.</p>

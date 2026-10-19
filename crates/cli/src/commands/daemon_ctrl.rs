@@ -3,24 +3,8 @@ use std::path::Path;
 use std::process::Command;
 
 fn get_gui_executable() -> std::path::PathBuf {
-    if let Ok(current) = std::env::current_exe() {
-        if let Some(parent) = current.parent() {
-            let candidate = parent.join("clipboard-history-gui");
-            if candidate.exists() {
-                return candidate;
-            }
-        }
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        let candidate = std::path::PathBuf::from(home).join(".local/bin/clipboard-history-gui");
-        if candidate.exists() {
-            return candidate;
-        }
-    }
-    if let Ok(path) = which::which("clipboard-history-gui") {
-        return path;
-    }
-    std::path::PathBuf::from("clipboard-history-gui")
+    clipboard_history_core::service::find_gui_binary()
+        .unwrap_or_else(|| std::path::PathBuf::from("clipboard-history-gui"))
 }
 
 pub async fn handle_toggle(_socket_path: &Path) {
@@ -75,7 +59,14 @@ pub async fn handle_status(socket_path: &Path) {
             println!("Socket Path    : {}", socket_path.display());
         }
         Ok(IpcResponse::Error(e)) => eprintln!("Error: {}", e),
-        Err(_) => super::print_daemon_offline_error(),
+        Err(_) => {
+            super::print_daemon_offline_error();
+            let diag = clipboard_history_core::service::collect_diagnostics().await;
+            eprintln!("\nService info: systemd_active={}, unit_status={}", 
+                diag.is_active_in_systemd,
+                diag.systemd_unit_status
+            );
+        }
         _ => eprintln!("Unexpected response"),
     }
 }
@@ -131,90 +122,19 @@ async fn start_daemon(socket_path: &Path) {
     }
 
     println!("Starting clipboard-history-daemon...");
-    let mut started = false;
-
-    // 1. Try systemctl user service if available
-    if which::which("systemctl").is_ok() {
-        let _ = Command::new("systemctl")
-            .args([
-                "--user",
-                "import-environment",
-                "WAYLAND_DISPLAY",
-                "DISPLAY",
-                "XDG_CURRENT_DESKTOP",
-                "XDG_SESSION_TYPE",
-                "XDG_RUNTIME_DIR",
-            ])
-            .status();
-
-        let status = Command::new("systemctl")
-            .args(["--user", "start", "clipboard-history.service"])
-            .status();
-        if let Ok(s) = status {
-            if s.success() {
-                for _ in 0..10 {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    if let Ok(IpcResponse::Status(_)) =
-                        IpcClient::send_request(socket_path, &IpcRequest::GetStatus).await
-                    {
-                        started = true;
-                        break;
-                    }
-                }
-            }
+    match clipboard_history_core::service::smart_start_daemon().await {
+        Ok(_) => {
+            println!("✓ Clipboard History Daemon successfully started.");
         }
-    }
-
-    // 2. Fallback: spawn standalone clipboard-history-daemon in background
-    if !started {
-        let daemon_binary = which::which("clipboard-history-daemon").unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_default();
-            std::path::PathBuf::from(home).join(".local/bin/clipboard-history-daemon")
-        });
-
-        let mut spawn_cmd = Command::new(&daemon_binary);
-        spawn_cmd
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            spawn_cmd.process_group(0);
+        Err(err) => {
+            eprintln!("❌ Failed to start clipboard-history-daemon.\n");
+            eprintln!("{}", err);
+            eprintln!("\nDiagnostics:");
+            eprintln!(
+                "  1. Check systemd logs: journalctl --user -u clipboard-history.service -e -n 25"
+            );
+            eprintln!("  2. Or run manually in foreground to inspect errors: clipboard-history-daemon");
         }
-
-        match spawn_cmd.spawn() {
-            Ok(_) => {
-                for _ in 0..15 {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    if let Ok(IpcResponse::Status(_)) =
-                        IpcClient::send_request(socket_path, &IpcRequest::GetStatus).await
-                    {
-                        started = true;
-                        break;
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!(
-                    "Failed to spawn daemon process ({}): {}",
-                    daemon_binary.display(),
-                    e
-                );
-            }
-        }
-    }
-
-    if started {
-        println!("✓ Clipboard History Daemon successfully started.");
-    } else {
-        eprintln!("❌ Failed to start clipboard-history-daemon.");
-        eprintln!("\nDiagnostics:");
-        eprintln!(
-            "  1. Check systemd logs: journalctl --user -u clipboard-history.service -e -n 20"
-        );
-        eprintln!("  2. Or run manually in foreground to inspect errors: clipboard-history-daemon");
     }
 }
 

@@ -373,21 +373,61 @@ impl ClipboardWindow {
                 if items.is_empty() {
                     if !*daemon_conn_clone.borrow() {
                         empty_clone.set_icon_name(Some("network-error-symbolic"));
-                        empty_clone.set_title("Clipboard Service Not Running");
+                        empty_clone.set_title("Clipboard Service Offline");
                         empty_clone.set_description(Some(
-                            "Background service could not be started.\nYou can start it with 'clipboard-history daemon start' or 'systemctl --user start clipboard-history'.",
+                            "The background clipboard service is not running.\nClick 'Start Service' to start and enable it automatically.",
                         ));
+
+                        let btn_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+                        btn_box.set_halign(gtk4::Align::Center);
+                        btn_box.set_margin_top(12);
+
                         let start_btn = gtk4::Button::with_label("Start Service");
                         start_btn.add_css_class("suggested-action");
                         start_btn.add_css_class("pill");
-                        start_btn.set_halign(gtk4::Align::Center);
+
+                        let troubleshoot_btn = gtk4::Button::with_label("Troubleshoot & Logs");
+                        troubleshoot_btn.add_css_class("pill");
+
                         let refresh_cell_btn = Rc::clone(&refresh_holder_clone);
+                        let s_btn = start_btn.clone();
+                        let empty_status_desc = empty_clone.clone();
+
                         start_btn.connect_clicked(move |_| {
-                            if let Some(ref rf) = *refresh_cell_btn.borrow() {
-                                rf();
-                            }
+                            s_btn.set_sensitive(false);
+                            s_btn.set_label("Starting...");
+                            let rf_opt = refresh_cell_btn.clone();
+                            let s_btn_inner = s_btn.clone();
+                            let empty_inner = empty_status_desc.clone();
+
+                            glib::MainContext::default().spawn_local(async move {
+                                match clipboard_history_core::service::smart_start_daemon().await {
+                                    Ok(_) => {
+                                        if let Some(ref rf) = *rf_opt.borrow() {
+                                            rf();
+                                        }
+                                    }
+                                    Err(e) => {
+                                        s_btn_inner.set_sensitive(true);
+                                        s_btn_inner.set_label("Retry Start");
+                                        let first_line = e.lines().next().unwrap_or("Failed to start daemon");
+                                        empty_inner.set_description(Some(&format!(
+                                            "{}\nClick 'Troubleshoot & Logs' for details and diagnostics.",
+                                            first_line
+                                        )));
+                                    }
+                                }
+                            });
                         });
-                        empty_clone.set_child(Some(&start_btn));
+
+                        let win_ref = win_clone.clone();
+                        troubleshoot_btn.connect_clicked(move |_| {
+                            crate::diagnostics_dialog::show_diagnostics_dialog(Some(&win_ref));
+                        });
+
+                        btn_box.append(&start_btn);
+                        btn_box.append(&troubleshoot_btn);
+                        empty_clone.set_child(Some(&btn_box));
                     } else {
                         empty_clone.set_child(None::<&gtk4::Widget>);
                         let q = current_query_clone.borrow();
@@ -2034,68 +2074,13 @@ impl ClipboardWindow {
     }
 
     pub async fn ensure_daemon_running() -> Option<IpcClient> {
-        if let Ok(client) = IpcClient::connect().await {
-            return Some(client);
-        }
-
-        info!("Daemon not responding to IPC. Attempting auto-start...");
-
-        // 1. Try systemctl user service if available
-        if which::which("systemctl").is_ok() {
-            let _ = std::process::Command::new("systemctl")
-                .args([
-                    "--user",
-                    "import-environment",
-                    "WAYLAND_DISPLAY",
-                    "DISPLAY",
-                    "XDG_CURRENT_DESKTOP",
-                    "XDG_SESSION_TYPE",
-                    "XDG_RUNTIME_DIR",
-                ])
-                .status();
-
-            let _ = std::process::Command::new("systemctl")
-                .args(["--user", "start", "clipboard-history.service"])
-                .status();
-
-            for _ in 0..6 {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                if let Ok(client) = IpcClient::connect().await {
-                    info!("Connected to daemon via systemd user service.");
-                    return Some(client);
-                }
+        match clipboard_history_core::service::smart_start_daemon().await {
+            Ok(client) => Some(client),
+            Err(e) => {
+                tracing::warn!("Auto-start daemon failed: {}", e);
+                None
             }
         }
-
-        // 2. Direct spawn fallback
-        let daemon_binary = which::which("clipboard-history-daemon").unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_default();
-            std::path::PathBuf::from(home).join(".local/bin/clipboard-history-daemon")
-        });
-
-        let mut spawn_cmd = std::process::Command::new(&daemon_binary);
-        spawn_cmd
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            spawn_cmd.process_group(0);
-        }
-
-        if spawn_cmd.spawn().is_ok() {
-            for _ in 0..10 {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                if let Ok(client) = IpcClient::connect().await {
-                    info!("Connected to daemon via spawned binary.");
-                    return Some(client);
-                }
-            }
-        }
-
-        None
     }
 
     pub fn refresh_entries_internal(

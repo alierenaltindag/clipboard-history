@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.5] - 2026-10-19
+
+### Added
+- **Intelligent Daemon Service Manager & Self-Healing**:
+  - Implemented `smart_start_daemon()` in core with multi-path binary discovery (`std::env::current_exe()`, PATH, `/usr/bin`, `/usr/local/bin`, `~/.local/bin`, `~/.cargo/bin`).
+  - Added automatic user systemd unit generation and installation into `~/.config/systemd/user/clipboard-history.service` if not found in distribution directories.
+  - Added automatic stale/dead socket detection and cleanup to prevent startup blocking.
+  - Added progressive retry loop (up to 2.5s) to guarantee connection during first-time cold-start database and cryptographic key initialization.
+- **Service Diagnostics & Troubleshooting Dialog**:
+  - Added Libadwaita diagnostic window showing executable path, systemd service state, display server environment (`WAYLAND_DISPLAY`, `DISPLAY`, `XDG_SESSION_TYPE`), and recent journalctl service logs.
+  - Included a one-click "Copy Diagnostics" button and "Auto-Repair & Start Service" button.
+- **Interactive Offline Empty State**:
+  - Replaced static error message with an actionable offline card with "Start Service" (with active progress indicator) and "Troubleshoot & Logs".
+
+### Fixed
+- **Systemd Compatibility on CachyOS / Arch / Hyprland / Sway**:
+  - Removed `Requisite=graphical-session.target` which caused service startup failures on window managers and compositors where `graphical-session.target` is not bound.
+  - Updated installation target to `WantedBy=default.target` to ensure reliable autostart across all desktop environments and window managers.
+
 ## [1.2.4] - 2026-10-19
 
 ### Fixed

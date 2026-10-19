@@ -7,6 +7,7 @@ pub mod injector;
 pub mod ipc;
 pub mod search;
 pub mod security;
+pub mod service;
 pub mod storage;
 pub mod sync;
 pub mod transforms;
@@ -30,6 +31,10 @@ pub use search::ParsedSearchQuery;
 pub use security::{
     apply_process_memory_shield, lock_process_memory, protect_sensitive_buffer, wipe_and_protect,
     CryptoEngine, PasswordManagerGuard, SecretFilter, SecretHandlingPolicy,
+};
+pub use service::{
+    cleanup_stale_socket, collect_diagnostics, ensure_systemd_unit_installed, find_cli_binary,
+    find_daemon_binary, find_gui_binary, smart_start_daemon, DaemonDiagnostic,
 };
 pub use storage::{SqliteRepository, Storage};
 pub use sync::check_firewall_status;

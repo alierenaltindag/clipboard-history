@@ -278,12 +278,28 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // Spawn Shutdown Signal Listener
+    // Spawn Shutdown Signal Listener (handles SIGINT and SIGTERM from systemd)
     let shutdown_socket = socket_path.clone();
     let shutdown_token = token_path.clone();
     tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
-        info!("Received shutdown signal. Cleaning up...");
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {},
+                    _ = sigterm.recv() => {},
+                }
+            } else {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+
+        info!("Received shutdown signal. Cleaning up socket and authentication token...");
         if shutdown_socket.exists() {
             let _ = std::fs::remove_file(shutdown_socket);
         }
