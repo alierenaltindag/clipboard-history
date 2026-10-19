@@ -32,6 +32,11 @@
     <binary>clipboard-history-gui</binary>
   </provides>
   <releases>
+    <release version="1.2.2" date="2026-10-19">
+      <description>
+        <p>Fixes pin state reversion where unpinned entries in clipboard history and canned snippets reverted back to pinned state, adds SyncMessage::PinSync protocol broadcast across paired devices, and prevents history sync from overwriting local unpinned status.</p>
+      </description>
+    </release>
     <release version="1.2.1" date="2026-10-19">
       <description>
         <p>Fixes Network Sync state inconsistency and unpair asymmetry across Linux distributions (CachyOS/Arch and Ubuntu), adds bi-directional UnpairResponse protocol handshake, enforces strict authorization boundaries on unshared peers, and provides FreeDesktop D-Bus notifications with a native GTK4/Libadwaita pairing modal dialog.</p>

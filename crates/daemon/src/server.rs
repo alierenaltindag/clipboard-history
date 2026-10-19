@@ -314,15 +314,57 @@ impl DaemonServer {
                     Err(_) => IpcResponse::Entry(Box::new(None)),
                 },
 
-                IpcRequest::PinEntry { id } => match repo.set_pinned(&id, true) {
-                    Ok(_) => IpcResponse::Success,
-                    Err(e) => IpcResponse::Error(e.to_string()),
-                },
+                IpcRequest::PinEntry { id } => {
+                    let hash_opt = repo.get_by_id(&id).ok().map(|e| e.content_hash);
+                    match repo.set_pinned(&id, true) {
+                        Ok(_) => {
+                            if let Some(content_hash) = hash_opt {
+                                let sync_cfg = config.read().await.sync.clone();
+                                if sync_cfg.enabled {
+                                    let active_peers = peer_tracker.get_all_peers().await;
+                                    let msg = clipboard_history_core::sync::SyncMessage::PinSync {
+                                        origin_device: sync_cfg.device_name.clone(),
+                                        content_hash,
+                                        is_pinned: true,
+                                    };
+                                    crate::sync_service::broadcast_sync_message(
+                                        &sync_cfg,
+                                        &active_peers,
+                                        msg,
+                                    );
+                                }
+                            }
+                            IpcResponse::Success
+                        }
+                        Err(e) => IpcResponse::Error(e.to_string()),
+                    }
+                }
 
-                IpcRequest::UnpinEntry { id } => match repo.set_pinned(&id, false) {
-                    Ok(_) => IpcResponse::Success,
-                    Err(e) => IpcResponse::Error(e.to_string()),
-                },
+                IpcRequest::UnpinEntry { id } => {
+                    let hash_opt = repo.get_by_id(&id).ok().map(|e| e.content_hash);
+                    match repo.set_pinned(&id, false) {
+                        Ok(_) => {
+                            if let Some(content_hash) = hash_opt {
+                                let sync_cfg = config.read().await.sync.clone();
+                                if sync_cfg.enabled {
+                                    let active_peers = peer_tracker.get_all_peers().await;
+                                    let msg = clipboard_history_core::sync::SyncMessage::PinSync {
+                                        origin_device: sync_cfg.device_name.clone(),
+                                        content_hash,
+                                        is_pinned: false,
+                                    };
+                                    crate::sync_service::broadcast_sync_message(
+                                        &sync_cfg,
+                                        &active_peers,
+                                        msg,
+                                    );
+                                }
+                            }
+                            IpcResponse::Success
+                        }
+                        Err(e) => IpcResponse::Error(e.to_string()),
+                    }
+                }
 
                 IpcRequest::DeleteEntry { id } => match repo.delete(&id) {
                     Ok(_) => IpcResponse::Success,
@@ -873,9 +915,35 @@ impl DaemonServer {
                     Err(e) => IpcResponse::Error(e.to_string()),
                 },
 
-                IpcRequest::BatchPin { ids, pinned } => match repo.batch_set_pinned(&ids, pinned) {
-                    Ok(count) => IpcResponse::BatchSuccess { count },
-                    Err(e) => IpcResponse::Error(e.to_string()),
+                IpcRequest::BatchPin { ids, pinned } => {
+                    let mut hashes = Vec::new();
+                    for id in &ids {
+                        if let Ok(entry) = repo.get_by_id(id) {
+                            hashes.push(entry.content_hash);
+                        }
+                    }
+                    match repo.batch_set_pinned(&ids, pinned) {
+                        Ok(count) => {
+                            let sync_cfg = config.read().await.sync.clone();
+                            if sync_cfg.enabled && !hashes.is_empty() {
+                                let active_peers = peer_tracker.get_all_peers().await;
+                                for content_hash in hashes {
+                                    let msg = clipboard_history_core::sync::SyncMessage::PinSync {
+                                        origin_device: sync_cfg.device_name.clone(),
+                                        content_hash,
+                                        is_pinned: pinned,
+                                    };
+                                    crate::sync_service::broadcast_sync_message(
+                                        &sync_cfg,
+                                        &active_peers,
+                                        msg,
+                                    );
+                                }
+                            }
+                            IpcResponse::BatchSuccess { count }
+                        }
+                        Err(e) => IpcResponse::Error(e.to_string()),
+                    }
                 },
 
                 IpcRequest::ComputeDiff { id_a, id_b } => {

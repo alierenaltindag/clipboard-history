@@ -535,21 +535,39 @@ impl ClipboardWindow {
         // In-memory instant pin toggle
         let toggle_pin: Rc<dyn Fn(&str)> = {
             let entries_clone = Rc::clone(&entries);
+            let filtered_clone = Rc::clone(&filtered_entries);
             let fn_refresh = Rc::clone(&filter_and_render);
             Rc::new(move |id: &str| {
-                let mut items = entries_clone.borrow_mut();
-                if let Some(pos) = items.iter().position(|e| e.id == id) {
-                    items[pos].is_pinned = !items[pos].is_pinned;
-                    let is_pinned = items[pos].is_pinned;
-                    let id_str = id.to_string();
-                    items.sort_by(|a, b| {
-                        b.is_pinned
-                            .cmp(&a.is_pinned)
-                            .then_with(|| b.last_used_at.cmp(&a.last_used_at))
-                    });
-                    drop(items);
-                    fn_refresh();
+                let mut target_is_pinned = None;
+                {
+                    let mut items = entries_clone.borrow_mut();
+                    if let Some(pos) = items.iter().position(|e| e.id == id) {
+                        items[pos].is_pinned = !items[pos].is_pinned;
+                        target_is_pinned = Some(items[pos].is_pinned);
+                        items.sort_by(|a, b| {
+                            b.is_pinned
+                                .cmp(&a.is_pinned)
+                                .then_with(|| b.last_used_at.cmp(&a.last_used_at))
+                        });
+                    }
+                }
+                {
+                    let mut filt = filtered_clone.borrow_mut();
+                    if let Some(pos) = filt.iter().position(|e| e.id == id) {
+                        let new_state = target_is_pinned.unwrap_or(!filt[pos].is_pinned);
+                        filt[pos].is_pinned = new_state;
+                        target_is_pinned = Some(new_state);
+                        filt.sort_by(|a, b| {
+                            b.is_pinned
+                                .cmp(&a.is_pinned)
+                                .then_with(|| b.last_used_at.cmp(&a.last_used_at))
+                        });
+                    }
+                }
+                fn_refresh();
 
+                if let Some(is_pinned) = target_is_pinned {
+                    let id_str = id.to_string();
                     glib::MainContext::default().spawn_local(async move {
                         if let Ok(client) = IpcClient::connect().await {
                             let req = if is_pinned {
@@ -607,15 +625,33 @@ impl ClipboardWindow {
         // In-memory instant delete logic with Toast undo action
         let delete_entry: Rc<dyn Fn(&str)> = {
             let entries_clone = Rc::clone(&entries);
+            let filtered_clone = Rc::clone(&filtered_entries);
             let last_del = Rc::clone(&last_deleted);
             let toast_ov = toast_overlay.clone();
             let fn_refresh = Rc::clone(&filter_and_render);
             Rc::new(move |id: &str| {
-                let mut items = entries_clone.borrow_mut();
-                if let Some(pos) = items.iter().position(|e| e.id == id) {
-                    let removed = items.remove(pos);
+                let mut removed_entry = None;
+                {
+                    let mut items = entries_clone.borrow_mut();
+                    if let Some(pos) = items.iter().position(|e| e.id == id) {
+                        removed_entry = Some(items.remove(pos));
+                    }
+                }
+                {
+                    let mut filt = filtered_clone.borrow_mut();
+                    if let Some(pos) = filt.iter().position(|e| e.id == id) {
+                        if removed_entry.is_none() {
+                            removed_entry = Some(filt.remove(pos));
+                        } else {
+                            filt.remove(pos);
+                        }
+                    }
+                }
+
+                if let Some(removed) = removed_entry {
+                    let id_str = id.to_string();
+                    let is_snippet = removed.source_app.as_deref() == Some("Snippet");
                     *last_del.borrow_mut() = Some(removed);
-                    drop(items);
                     fn_refresh();
 
                     let toast = libadwaita::Toast::new("Item deleted");
@@ -623,10 +659,14 @@ impl ClipboardWindow {
                     toast.set_action_name(Some("win.undo-delete"));
                     toast_ov.add_toast(toast);
 
-                    let id_str = id.to_string();
                     glib::MainContext::default().spawn_local(async move {
                         if let Ok(client) = IpcClient::connect().await {
-                            let _ = client.send(&IpcRequest::DeleteEntry { id: id_str }).await;
+                            let req = if is_snippet {
+                                IpcRequest::DeleteSnippet { id: id_str }
+                            } else {
+                                IpcRequest::DeleteEntry { id: id_str }
+                            };
+                            let _ = client.send(&req).await;
                         }
                     });
                 }
@@ -1993,7 +2033,7 @@ impl ClipboardWindow {
                                     size_bytes: s.label.len(),
                                     created_at: s.created_at,
                                     last_used_at: s.last_used_at,
-                                    is_pinned: true,
+                                    is_pinned: s.is_pinned,
                                     source_app: Some("Snippet".to_string()),
                                 });
                             }

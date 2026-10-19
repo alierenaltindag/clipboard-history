@@ -2509,3 +2509,143 @@ fn test_sqlite_transient_lock_wait_success() {
 
     holder_handle.join().expect("Holder thread panicked");
 }
+
+#[test]
+fn test_pin_persistence_and_sync_override_prevention() {
+    let repo = SqliteRepository::open_in_memory().expect("open in-memory sqlite");
+
+    // 1. Insert an entry initially pinned
+    let text = "Important pinned note".to_string();
+    let hash = BlobStore::compute_hash(text.as_bytes());
+    let mut entry = ClipboardEntry::new_text(
+        text.clone(),
+        hash.clone(),
+        vec!["text/plain".to_string()],
+        Some("notes".to_string()),
+    );
+    entry.is_pinned = true;
+
+    let saved = repo.insert_or_update(&entry).expect("insert entry");
+    assert!(saved.is_pinned);
+
+    // 2. User unpins the entry locally
+    repo.set_pinned(&saved.id, false).expect("unpin entry");
+    let unpinned = repo.get_by_id(&saved.id).expect("get entry");
+    assert!(!unpinned.is_pinned);
+
+    // 3. Simulate remote history sync or duplicate incoming entry with is_pinned = true
+    let mut remote_sync_entry = entry.clone();
+    remote_sync_entry.id = uuid::Uuid::new_v4().to_string();
+    remote_sync_entry.is_pinned = true;
+
+    let updated = repo.insert_or_update(&remote_sync_entry).expect("sync entry");
+    // Local unpin MUST be preserved and not overwritten!
+    assert!(!updated.is_pinned, "Local unpinned state must not be overwritten by incoming sync");
+    let fetched = repo.get_by_id(&saved.id).expect("get entry");
+    assert!(!fetched.is_pinned);
+
+    // 4. Batch insert or update must also preserve local unpinned state
+    let batch_res = repo
+        .batch_insert_or_update(&[remote_sync_entry])
+        .expect("batch sync");
+    assert_eq!(batch_res.len(), 1);
+    let after_batch = repo.get_by_id(&saved.id).expect("get entry");
+    assert!(!after_batch.is_pinned, "Batch sync must not overwrite unpinned entry");
+}
+
+#[tokio::test]
+async fn test_pin_sync_message_transmission_and_handling() {
+    use clipboard_history_core::sync::{read_sync_message, send_sync_message, SyncMessage};
+
+    let repo = SqliteRepository::open_in_memory().expect("open in-memory sqlite");
+    let text = "Cross-device synced pin text".to_string();
+    let hash = BlobStore::compute_hash(text.as_bytes());
+    let entry = ClipboardEntry::new_text(
+        text,
+        hash.clone(),
+        vec!["text/plain".to_string()],
+        None,
+    );
+    let saved = repo.insert_or_update(&entry).expect("insert");
+    assert!(!saved.is_pinned);
+
+    // 1. Duplex encrypted roundtrip of PinSync
+    let (mut sender_io, mut receiver_io) = tokio::io::duplex(64 * 1024);
+    let pin = "998877";
+
+    let hash_sender = hash.clone();
+    let sender = tokio::spawn(async move {
+        let pin_msg = SyncMessage::PinSync {
+            origin_device: "remote-peer".to_string(),
+            content_hash: hash_sender,
+            is_pinned: true,
+        };
+        send_sync_message(&mut sender_io, pin, &pin_msg)
+            .await
+            .expect("send pin sync");
+    });
+
+    let hash_expected = hash.clone();
+    let receiver = tokio::spawn(async move {
+        let msg = read_sync_message(&mut receiver_io, pin)
+            .await
+            .expect("read pin sync");
+        match msg {
+            SyncMessage::PinSync {
+                origin_device,
+                content_hash,
+                is_pinned,
+            } => {
+                assert_eq!(origin_device, "remote-peer");
+                assert_eq!(content_hash, hash_expected);
+                assert!(is_pinned);
+            }
+            _ => panic!("Expected PinSync message"),
+        }
+    });
+
+    sender.await.unwrap();
+    receiver.await.unwrap();
+
+    // 2. Test set_pinned_by_hash to pin and unpin
+    repo.set_pinned_by_hash(&hash, true).expect("set_pinned_by_hash true");
+    assert!(repo.get_by_id(&saved.id).unwrap().is_pinned);
+
+    repo.set_pinned_by_hash(&hash, false).expect("set_pinned_by_hash false");
+    assert!(!repo.get_by_id(&saved.id).unwrap().is_pinned);
+}
+
+#[test]
+fn test_snippet_pin_persistence_and_deletion() {
+    use clipboard_history_core::domain::Snippet;
+
+    let repo = SqliteRepository::open_in_memory().expect("open in-memory sqlite");
+
+    // 1. Create a new snippet (defaults to is_pinned = true)
+    let snippet = Snippet::new(
+        "Canned Template".to_string(),
+        "Template body".to_string(),
+        None,
+    );
+    let id = snippet.id.clone();
+    repo.insert_snippet(&snippet).expect("insert snippet");
+
+    let fetched = repo.get_snippet(&id).unwrap().expect("snippet exists");
+    assert!(fetched.is_pinned, "Snippet should initially be pinned");
+
+    // 2. Unpin the snippet via repo.set_pinned(&id, false)
+    repo.set_pinned(&id, false).expect("unpin snippet");
+    let after_unpin = repo.get_snippet(&id).unwrap().expect("snippet exists");
+    assert!(!after_unpin.is_pinned, "Snippet must remain unpinned in database");
+
+    // 3. Re-pin the snippet
+    repo.set_pinned(&id, true).expect("re-pin snippet");
+    let after_repin = repo.get_snippet(&id).unwrap().expect("snippet exists");
+    assert!(after_repin.is_pinned, "Snippet must be pinned");
+
+    // 4. Delete the snippet via repo.delete(&id)
+    repo.delete(&id).expect("delete snippet");
+    let after_delete = repo.get_snippet(&id).unwrap();
+    assert!(after_delete.is_none(), "Snippet must be deleted");
+}
+

@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-10-19
+
+### Fixed
+- **Pin State Persistence & Unpin Reversion Prevention**:
+  - Removed aggressive force-repin override logic (`if entry.is_pinned && existing_pinned == 0`) from `insert_or_update` and `batch_insert_or_update` in SQLite storage repository, preventing background history streaming from resetting unpinned items to pinned.
+  - Added `set_pinned_by_hash` to `SqliteRepository` and the `Storage` trait to reliably toggle pin states across network sync without requiring UUIDs.
+  - Implemented `is_pinned` column persistence in the `snippets` table with automated schema migration (`ALTER TABLE snippets ADD COLUMN is_pinned ...`).
+  - Added fallback in `set_pinned`, `batch_set_pinned`, `delete`, and `batch_delete` to ensure canned snippets can be pinned, unpinned, and deleted directly from the main view.
+  - Fixed GUI snippet mapping so snippets reflect their actual `is_pinned` state instead of being hardcoded to `true`.
+  - Fixed GUI pin toggling and deletion on search-filtered views to update both `entries` and `filtered_entries`.
+
+### Added
+- **Real-Time Cross-Device Pin State Synchronization**:
+  - Introduced `SyncMessage::PinSync { origin_device, content_hash, is_pinned }` in the network sync protocol.
+  - Broadcast `PinSync` over TCP to all paired peers upon pinning or unpinning entries via daemon IPC (`PinEntry`, `UnpinEntry`, `BatchPin`).
+  - Handled incoming `PinSync` messages in daemon TCP listener and sync service to keep peer SQLite databases immediately and bidirectionally consistent.
+
 ## [1.2.1] - 2026-10-19
 
 ### Fixed

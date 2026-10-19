@@ -37,11 +37,13 @@ CREATE TABLE IF NOT EXISTS snippets (
     content TEXT NOT NULL,
     category TEXT NOT NULL DEFAULT 'General',
     created_at TEXT NOT NULL,
-    last_used_at TEXT NOT NULL
+    last_used_at TEXT NOT NULL,
+    is_pinned INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE INDEX IF NOT EXISTS idx_snippets_category ON snippets (category);
 CREATE INDEX IF NOT EXISTS idx_snippets_last_used ON snippets (last_used_at DESC);
+CREATE INDEX IF NOT EXISTS idx_snippets_is_pinned ON snippets (is_pinned DESC);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
     id UNINDEXED,

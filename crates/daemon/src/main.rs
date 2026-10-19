@@ -649,6 +649,28 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
 
+                                SyncMessage::PinSync {
+                                    origin_device,
+                                    content_hash,
+                                    is_pinned,
+                                } => {
+                                    let is_trusted =
+                                        current_sync.is_peer_trusted(&clean_ip, &origin_device);
+                                    if !is_trusted && !authenticated {
+                                        tracing::warn!(
+                                            "Rejected unauthenticated PinSync from untrusted peer '{}' ({})",
+                                            origin_device,
+                                            peer_addr
+                                        );
+                                        break;
+                                    }
+                                    info!(
+                                        "Processing PinSync from peer '{}' for hash '{}': is_pinned={}",
+                                        origin_device, content_hash, is_pinned
+                                    );
+                                    let _ = sync_repo.set_pinned_by_hash(&content_hash, is_pinned);
+                                }
+
                                 SyncMessage::Ping => {
                                     if !authenticated
                                         && !current_sync.is_peer_trusted(&clean_ip, "")

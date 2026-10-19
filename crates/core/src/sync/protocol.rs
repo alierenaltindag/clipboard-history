@@ -62,4 +62,10 @@ pub enum SyncMessage {
         origin_device: String,
         include_pinned: bool,
     },
+    /// Sync pin/unpin status for an entry across paired devices
+    PinSync {
+        origin_device: String,
+        content_hash: String,
+        is_pinned: bool,
+    },
 }

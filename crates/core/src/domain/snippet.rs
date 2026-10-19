@@ -2,6 +2,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Snippet {
     pub id: String,
@@ -10,6 +14,8 @@ pub struct Snippet {
     pub category: String,
     pub created_at: DateTime<Utc>,
     pub last_used_at: DateTime<Utc>,
+    #[serde(default = "default_true")]
+    pub is_pinned: bool,
 }
 
 impl Snippet {
@@ -22,6 +28,7 @@ impl Snippet {
             category: category.unwrap_or_else(|| "General".to_string()),
             created_at: now,
             last_used_at: now,
+            is_pinned: true,
         }
     }
 }

@@ -17,6 +17,7 @@ pub trait Storage: Send + Sync {
     ) -> Result<Vec<ClipboardEntry>>;
     fn search(&self, query: &str, limit: usize, offset: usize) -> Result<Vec<ClipboardEntry>>;
     fn set_pinned(&self, id: &str, pinned: bool) -> Result<()>;
+    fn set_pinned_by_hash(&self, content_hash: &str, pinned: bool) -> Result<()>;
     fn delete(&self, id: &str) -> Result<()>;
     fn touch_entry(&self, id: &str) -> Result<()>;
     fn batch_delete(&self, ids: &[String]) -> Result<usize>;

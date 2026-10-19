@@ -77,6 +77,10 @@ impl SqliteRepository {
         let _ = conn.pragma_update(None, "temp_store", "MEMORY");
         let _ = conn.pragma_update(None, "foreign_keys", "ON");
         conn.execute_batch(INITIAL_SCHEMA)?;
+        let _ = conn.execute(
+            "ALTER TABLE snippets ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 1",
+            [],
+        );
         Ok(())
     }
 
@@ -100,7 +104,7 @@ impl SqliteRepository {
             )
             .ok();
 
-        if let Some((id, existing_last_used_str, existing_pinned)) = existing {
+        if let Some((id, existing_last_used_str, _existing_pinned)) = existing {
             debug!(
                 "Entry already exists (hash: {}), updating last_used_at if newer",
                 entry.content_hash
@@ -113,13 +117,6 @@ impl SqliteRepository {
                 conn.execute(
                     "UPDATE entries SET last_used_at = ?1 WHERE id = ?2",
                     params![entry.last_used_at.to_rfc3339(), &id],
-                )?;
-            }
-
-            if entry.is_pinned && existing_pinned == 0 {
-                conn.execute(
-                    "UPDATE entries SET is_pinned = 1 WHERE id = ?1",
-                    params![&id],
                 )?;
             }
 
@@ -184,8 +181,6 @@ impl SqliteRepository {
             )?;
             let mut update_time_stmt =
                 tx.prepare_cached("UPDATE entries SET last_used_at = ?1 WHERE id = ?2")?;
-            let mut update_pin_stmt =
-                tx.prepare_cached("UPDATE entries SET is_pinned = 1 WHERE id = ?1")?;
             let mut update_blob_stmt = tx.prepare_cached(
                 "UPDATE entries SET blob_hash = COALESCE(blob_hash, ?1), thumbnail_blob_hash = COALESCE(thumbnail_blob_hash, ?2) WHERE id = ?3",
             )?;
@@ -206,7 +201,7 @@ impl SqliteRepository {
                     })
                     .ok();
 
-                if let Some((id, existing_last_used_str, existing_pinned)) = existing {
+                if let Some((id, existing_last_used_str, _existing_pinned)) = existing {
                     let existing_last_used =
                         chrono::DateTime::parse_from_rfc3339(&existing_last_used_str)
                             .map(|dt| dt.with_timezone(&Utc))
@@ -214,10 +209,6 @@ impl SqliteRepository {
 
                     if entry.last_used_at > existing_last_used {
                         update_time_stmt.execute(params![entry.last_used_at.to_rfc3339(), &id])?;
-                    }
-
-                    if entry.is_pinned && existing_pinned == 0 {
-                        update_pin_stmt.execute(params![&id])?;
                     }
 
                     if entry.blob_hash.is_some() || entry.thumbnail_blob_hash.is_some() {
@@ -505,7 +496,49 @@ impl SqliteRepository {
         };
 
         if affected == 0 {
-            Err(CoreError::NotFound(id.to_string()))
+            // Also check snippets table so pinned canned templates can be toggled
+            let snippet_affected = if is_prefix {
+                let pattern = format!(
+                    "{}%",
+                    trimmed
+                        .replace('\\', "\\\\")
+                        .replace('%', "\\%")
+                        .replace('_', "\\_")
+                );
+                conn.execute(
+                    "UPDATE snippets SET is_pinned = ?1 WHERE id = ?2 OR id LIKE ?3 ESCAPE '\\'",
+                    params![flag, trimmed, pattern],
+                )?
+            } else {
+                conn.execute(
+                    "UPDATE snippets SET is_pinned = ?1 WHERE id = ?2",
+                    params![flag, trimmed],
+                )?
+            };
+
+            if snippet_affected == 0 {
+                Err(CoreError::NotFound(id.to_string()))
+            } else {
+                Ok(())
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn set_pinned_by_hash(&self, content_hash: &str, pinned: bool) -> Result<()> {
+        let trimmed = content_hash.trim();
+        if trimmed.is_empty() {
+            return Err(CoreError::NotFound("Empty content hash".to_string()));
+        }
+        let conn = self.conn();
+        let flag = if pinned { 1 } else { 0 };
+        let affected = conn.execute(
+            "UPDATE entries SET is_pinned = ?1 WHERE content_hash = ?2",
+            params![flag, trimmed],
+        )?;
+        if affected == 0 {
+            Err(CoreError::NotFound(content_hash.to_string()))
         } else {
             Ok(())
         }
@@ -537,7 +570,28 @@ impl SqliteRepository {
         };
 
         if affected == 0 {
-            Err(CoreError::NotFound(id.to_string()))
+            // Also check snippets table so canned templates can be deleted via general delete
+            let snip_affected = if is_prefix {
+                let pattern = format!(
+                    "{}%",
+                    trimmed
+                        .replace('\\', "\\\\")
+                        .replace('%', "\\%")
+                        .replace('_', "\\_")
+                );
+                conn.execute(
+                    "DELETE FROM snippets WHERE id = ?1 OR id LIKE ?2 ESCAPE '\\'",
+                    params![trimmed, pattern],
+                )?
+            } else {
+                conn.execute("DELETE FROM snippets WHERE id = ?1", params![trimmed])?
+            };
+
+            if snip_affected == 0 {
+                Err(CoreError::NotFound(id.to_string()))
+            } else {
+                Ok(())
+            }
         } else {
             let _ = conn.execute(
                 "DELETE FROM entry_keys WHERE entry_id = ?1",
@@ -573,6 +627,10 @@ impl SqliteRepository {
             let mut prefix_stmt =
                 tx.prepare_cached("DELETE FROM entries WHERE id = ?1 OR id LIKE ?2 ESCAPE '\\'")?;
             let mut key_stmt = tx.prepare_cached("DELETE FROM entry_keys WHERE entry_id = ?1")?;
+            let mut exact_snip_stmt = tx.prepare_cached("DELETE FROM snippets WHERE id = ?1")?;
+            let mut prefix_snip_stmt = tx.prepare_cached(
+                "DELETE FROM snippets WHERE id = ?1 OR id LIKE ?2 ESCAPE '\\'",
+            )?;
 
             for id in ids {
                 let trimmed = id.trim();
@@ -582,7 +640,7 @@ impl SqliteRepository {
                 let _ = key_stmt.execute(params![trimmed]);
                 let is_prefix = trimmed.len() >= 6
                     && trimmed.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
-                if is_prefix {
+                let count = if is_prefix {
                     let pattern = format!(
                         "{}%",
                         trimmed
@@ -590,10 +648,21 @@ impl SqliteRepository {
                             .replace('%', "\\%")
                             .replace('_', "\\_")
                     );
-                    deleted += prefix_stmt.execute(params![trimmed, pattern])?;
+                    let n = prefix_stmt.execute(params![trimmed, pattern])?;
+                    if n == 0 {
+                        prefix_snip_stmt.execute(params![trimmed, pattern])?
+                    } else {
+                        n
+                    }
                 } else {
-                    deleted += exact_stmt.execute(params![trimmed])?;
-                }
+                    let n = exact_stmt.execute(params![trimmed])?;
+                    if n == 0 {
+                        exact_snip_stmt.execute(params![trimmed])?
+                    } else {
+                        n
+                    }
+                };
+                deleted += count;
             }
         }
         tx.commit()?;
@@ -619,6 +688,11 @@ impl SqliteRepository {
             let mut prefix_stmt = tx.prepare_cached(
                 "UPDATE entries SET is_pinned = ?1 WHERE id = ?2 OR id LIKE ?3 ESCAPE '\\'",
             )?;
+            let mut exact_snip_stmt =
+                tx.prepare_cached("UPDATE snippets SET is_pinned = ?1 WHERE id = ?2")?;
+            let mut prefix_snip_stmt = tx.prepare_cached(
+                "UPDATE snippets SET is_pinned = ?1 WHERE id = ?2 OR id LIKE ?3 ESCAPE '\\'",
+            )?;
 
             for id in ids {
                 let trimmed = id.trim();
@@ -627,7 +701,7 @@ impl SqliteRepository {
                 }
                 let is_prefix = trimmed.len() >= 6
                     && trimmed.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
-                if is_prefix {
+                let count = if is_prefix {
                     let pattern = format!(
                         "{}%",
                         trimmed
@@ -635,10 +709,21 @@ impl SqliteRepository {
                             .replace('%', "\\%")
                             .replace('_', "\\_")
                     );
-                    updated += prefix_stmt.execute(params![flag, trimmed, pattern])?;
+                    let n = prefix_stmt.execute(params![flag, trimmed, pattern])?;
+                    if n == 0 {
+                        prefix_snip_stmt.execute(params![flag, trimmed, pattern])?
+                    } else {
+                        n
+                    }
                 } else {
-                    updated += exact_stmt.execute(params![flag, trimmed])?;
-                }
+                    let n = exact_stmt.execute(params![flag, trimmed])?;
+                    if n == 0 {
+                        exact_snip_stmt.execute(params![flag, trimmed])?
+                    } else {
+                        n
+                    }
+                };
+                updated += count;
             }
         }
         tx.commit()?;
@@ -756,8 +841,8 @@ impl SqliteRepository {
     pub fn insert_snippet(&self, snippet: &Snippet) -> Result<Snippet> {
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO snippets (id, label, content, category, created_at, last_used_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO snippets (id, label, content, category, created_at, last_used_at, is_pinned)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 snippet.id,
                 snippet.label,
@@ -765,6 +850,7 @@ impl SqliteRepository {
                 snippet.category,
                 snippet.created_at.to_rfc3339(),
                 snippet.last_used_at.to_rfc3339(),
+                if snippet.is_pinned { 1 } else { 0 },
             ],
         )?;
         Ok(snippet.clone())
@@ -773,12 +859,13 @@ impl SqliteRepository {
     pub fn update_snippet(&self, snippet: &Snippet) -> Result<()> {
         let conn = self.conn();
         conn.execute(
-            "UPDATE snippets SET label = ?1, content = ?2, category = ?3, last_used_at = ?4 WHERE id = ?5",
+            "UPDATE snippets SET label = ?1, content = ?2, category = ?3, last_used_at = ?4, is_pinned = ?5 WHERE id = ?6",
             params![
                 snippet.label,
                 snippet.content,
                 snippet.category,
                 snippet.last_used_at.to_rfc3339(),
+                if snippet.is_pinned { 1 } else { 0 },
                 snippet.id,
             ],
         )?;
@@ -794,7 +881,7 @@ impl SqliteRepository {
     pub fn get_snippet(&self, id: &str) -> Result<Option<Snippet>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, label, content, category, created_at, last_used_at FROM snippets WHERE id = ?1",
+            "SELECT id, label, content, category, created_at, last_used_at, is_pinned FROM snippets WHERE id = ?1",
         )?;
         let mut rows = stmt.query(params![id])?;
         if let Some(row) = rows.next()? {
@@ -809,7 +896,7 @@ impl SqliteRepository {
         let mut snippets = Vec::new();
         if let Some(cat) = category {
             let mut stmt = conn.prepare(
-                "SELECT id, label, content, category, created_at, last_used_at FROM snippets WHERE category = ?1 ORDER BY last_used_at DESC",
+                "SELECT id, label, content, category, created_at, last_used_at, is_pinned FROM snippets WHERE category = ?1 ORDER BY is_pinned DESC, last_used_at DESC",
             )?;
             let mut rows = stmt.query(params![cat])?;
             while let Some(row) = rows.next()? {
@@ -817,7 +904,7 @@ impl SqliteRepository {
             }
         } else {
             let mut stmt = conn.prepare(
-                "SELECT id, label, content, category, created_at, last_used_at FROM snippets ORDER BY last_used_at DESC",
+                "SELECT id, label, content, category, created_at, last_used_at, is_pinned FROM snippets ORDER BY is_pinned DESC, last_used_at DESC",
             )?;
             let mut rows = stmt.query([])?;
             while let Some(row) = rows.next()? {
@@ -844,6 +931,7 @@ impl SqliteRepository {
         let category: String = row.get(3)?;
         let created_at_str: String = row.get(4)?;
         let last_used_at_str: String = row.get(5)?;
+        let is_pinned_int: i32 = row.get(6).unwrap_or(1);
 
         let created_at = DateTime::parse_from_rfc3339(&created_at_str)
             .map(|dt| dt.with_timezone(&Utc))
@@ -859,6 +947,7 @@ impl SqliteRepository {
             category,
             created_at,
             last_used_at,
+            is_pinned: is_pinned_int != 0,
         })
     }
 
@@ -935,6 +1024,10 @@ impl crate::storage::Storage for SqliteRepository {
 
     fn set_pinned(&self, id: &str, pinned: bool) -> Result<()> {
         self.set_pinned(id, pinned)
+    }
+
+    fn set_pinned_by_hash(&self, content_hash: &str, pinned: bool) -> Result<()> {
+        self.set_pinned_by_hash(content_hash, pinned)
     }
 
     fn delete(&self, id: &str) -> Result<()> {

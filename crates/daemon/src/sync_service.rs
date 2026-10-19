@@ -428,6 +428,13 @@ pub async fn perform_mutual_history_sync(
                 .await;
                 received_count += 1;
             }
+            SyncMessage::PinSync {
+                content_hash,
+                is_pinned,
+                ..
+            } => {
+                let _ = repo.set_pinned_by_hash(&content_hash, is_pinned);
+            }
             SyncMessage::HistorySyncComplete { count, .. } => {
                 debug!(
                     "Peer completed history sync ({} reported, {} received)",
@@ -496,6 +503,7 @@ pub fn broadcast_sync_message(
 
     let msg_name = match &msg {
         SyncMessage::ClearHistorySync { .. } => "ClearHistorySync",
+        SyncMessage::PinSync { .. } => "PinSync",
         SyncMessage::EntrySync { entry, .. } => {
             debug!("Broadcasting entry type: {}", entry.entry_type);
             "EntrySync"
