@@ -308,7 +308,7 @@ async fn execute_confirmed_update(release: &clipboard_history_core::updater::Rel
 /// Dispatches a simple success desktop notification when an update finishes.
 pub async fn dispatch_update_success_notification(version: &str) {
     let msg = format!(
-        "Clipboard History has been successfully updated to v{}.",
+        "Clipboard History has been successfully updated to v{}. Please restart the application to use the new version.",
         version
     );
     let _ = tokio::process::Command::new("notify-send")

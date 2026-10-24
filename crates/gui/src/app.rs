@@ -136,3 +136,35 @@ impl ClipboardApp {
             .into()
     }
 }
+
+/// Gracefully restarts the GUI process by releasing D-Bus ownership and spawning the updated binary.
+pub fn restart_gui_application(open_settings: bool) {
+    let gui_bin = clipboard_history_core::service::find_gui_binary()
+        .or_else(|| std::env::current_exe().ok())
+        .unwrap_or_else(|| std::path::PathBuf::from("clipboard-history-gui"));
+
+    let bin_str = gui_bin.to_string_lossy().to_string();
+    let flag = if open_settings {
+        "--settings"
+    } else {
+        "--toggle"
+    };
+    info!("Restarting GUI application: {} {}", bin_str, flag);
+
+    #[cfg(unix)]
+    {
+        use std::process::Command;
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", &format!("sleep 0.3; exec '{}' {}", bin_str, flag)])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+
+        let _ = cmd.spawn();
+    }
+
+    std::process::exit(0);
+}

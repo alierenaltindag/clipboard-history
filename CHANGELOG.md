@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.8] - 2026-10-24
+
+### Fixed
+- **In-App Updater UX & Application Restart Handover**:
+  - Implemented seamless GUI restart handover (`restart_gui_application`) with D-Bus lifecycle management, preventing stale processes from remaining in RAM after binary installation.
+  - Added dynamic real-time daemon version synchronization in the Settings Dialog and Main Window banner: dynamically detects when a newer daemon is online on disk and transforms the update button into an actionable "Restart App" button.
+  - Implemented async IPC polling in GUI and CLI after update application, waiting for the daemon to finish restarting before confirming success.
+  - Replaced hardcoded `~/.local/bin` destination with intelligent multi-target binary directory resolution (`determine_install_dir`), supporting custom writable installation locations.
+  - Hardened daemon service restart (`restart_daemon_service`) with `daemon-reload`, `reset-failed`, and standalone process fallback.
+
 ## [1.2.7] - 2026-10-24
 
 ### Performance

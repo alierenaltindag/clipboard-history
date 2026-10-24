@@ -1,7 +1,8 @@
 use clap::Subcommand;
 use clipboard_history_core::ipc::{IpcClient, IpcRequest, IpcResponse};
 use clipboard_history_core::updater::{
-    check_for_updates, download_and_verify, install_update_from_tarball, restart_daemon_service,
+    check_for_updates, determine_install_dir, download_and_verify, install_update_from_tarball,
+    restart_daemon_service,
 };
 use std::path::Path;
 
@@ -85,7 +86,26 @@ pub async fn handle_update(action: Option<UpdateAction>, socket_path: &Path) {
                 applied_via_ipc = true;
                 if success {
                     println!("✅ {}", message);
-                    println!("🎉 Update applied successfully! Daemon is restarting.");
+                    println!("🔄 Waiting for daemon to restart...");
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    let mut new_ver = None;
+                    for _ in 0..10 {
+                        if let Ok(IpcResponse::UpdateCheckResult {
+                            current_version, ..
+                        }) =
+                            IpcClient::send_request(socket_path, &IpcRequest::CheckForUpdates).await
+                        {
+                            new_ver = Some(current_version);
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    }
+                    if let Some(v) = new_ver {
+                        println!("🎉 Daemon restarted successfully running v{}!", v);
+                    } else {
+                        println!("🎉 Daemon restart initiated.");
+                    }
+                    println!("💡 Tip: If clipboard-history-gui is running, restart it to apply the new version.");
                 } else {
                     eprintln!("❌ Update failed: {}", message);
                 }
@@ -99,8 +119,10 @@ pub async fn handle_update(action: Option<UpdateAction>, socket_path: &Path) {
                         println!("📥 Downloading {}...", release.tarball_name);
                         match download_and_verify(&release).await {
                             Ok(tar_path) => {
+                                let target_dir = determine_install_dir();
                                 println!(
-                                    "🔒 SHA-256 verified. Installing binaries to ~/.local/bin/..."
+                                    "🔒 SHA-256 verified. Installing binaries to {}...",
+                                    target_dir.display()
                                 );
                                 match install_update_from_tarball(&tar_path) {
                                     Ok(installed) => {
@@ -113,6 +135,7 @@ pub async fn handle_update(action: Option<UpdateAction>, socket_path: &Path) {
                                             "🎉 Update complete! New version: v{}",
                                             release.version
                                         );
+                                        println!("💡 Tip: If clipboard-history-gui is running, restart it to apply the new version.");
                                     }
                                     Err(e) => {
                                         eprintln!("❌ Failed to install binaries: {}", e);

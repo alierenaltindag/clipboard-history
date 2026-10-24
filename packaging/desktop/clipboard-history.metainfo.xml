@@ -32,6 +32,11 @@
     <binary>clipboard-history-gui</binary>
   </provides>
   <releases>
+    <release version="1.2.8" date="2026-10-24">
+      <description>
+        <p>In-app updater end-to-end reliability: dynamic GUI restart flow with D-Bus lifecycle handover, real-time daemon version synchronization, atomic multi-target binary directory resolution, and robust systemd daemon restart.</p>
+      </description>
+    </release>
     <release version="1.2.7" date="2026-10-24">
       <description>
         <p>End-to-end build pipeline acceleration: streamlined SQLite bundled compilation, optimized release profile with fast linking, sccache compiler caching integration, and updated dependencies.</p>

@@ -339,12 +339,45 @@ impl SettingsDialog {
         install_btn.add_css_class("destructive-action");
         install_btn.set_visible(false);
 
+        let restart_btn = gtk4::Button::with_label("Restart App");
+        restart_btn.set_valign(gtk4::Align::Center);
+        restart_btn.add_css_class("suggested-action");
+        restart_btn.set_visible(false);
+
         let btn_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
         btn_box.set_valign(gtk4::Align::Center);
         btn_box.append(&check_btn);
         btn_box.append(&install_btn);
+        btn_box.append(&restart_btn);
         status_row.add_suffix(&btn_box);
         update_group.add(&status_row);
+
+        // Proactively check if daemon has a newer version installed on disk
+        let v_row_init = current_version_row.clone();
+        let s_row_init = status_row.clone();
+        let r_btn_init = restart_btn.clone();
+        glib::MainContext::default().spawn_local(async move {
+            if let Ok(client) = IpcClient::connect().await {
+                if let Ok(IpcResponse::UpdateCheckResult {
+                    current_version, ..
+                }) = client.send(&IpcRequest::CheckForUpdates).await
+                {
+                    let gui_ver = env!("CARGO_PKG_VERSION");
+                    if clipboard_history_core::updater::is_newer_version(gui_ver, &current_version)
+                    {
+                        v_row_init.set_subtitle(&format!(
+                            "v{} (v{} ready - restart required)",
+                            gui_ver, current_version
+                        ));
+                        s_row_init.set_subtitle(&format!(
+                            "v{} is installed. Click Restart App to complete.",
+                            current_version
+                        ));
+                        r_btn_init.set_visible(true);
+                    }
+                }
+            }
+        });
 
         updates_page.add(&update_group);
         dialog.add(&updates_page);
@@ -459,6 +492,8 @@ impl SettingsDialog {
         let status_row_chk = status_row.clone();
         let check_btn_chk = check_btn.clone();
         let install_btn_chk = install_btn.clone();
+        let restart_btn_chk = restart_btn.clone();
+        let current_version_row_chk = current_version_row.clone();
         check_btn.connect_clicked(move |_| {
             check_btn_chk.set_sensitive(false);
             status_row_chk.set_subtitle("Checking GitHub for new releases...");
@@ -466,6 +501,8 @@ impl SettingsDialog {
             let s_row = status_row_chk.clone();
             let c_btn = check_btn_chk.clone();
             let i_btn = install_btn_chk.clone();
+            let r_btn = restart_btn_chk.clone();
+            let v_row = current_version_row_chk.clone();
             glib::MainContext::default().spawn_local(async move {
                 let mut checked = false;
                 if let Ok(client) = IpcClient::connect().await {
@@ -474,18 +511,37 @@ impl SettingsDialog {
                         match resp {
                             IpcResponse::UpdateCheckResult {
                                 update_available,
+                                current_version,
                                 latest_version,
                                 ..
                             } => {
+                                let gui_ver = env!("CARGO_PKG_VERSION");
                                 if update_available {
                                     s_row.set_subtitle(&format!(
                                         "New version available: v{}!",
                                         latest_version
                                     ));
                                     i_btn.set_visible(true);
+                                    r_btn.set_visible(false);
+                                } else if clipboard_history_core::updater::is_newer_version(
+                                    gui_ver,
+                                    &current_version,
+                                ) {
+                                    v_row.set_subtitle(&format!(
+                                        "v{} (v{} ready - restart required)",
+                                        gui_ver, current_version
+                                    ));
+                                    s_row.set_subtitle(&format!(
+                                        "v{} is installed. Click Restart App to complete.",
+                                        current_version
+                                    ));
+                                    i_btn.set_visible(false);
+                                    r_btn.set_visible(true);
                                 } else {
+                                    v_row.set_subtitle(&format!("v{}", gui_ver));
                                     s_row.set_subtitle("You are using the latest version.");
                                     i_btn.set_visible(false);
+                                    r_btn.set_visible(false);
                                 }
                             }
                             IpcResponse::Error(err) => {
@@ -509,10 +565,12 @@ impl SettingsDialog {
                                 release.version
                             ));
                             i_btn.set_visible(true);
+                            r_btn.set_visible(false);
                         }
                         Ok(None) => {
                             s_row.set_subtitle("You are using the latest version.");
                             i_btn.set_visible(false);
+                            r_btn.set_visible(false);
                         }
                         Err(e) => {
                             s_row.set_subtitle(&format!("Update check failed: {}", e));
@@ -527,12 +585,19 @@ impl SettingsDialog {
         // Install update button
         let status_row_inst = status_row.clone();
         let install_btn_inst = install_btn.clone();
+        let restart_btn_inst = restart_btn.clone();
+        let current_version_row_inst = current_version_row.clone();
+        let check_btn_inst = check_btn.clone();
         install_btn.connect_clicked(move |_| {
             install_btn_inst.set_sensitive(false);
             status_row_inst.set_subtitle("Downloading and verifying package from GitHub...");
 
             let s_row = status_row_inst.clone();
             let i_btn = install_btn_inst.clone();
+            let r_btn = restart_btn_inst.clone();
+            let v_row = current_version_row_inst.clone();
+            let c_btn = check_btn_inst.clone();
+
             glib::MainContext::default().spawn_local(async move {
                 let mut installed = false;
                 if let Ok(client) = IpcClient::connect().await {
@@ -541,8 +606,42 @@ impl SettingsDialog {
                         match resp {
                             IpcResponse::UpdateApplyResult { success, message } => {
                                 if success {
-                                    s_row.set_subtitle(&format!("Success: {}. Restarting daemon...", message));
+                                    s_row.set_subtitle("Update installed. Restarting daemon...");
                                     i_btn.set_visible(false);
+
+                                    // Poll IPC to wait for daemon restart and verify new version
+                                    let s_poll = s_row.clone();
+                                    let v_poll = v_row.clone();
+                                    let r_poll = r_btn.clone();
+                                    let c_poll = c_btn.clone();
+                                    glib::MainContext::default().spawn_local(async move {
+                                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                                        let mut detected_version = None;
+                                        for _ in 0..15 {
+                                            if let Ok(client) = IpcClient::connect().await {
+                                                if let Ok(IpcResponse::UpdateCheckResult { current_version, .. }) =
+                                                    client.send(&IpcRequest::CheckForUpdates).await
+                                                {
+                                                    detected_version = Some(current_version);
+                                                    break;
+                                                }
+                                            }
+                                            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                                        }
+
+                                        let gui_ver = env!("CARGO_PKG_VERSION");
+                                        if let Some(new_ver) = detected_version {
+                                            s_poll.set_subtitle(&format!(
+                                                "✅ Successfully updated to v{}! Restart application to complete.",
+                                                new_ver
+                                            ));
+                                            v_poll.set_subtitle(&format!("v{} (v{} ready)", gui_ver, new_ver));
+                                        } else {
+                                            s_poll.set_subtitle("✅ Update complete! Click Restart App to reload.");
+                                        }
+                                        r_poll.set_visible(true);
+                                        c_poll.set_sensitive(true);
+                                    });
                                 } else {
                                     s_row.set_subtitle(&format!("Installation failed: {}", message));
                                     i_btn.set_sensitive(true);
@@ -571,10 +670,16 @@ impl SettingsDialog {
                                         Ok(_) => {
                                             let _ = clipboard_history_core::updater::restart_daemon_service().await;
                                             s_row.set_subtitle(&format!(
-                                                "Successfully updated to v{}. Restarted daemon.",
+                                                "✅ Successfully updated to v{}. Restart application to complete.",
+                                                release.version
+                                            ));
+                                            v_row.set_subtitle(&format!(
+                                                "v{} (v{} ready)",
+                                                env!("CARGO_PKG_VERSION"),
                                                 release.version
                                             ));
                                             i_btn.set_visible(false);
+                                            r_btn.set_visible(true);
                                         }
                                         Err(e) => {
                                             s_row.set_subtitle(&format!("Installation error: {}", e));
@@ -599,6 +704,13 @@ impl SettingsDialog {
                     }
                 }
             });
+        });
+
+        // Restart application button
+        let restart_btn_act = restart_btn.clone();
+        restart_btn.connect_clicked(move |_| {
+            restart_btn_act.set_sensitive(false);
+            crate::app::restart_gui_application(true);
         });
 
         // Query discovered peers from daemon with manual scan and pairing support

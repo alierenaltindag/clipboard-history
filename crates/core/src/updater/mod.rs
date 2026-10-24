@@ -230,7 +230,36 @@ pub async fn download_and_verify(release: &ReleaseInfo) -> Result<PathBuf> {
     Ok(persistent_path)
 }
 
-/// Unpacks the downloaded archive and updates the binaries in `~/.local/bin/`.
+/// Determines the target directory for installing binary executables.
+/// Prefers the directory of the currently running binary if writable and containing siblings,
+/// otherwise defaults to `~/.local/bin`.
+pub fn determine_install_dir() -> PathBuf {
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(parent) = current_exe.parent() {
+            let test_file = parent.join(format!(".write_test_{}", std::process::id()));
+            if std::fs::write(&test_file, b"ok").is_ok() {
+                let _ = std::fs::remove_file(&test_file);
+                if parent.join("clipboard-history-daemon").exists()
+                    || parent.join("clipboard-history").exists()
+                    || parent.join("clipboard-history-gui").exists()
+                {
+                    return parent.to_path_buf();
+                }
+            }
+        }
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        let local_bin = PathBuf::from(home).join(".local/bin");
+        if fs::create_dir_all(&local_bin).is_ok() {
+            return local_bin;
+        }
+    }
+
+    PathBuf::from("/tmp")
+}
+
+/// Unpacks the downloaded archive and updates the binaries in target installation directory.
 /// Creates backups (.bak) of existing binaries and performs rollback on failure.
 pub fn install_update_from_tarball(tarball_path: &Path) -> Result<Vec<String>> {
     let tar_file = File::open(tarball_path)
@@ -238,11 +267,8 @@ pub fn install_update_from_tarball(tarball_path: &Path) -> Result<Vec<String>> {
     let tar_gz = GzDecoder::new(tar_file);
     let mut archive = Archive::new(tar_gz);
 
-    // Determine target bin dir (~/.local/bin)
-    let home = std::env::var("HOME").map_err(|_| {
-        CoreError::Update("Could not determine HOME directory for binary installation".into())
-    })?;
-    let bin_dir = PathBuf::from(home).join(".local/bin");
+    // Determine target bin dir (~/.local/bin or current directory)
+    let bin_dir = determine_install_dir();
     fs::create_dir_all(&bin_dir)?;
 
     let target_binaries = [
@@ -358,30 +384,60 @@ pub fn install_update_from_tarball(tarball_path: &Path) -> Result<Vec<String>> {
     Ok(installed)
 }
 
-/// Triggers user systemd service restart for clipboard-history daemon.
+/// Triggers user systemd service restart for clipboard-history daemon, with fallback.
 pub async fn restart_daemon_service() -> Result<()> {
     info!("Restarting clipboard-history user systemd service...");
-    let output = tokio::process::Command::new("systemctl")
-        .args(["--user", "restart", "clipboard-history"])
-        .output()
-        .await;
 
-    match output {
-        Ok(out) if out.status.success() => {
-            info!("clipboard-history service restarted successfully");
-            Ok(())
-        }
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            warn!("systemctl --user restart returned error: {}", stderr);
-            // Non-fatal if systemd service is not configured or user is running standalone
-            Ok(())
-        }
-        Err(e) => {
-            warn!("Failed to invoke systemctl: {}", e);
-            Ok(())
+    if which::which("systemctl").is_ok() {
+        // First reload systemd user daemon definitions in case unit or binary changed
+        let _ = tokio::process::Command::new("systemctl")
+            .args(["--user", "daemon-reload"])
+            .status()
+            .await;
+
+        // Reset any failed / rate-limit state
+        let _ = tokio::process::Command::new("systemctl")
+            .args(["--user", "reset-failed", "clipboard-history.service"])
+            .status()
+            .await;
+
+        // Restart service
+        let output = tokio::process::Command::new("systemctl")
+            .args(["--user", "restart", "clipboard-history.service"])
+            .output()
+            .await;
+
+        if let Ok(out) = output {
+            if out.status.success() {
+                info!("clipboard-history.service restarted successfully via systemctl");
+                return Ok(());
+            } else {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                warn!("systemctl --user restart returned error: {}", stderr);
+            }
         }
     }
+
+    // Fallback: If not using systemd or systemctl restart failed, try killing old and spawning new daemon
+    info!("Attempting fallback daemon restart...");
+    let daemon_bin = crate::service::find_daemon_binary()
+        .unwrap_or_else(|| PathBuf::from("clipboard-history-daemon"));
+
+    #[cfg(unix)]
+    {
+        let _ = tokio::process::Command::new("sh")
+            .args([
+                "-c",
+                &format!(
+                    "pkill -x clipboard-history-daemon || true; sleep 0.2; exec '{}' >/dev/null 2>&1 &",
+                    daemon_bin.display()
+                ),
+            ])
+            .status()
+            .await;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -393,9 +449,18 @@ mod tests {
         assert!(is_newer_version("1.2.2", "1.2.3"));
         assert!(is_newer_version("v1.2.2", "v1.3.0"));
         assert!(is_newer_version("1.2.2", "v2.0.0"));
+        assert!(is_newer_version("1.2.6", "1.2.7"));
+        assert!(is_newer_version("1.2.7", "1.2.8"));
         assert!(!is_newer_version("1.2.2", "1.2.2"));
         assert!(!is_newer_version("1.2.3", "1.2.2"));
         assert!(!is_newer_version("v1.2.3", "1.2.3"));
+        assert!(!is_newer_version("1.2.7", "1.2.6"));
+    }
+
+    #[test]
+    fn test_determine_install_dir() {
+        let dir = determine_install_dir();
+        assert!(!dir.as_os_str().is_empty());
     }
 
     #[test]

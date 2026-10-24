@@ -169,6 +169,12 @@ impl ClipboardWindow {
         let u_label = update_label.clone();
         let u_btn = update_btn.clone();
         update_btn.connect_clicked(move |_| {
+            if u_btn.label().as_deref() == Some("Restart App") {
+                u_btn.set_sensitive(false);
+                crate::app::restart_gui_application(false);
+                return;
+            }
+
             u_btn.set_sensitive(false);
             u_label.set_text("Updating...");
             let l_ref = u_label.clone();
@@ -178,7 +184,16 @@ impl ClipboardWindow {
                     match client.send(&IpcRequest::ApplyUpdate).await {
                         Ok(IpcResponse::UpdateApplyResult { success, message }) => {
                             if success {
-                                l_ref.set_text(&format!("Success: {}", message));
+                                l_ref.set_text("Restarting daemon...");
+                                let l_poll = l_ref.clone();
+                                let b_poll = b_ref.clone();
+                                glib::MainContext::default().spawn_local(async move {
+                                    tokio::time::sleep(std::time::Duration::from_millis(1500))
+                                        .await;
+                                    l_poll.set_text("Update ready! Restart app to finish.");
+                                    b_poll.set_label("Restart App");
+                                    b_poll.set_sensitive(true);
+                                });
                             } else {
                                 l_ref.set_text(&format!("Error: {}", message));
                                 b_ref.set_sensitive(true);
@@ -198,18 +213,36 @@ impl ClipboardWindow {
         // Check if an update is available in background when auto-check is enabled
         let banner_show = update_banner.clone();
         let label_show = update_label.clone();
+        let btn_show = update_btn.clone();
         if config.updates.auto_check {
             glib::MainContext::default().spawn_local(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 if let Ok(client) = IpcClient::connect().await {
                     if let Ok(IpcResponse::UpdateCheckResult {
-                        update_available: true,
+                        update_available,
+                        current_version,
                         latest_version,
                         ..
                     }) = client.send(&IpcRequest::CheckForUpdates).await
                     {
-                        label_show.set_text(&format!("Version v{} is available!", latest_version));
-                        banner_show.set_visible(true);
+                        let gui_ver = env!("CARGO_PKG_VERSION");
+                        if update_available {
+                            label_show
+                                .set_text(&format!("Version v{} is available!", latest_version));
+                            btn_show.set_label("Update Now");
+                            banner_show.set_visible(true);
+                        } else if clipboard_history_core::updater::is_newer_version(
+                            gui_ver,
+                            &current_version,
+                        ) {
+                            label_show.set_text(&format!(
+                                "v{} ready! Restart required.",
+                                current_version
+                            ));
+                            btn_show.set_label("Restart App");
+                            btn_show.set_sensitive(true);
+                            banner_show.set_visible(true);
+                        }
                     }
                 }
             });
