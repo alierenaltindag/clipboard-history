@@ -206,7 +206,8 @@ impl ClipboardWindow {
                         update_available: true,
                         latest_version,
                         ..
-                    }) = client.send(&IpcRequest::CheckForUpdates).await {
+                    }) = client.send(&IpcRequest::CheckForUpdates).await
+                    {
                         label_show.set_text(&format!("Version v{} is available!", latest_version));
                         banner_show.set_visible(true);
                     }

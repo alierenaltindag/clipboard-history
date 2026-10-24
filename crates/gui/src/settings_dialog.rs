@@ -501,7 +501,8 @@ impl SettingsDialog {
                 if !checked {
                     // Fallback to direct check if daemon is offline
                     let current_version = env!("CARGO_PKG_VERSION");
-                    match clipboard_history_core::updater::check_for_updates(current_version).await {
+                    match clipboard_history_core::updater::check_for_updates(current_version).await
+                    {
                         Ok(Some(release)) => {
                             s_row.set_subtitle(&format!(
                                 "New version available: v{}!",

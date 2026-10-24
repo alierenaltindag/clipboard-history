@@ -41,7 +41,10 @@ pub async fn handle_update(action: Option<UpdateAction>, socket_path: &Path) {
                     println!("\nTo apply this update, run:");
                     println!("  clipboard-history update apply");
                 } else {
-                    println!("✅ You are running the latest version (v{}).", current_version);
+                    println!(
+                        "✅ You are running the latest version (v{}).",
+                        current_version
+                    );
                 }
             }
 
@@ -57,7 +60,10 @@ pub async fn handle_update(action: Option<UpdateAction>, socket_path: &Path) {
                         println!("  clipboard-history update apply");
                     }
                     Ok(None) => {
-                        println!("✅ You are running the latest version (v{}).", current_version);
+                        println!(
+                            "✅ You are running the latest version (v{}).",
+                            current_version
+                        );
                     }
                     Err(e) => {
                         eprintln!("❌ Failed to check for updates: {}", e);
@@ -93,7 +99,9 @@ pub async fn handle_update(action: Option<UpdateAction>, socket_path: &Path) {
                         println!("📥 Downloading {}...", release.tarball_name);
                         match download_and_verify(&release).await {
                             Ok(tar_path) => {
-                                println!("🔒 SHA-256 verified. Installing binaries to ~/.local/bin/...");
+                                println!(
+                                    "🔒 SHA-256 verified. Installing binaries to ~/.local/bin/..."
+                                );
                                 match install_update_from_tarball(&tar_path) {
                                     Ok(installed) => {
                                         println!(
@@ -101,7 +109,10 @@ pub async fn handle_update(action: Option<UpdateAction>, socket_path: &Path) {
                                             installed.join(", ")
                                         );
                                         let _ = restart_daemon_service().await;
-                                        println!("🎉 Update complete! New version: v{}", release.version);
+                                        println!(
+                                            "🎉 Update complete! New version: v{}",
+                                            release.version
+                                        );
                                     }
                                     Err(e) => {
                                         eprintln!("❌ Failed to install binaries: {}", e);
@@ -114,7 +125,10 @@ pub async fn handle_update(action: Option<UpdateAction>, socket_path: &Path) {
                         }
                     }
                     Ok(None) => {
-                        println!("✅ Already running the latest version (v{}).", current_version);
+                        println!(
+                            "✅ Already running the latest version (v{}).",
+                            current_version
+                        );
                     }
                     Err(e) => {
                         eprintln!("❌ Update check failed: {}", e);

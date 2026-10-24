@@ -19,9 +19,15 @@ pub async fn dispatch_pairing_notification(
     );
 
     // 1. Try D-Bus FreeDesktop Notifications interface via zbus
-    if try_dbus_notification(&origin_device, &peer_addr, &body, &request_id, pending_pairings.clone())
-        .await
-        .is_ok()
+    if try_dbus_notification(
+        &origin_device,
+        &peer_addr,
+        &body,
+        &request_id,
+        pending_pairings.clone(),
+    )
+    .await
+    .is_ok()
     {
         return;
     }
@@ -109,11 +115,7 @@ async fn try_dbus_notification(
     Ok(())
 }
 
-async fn fallback_notify_send(
-    body: &str,
-    request_id: &str,
-    pending_pairings: PendingPairingsMap,
-) {
+async fn fallback_notify_send(body: &str, request_id: &str, pending_pairings: PendingPairingsMap) {
     // Try with -A flag first (standard on many Arch/CachyOS and Ubuntu systems)
     let res = tokio::process::Command::new("notify-send")
         .args([
@@ -218,7 +220,10 @@ async fn try_dbus_update_notification(
         )
         .await?;
 
-    info!("Dispatched FreeDesktop update notification (id={})", notif_id);
+    info!(
+        "Dispatched FreeDesktop update notification (id={})",
+        notif_id
+    );
 
     let release_clone = release.clone();
     tokio::spawn(async move {
@@ -276,7 +281,10 @@ async fn fallback_update_notify_send(
 }
 
 async fn execute_confirmed_update(release: &clipboard_history_core::updater::ReleaseInfo) {
-    info!("Starting user-confirmed update for release {}", release.tag_name);
+    info!(
+        "Starting user-confirmed update for release {}",
+        release.tag_name
+    );
     match clipboard_history_core::updater::download_and_verify(release).await {
         Ok(tarball_path) => {
             match clipboard_history_core::updater::install_update_from_tarball(&tarball_path) {
@@ -299,7 +307,10 @@ async fn execute_confirmed_update(release: &clipboard_history_core::updater::Rel
 
 /// Dispatches a simple success desktop notification when an update finishes.
 pub async fn dispatch_update_success_notification(version: &str) {
-    let msg = format!("Clipboard History has been successfully updated to v{}.", version);
+    let msg = format!(
+        "Clipboard History has been successfully updated to v{}.",
+        version
+    );
     let _ = tokio::process::Command::new("notify-send")
         .args([
             "-a",
@@ -312,4 +323,3 @@ pub async fn dispatch_update_success_notification(version: &str) {
         .output()
         .await;
 }
-

@@ -62,9 +62,9 @@ pub async fn handle_status(socket_path: &Path) {
         Err(_) => {
             super::print_daemon_offline_error();
             let diag = clipboard_history_core::service::collect_diagnostics().await;
-            eprintln!("\nService info: systemd_active={}, unit_status={}", 
-                diag.is_active_in_systemd,
-                diag.systemd_unit_status
+            eprintln!(
+                "\nService info: systemd_active={}, unit_status={}",
+                diag.is_active_in_systemd, diag.systemd_unit_status
             );
         }
         _ => eprintln!("Unexpected response"),
@@ -133,7 +133,9 @@ async fn start_daemon(socket_path: &Path) {
             eprintln!(
                 "  1. Check systemd logs: journalctl --user -u clipboard-history.service -e -n 25"
             );
-            eprintln!("  2. Or run manually in foreground to inspect errors: clipboard-history-daemon");
+            eprintln!(
+                "  2. Or run manually in foreground to inspect errors: clipboard-history-daemon"
+            );
         }
     }
 }

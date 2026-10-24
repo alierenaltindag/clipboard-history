@@ -66,7 +66,12 @@ impl IpcClient {
         }
 
         // Verify socket is actively listening, not just a stale file on disk
-        match timeout(Duration::from_millis(250), UnixStream::connect(&socket_path)).await {
+        match timeout(
+            Duration::from_millis(250),
+            UnixStream::connect(&socket_path),
+        )
+        .await
+        {
             Ok(Ok(_stream)) => Ok(Self { socket_path }),
             Ok(Err(e)) => Err(CoreError::Ipc(format!(
                 "Cannot connect to socket {}: {}",

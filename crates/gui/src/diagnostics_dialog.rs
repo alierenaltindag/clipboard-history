@@ -167,15 +167,9 @@ fn populate_diagnostics_ui(
     disp_row.set_title("Wayland / X11 Session");
     disp_row.set_subtitle(&format!(
         "WAYLAND_DISPLAY={:?}, DISPLAY={:?}, TYPE={:?}",
-        diag.wayland_display
-            .as_deref()
-            .unwrap_or("<none>"),
-        diag.x11_display
-            .as_deref()
-            .unwrap_or("<none>"),
-        diag.session_type
-            .as_deref()
-            .unwrap_or("<none>")
+        diag.wayland_display.as_deref().unwrap_or("<none>"),
+        diag.x11_display.as_deref().unwrap_or("<none>"),
+        diag.session_type.as_deref().unwrap_or("<none>")
     ));
     env_group.add(&disp_row);
     container.append(&env_group);

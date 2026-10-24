@@ -340,20 +340,37 @@ impl DaemonServer {
                                 let sync_cfg = config.read().await.sync.clone();
                                 if sync_cfg.enabled {
                                     let active_peers = peer_tracker.get_all_peers().await;
-                                    let (blob_payload, thumbnail_payload) = if let Some(ref mut entry) = entry_opt {
-                                        entry.is_pinned = true;
-                                        crate::sync_service::decrypt_entry_for_transit(entry, &repo, &crypto);
-                                        if entry.entry_type == clipboard_history_core::domain::EntryType::Image {
-                                            let enc = config.read().await.security.encryption_enabled;
-                                            let b = crate::sync_service::read_image_blob(entry, &blob_store, &crypto, enc);
-                                            let t = crate::sync_service::read_thumbnail_blob(entry, b.as_deref(), &blob_store, &crypto, enc);
-                                            (b, t)
+                                    let (blob_payload, thumbnail_payload) =
+                                        if let Some(ref mut entry) = entry_opt {
+                                            entry.is_pinned = true;
+                                            crate::sync_service::decrypt_entry_for_transit(
+                                                entry, &repo, &crypto,
+                                            );
+                                            if entry.entry_type
+                                                == clipboard_history_core::domain::EntryType::Image
+                                            {
+                                                let enc =
+                                                    config.read().await.security.encryption_enabled;
+                                                let b = crate::sync_service::read_image_blob(
+                                                    entry,
+                                                    &blob_store,
+                                                    &crypto,
+                                                    enc,
+                                                );
+                                                let t = crate::sync_service::read_thumbnail_blob(
+                                                    entry,
+                                                    b.as_deref(),
+                                                    &blob_store,
+                                                    &crypto,
+                                                    enc,
+                                                );
+                                                (b, t)
+                                            } else {
+                                                (None, None)
+                                            }
                                         } else {
                                             (None, None)
-                                        }
-                                    } else {
-                                        (None, None)
-                                    };
+                                        };
                                     let msg = clipboard_history_core::sync::SyncMessage::PinSync {
                                         origin_device: sync_cfg.device_name.clone(),
                                         content_hash,
@@ -378,7 +395,11 @@ impl DaemonServer {
                 IpcRequest::UnpinEntry { id } => {
                     let hash_opt = match repo.get_by_id(&id) {
                         Ok(e) => Some(e.content_hash),
-                        Err(_) => repo.get_snippet(&id).ok().flatten().map(|s| format!("snippet_{}", s.label)),
+                        Err(_) => repo
+                            .get_snippet(&id)
+                            .ok()
+                            .flatten()
+                            .map(|s| format!("snippet_{}", s.label)),
                     };
                     match repo.set_pinned(&id, false) {
                         Ok(_) => {
@@ -633,7 +654,9 @@ impl DaemonServer {
                     }
 
                     tokio::spawn(async move {
-                        use clipboard_history_core::sync::{read_sync_message, send_sync_message, SyncMessage};
+                        use clipboard_history_core::sync::{
+                            read_sync_message, send_sync_message, SyncMessage,
+                        };
                         use std::time::Duration;
 
                         for target_addr in candidate_addrs {
@@ -647,7 +670,10 @@ impl DaemonServer {
                                 let unpair_req = SyncMessage::UnpairRequest {
                                     origin_device: my_dev.clone(),
                                 };
-                                if send_sync_message(&mut writer, "CH_PAIRING_V1", &unpair_req).await.is_ok() {
+                                if send_sync_message(&mut writer, "CH_PAIRING_V1", &unpair_req)
+                                    .await
+                                    .is_ok()
+                                {
                                     let _ = tokio::time::timeout(
                                         Duration::from_secs(3),
                                         read_sync_message(&mut reader, "CH_PAIRING_V1"),
@@ -1001,22 +1027,40 @@ impl DaemonServer {
                                 let active_peers = peer_tracker.get_all_peers().await;
                                 let enc = config.read().await.security.encryption_enabled;
                                 for (content_hash, entry_opt) in items {
-                                    let (blob_payload, thumbnail_payload) = if let Some(ref entry) = entry_opt {
-                                        if entry.entry_type == clipboard_history_core::domain::EntryType::Image {
-                                            let b = crate::sync_service::read_image_blob(entry, &blob_store, &crypto, enc);
-                                            let t = crate::sync_service::read_thumbnail_blob(entry, b.as_deref(), &blob_store, &crypto, enc);
-                                            (b, t)
+                                    let (blob_payload, thumbnail_payload) =
+                                        if let Some(ref entry) = entry_opt {
+                                            if entry.entry_type
+                                                == clipboard_history_core::domain::EntryType::Image
+                                            {
+                                                let b = crate::sync_service::read_image_blob(
+                                                    entry,
+                                                    &blob_store,
+                                                    &crypto,
+                                                    enc,
+                                                );
+                                                let t = crate::sync_service::read_thumbnail_blob(
+                                                    entry,
+                                                    b.as_deref(),
+                                                    &blob_store,
+                                                    &crypto,
+                                                    enc,
+                                                );
+                                                (b, t)
+                                            } else {
+                                                (None, None)
+                                            }
                                         } else {
                                             (None, None)
-                                        }
-                                    } else {
-                                        (None, None)
-                                    };
+                                        };
                                     let msg = clipboard_history_core::sync::SyncMessage::PinSync {
                                         origin_device: sync_cfg.device_name.clone(),
                                         content_hash,
                                         is_pinned: pinned,
-                                        entry: if pinned { entry_opt.map(Box::new) } else { None },
+                                        entry: if pinned {
+                                            entry_opt.map(Box::new)
+                                        } else {
+                                            None
+                                        },
                                         blob_payload,
                                         thumbnail_payload,
                                     };
@@ -1031,7 +1075,7 @@ impl DaemonServer {
                         }
                         Err(e) => IpcResponse::Error(e.to_string()),
                     }
-                },
+                }
 
                 IpcRequest::ComputeDiff { id_a, id_b } => {
                     let text_a = match repo.get_by_id(&id_a) {
@@ -1066,7 +1110,8 @@ impl DaemonServer {
 
                 IpcRequest::CheckForUpdates => {
                     let current_version = env!("CARGO_PKG_VERSION");
-                    match clipboard_history_core::updater::check_for_updates(current_version).await {
+                    match clipboard_history_core::updater::check_for_updates(current_version).await
+                    {
                         Ok(Some(release)) => IpcResponse::UpdateCheckResult {
                             update_available: true,
                             current_version: current_version.to_string(),

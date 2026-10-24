@@ -55,8 +55,10 @@ impl PairingDialog {
         title_label.set_xalign(0.0);
         text_vbox.append(&title_label);
 
-        let subtitle_label =
-            Label::new(Some(&format!("Incoming connection from {}", req.peer_address)));
+        let subtitle_label = Label::new(Some(&format!(
+            "Incoming connection from {}",
+            req.peer_address
+        )));
         subtitle_label.add_css_class("caption");
         subtitle_label.add_css_class("dim-label");
         subtitle_label.set_xalign(0.0);

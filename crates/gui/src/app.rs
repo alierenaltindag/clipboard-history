@@ -38,8 +38,9 @@ impl ClipboardApp {
             // Periodically check for incoming pairing requests and display actionable prompt modal
             let active_dialogs: Rc<RefCell<std::collections::HashSet<String>>> =
                 Rc::new(RefCell::new(std::collections::HashSet::new()));
-            let active_dialog_windows: Rc<RefCell<std::collections::HashMap<String, gtk4::Window>>> =
-                Rc::new(RefCell::new(std::collections::HashMap::new()));
+            let active_dialog_windows: Rc<
+                RefCell<std::collections::HashMap<String, gtk4::Window>>,
+            > = Rc::new(RefCell::new(std::collections::HashMap::new()));
             let win_ref_dialog = Rc::clone(&win_startup);
 
             glib::timeout_add_local(std::time::Duration::from_millis(1500), move || {
@@ -64,7 +65,9 @@ impl ClipboardApp {
                                     true
                                 }
                             });
-                            active_set.borrow_mut().retain(|id| current_ids.contains(id));
+                            active_set
+                                .borrow_mut()
+                                .retain(|id| current_ids.contains(id));
 
                             for req in requests {
                                 if !active_set.borrow().contains(&req.request_id) {
@@ -74,9 +77,7 @@ impl ClipboardApp {
                                     let win_guard = win_r.borrow();
                                     let parent = win_guard.as_ref().map(|w| &w.window);
                                     let dlg = crate::pairing_dialog::PairingDialog::show(
-                                        parent,
-                                        req,
-                                        active_rm,
+                                        parent, req, active_rm,
                                     );
                                     drop(win_guard);
                                     active_wins.borrow_mut().insert(req_id, dlg);

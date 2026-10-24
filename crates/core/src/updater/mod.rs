@@ -208,11 +208,7 @@ pub async fn download_and_verify(release: &ReleaseInfo) -> Result<PathBuf> {
         if let Ok(chk_resp) = client.get(checksum_url).send().await {
             if chk_resp.status().is_success() {
                 if let Ok(chk_text) = chk_resp.text().await {
-                    parse_checksums_and_verify(
-                        &release.tarball_name,
-                        &tar_bytes,
-                        &chk_text,
-                    )?;
+                    parse_checksums_and_verify(&release.tarball_name, &tar_bytes, &chk_text)?;
                 }
             }
         }
@@ -262,16 +258,22 @@ pub fn install_update_from_tarball(tarball_path: &Path) -> Result<Vec<String>> {
         .tempdir()
         .map_err(|e| CoreError::Update(format!("Failed to create temp extract dir: {}", e)))?;
 
-    for entry_result in archive.entries().map_err(|e| CoreError::Update(e.to_string()))? {
+    for entry_result in archive
+        .entries()
+        .map_err(|e| CoreError::Update(e.to_string()))?
+    {
         let mut entry = entry_result.map_err(|e| CoreError::Update(e.to_string()))?;
-        let entry_path = entry.path().map_err(|e| CoreError::Update(e.to_string()))?.to_path_buf();
+        let entry_path = entry
+            .path()
+            .map_err(|e| CoreError::Update(e.to_string()))?
+            .to_path_buf();
 
         if let Some(file_name) = entry_path.file_name().and_then(|f| f.to_str()) {
             if target_binaries.contains(&file_name) {
                 let temp_dest = temp_extract_dir.path().join(file_name);
-                entry
-                    .unpack(&temp_dest)
-                    .map_err(|e| CoreError::Update(format!("Failed to unpack {}: {}", file_name, e)))?;
+                entry.unpack(&temp_dest).map_err(|e| {
+                    CoreError::Update(format!("Failed to unpack {}: {}", file_name, e))
+                })?;
                 // Ensure executable permission
                 let _ = fs::set_permissions(&temp_dest, Permissions::from_mode(0o755));
                 extracted_bins.push((file_name.to_string(), temp_dest));
@@ -331,7 +333,10 @@ pub fn install_update_from_tarball(tarball_path: &Path) -> Result<Vec<String>> {
 
     // Handle rollback if installation failed mid-way
     if let Err(err) = install_result {
-        error!("Update installation failed: {}. Initiating rollback...", err);
+        error!(
+            "Update installation failed: {}. Initiating rollback...",
+            err
+        );
         for (dest, backup) in backups {
             if backup.exists() {
                 let _ = fs::rename(&backup, &dest);
@@ -405,11 +410,8 @@ mod tests {
             hash
         );
 
-        let res = parse_checksums_and_verify(
-            "clipboard-history-1.2.3.tar.gz",
-            content,
-            &checksums_file,
-        );
+        let res =
+            parse_checksums_and_verify("clipboard-history-1.2.3.tar.gz", content, &checksums_file);
         assert!(res.is_ok());
 
         // Tampered content test

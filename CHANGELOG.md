@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.6] - 2026-10-24
+
+### Performance
+- **Parallel Compilation & Build Acceleration**:
+  - Replaced single-threaded fat LTO (`codegen-units = 1`) with multi-threaded ThinLTO (`lto = "thin"`, `codegen-units = 16`), drastically cutting release build times across all processor cores.
+  - Added native multi-threaded `mold` linker auto-detection and execution in `scripts/install.sh`.
+  - Added automatic installation of `mold` and `clang` across Arch/CachyOS, Debian/Ubuntu, Fedora, and openSUSE package managers in `scripts/install.sh`.
+
+### Fixed
+- **Systemd Service Self-Healing & Rate-Limit Recovery**:
+  - Added automatic `systemctl --user reset-failed` execution prior to service restart in `smart_start_daemon` and `scripts/install.sh`, automatically clearing `start-limit-hit` state after rapid restart loops.
+- **Code Formatting**:
+  - Formatted codebase conforming to Rust standard style guidelines (`cargo fmt`).
+
 ## [1.2.5] - 2026-10-19
 
 ### Added

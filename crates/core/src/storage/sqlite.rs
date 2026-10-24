@@ -643,9 +643,8 @@ impl SqliteRepository {
                 tx.prepare_cached("DELETE FROM entries WHERE id = ?1 OR id LIKE ?2 ESCAPE '\\'")?;
             let mut key_stmt = tx.prepare_cached("DELETE FROM entry_keys WHERE entry_id = ?1")?;
             let mut exact_snip_stmt = tx.prepare_cached("DELETE FROM snippets WHERE id = ?1")?;
-            let mut prefix_snip_stmt = tx.prepare_cached(
-                "DELETE FROM snippets WHERE id = ?1 OR id LIKE ?2 ESCAPE '\\'",
-            )?;
+            let mut prefix_snip_stmt =
+                tx.prepare_cached("DELETE FROM snippets WHERE id = ?1 OR id LIKE ?2 ESCAPE '\\'")?;
 
             for id in ids {
                 let trimmed = id.trim();
@@ -699,13 +698,15 @@ impl SqliteRepository {
         let flag = if pinned { 1 } else { 0 };
         let now_str = Utc::now().to_rfc3339();
         {
-            let mut exact_stmt =
-                tx.prepare_cached("UPDATE entries SET is_pinned = ?1, last_used_at = ?2 WHERE id = ?3")?;
+            let mut exact_stmt = tx.prepare_cached(
+                "UPDATE entries SET is_pinned = ?1, last_used_at = ?2 WHERE id = ?3",
+            )?;
             let mut prefix_stmt = tx.prepare_cached(
                 "UPDATE entries SET is_pinned = ?1, last_used_at = ?2 WHERE id = ?3 OR id LIKE ?4 ESCAPE '\\'",
             )?;
-            let mut exact_snip_stmt =
-                tx.prepare_cached("UPDATE snippets SET is_pinned = ?1, last_used_at = ?2 WHERE id = ?3")?;
+            let mut exact_snip_stmt = tx.prepare_cached(
+                "UPDATE snippets SET is_pinned = ?1, last_used_at = ?2 WHERE id = ?3",
+            )?;
             let mut prefix_snip_stmt = tx.prepare_cached(
                 "UPDATE snippets SET is_pinned = ?1, last_used_at = ?2 WHERE id = ?3 OR id LIKE ?4 ESCAPE '\\'",
             )?;

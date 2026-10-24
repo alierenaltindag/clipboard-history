@@ -531,7 +531,8 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                         success: true,
                                         message: "Unpaired successfully".to_string(),
                                     };
-                                    let _ = send_sync_message(&mut writer, "CH_PAIRING_V1", &resp).await;
+                                    let _ = send_sync_message(&mut writer, "CH_PAIRING_V1", &resp)
+                                        .await;
                                     break;
                                 }
 
@@ -695,8 +696,11 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                         let res = sync_repo.set_pinned_by_hash(&content_hash, true);
                                         if res.is_err() {
                                             if let Some(entry_box) = entry {
-                                                let enc_enabled =
-                                                    sync_cfg_arc.read().await.security.encryption_enabled;
+                                                let enc_enabled = sync_cfg_arc
+                                                    .read()
+                                                    .await
+                                                    .security
+                                                    .encryption_enabled;
                                                 let _ = sync_service::handle_incoming_entry_sync(
                                                     *entry_box,
                                                     blob_payload,
@@ -709,7 +713,8 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                                     &echo_tracker_rx,
                                                 )
                                                 .await;
-                                                let _ = sync_repo.set_pinned_by_hash(&content_hash, true);
+                                                let _ = sync_repo
+                                                    .set_pinned_by_hash(&content_hash, true);
                                             }
                                         }
                                     } else {

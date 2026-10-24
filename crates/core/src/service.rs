@@ -84,8 +84,12 @@ pub fn find_systemd_unit_file() -> Option<PathBuf> {
             .ok()
             .map(|h| PathBuf::from(h).join(".config/systemd/user/clipboard-history.service")),
         // Arch / Fedora / Debian standard distribution package locations
-        Some(PathBuf::from("/usr/lib/systemd/user/clipboard-history.service")),
-        Some(PathBuf::from("/usr/local/lib/systemd/user/clipboard-history.service")),
+        Some(PathBuf::from(
+            "/usr/lib/systemd/user/clipboard-history.service",
+        )),
+        Some(PathBuf::from(
+            "/usr/local/lib/systemd/user/clipboard-history.service",
+        )),
         Some(PathBuf::from("/etc/systemd/user/clipboard-history.service")),
     ];
 
@@ -120,7 +124,8 @@ pub fn ensure_systemd_unit_installed() -> Result<bool, String> {
         .map_err(|e| format!("Failed to create {}: {}", target_dir.display(), e))?;
 
     let target_file = target_dir.join("clipboard-history.service");
-    let daemon_bin = find_daemon_binary().unwrap_or_else(|| PathBuf::from("clipboard-history-daemon"));
+    let daemon_bin =
+        find_daemon_binary().unwrap_or_else(|| PathBuf::from("clipboard-history-daemon"));
     let exec_start = daemon_bin.to_string_lossy();
 
     let unit_content = format!(
@@ -159,7 +164,10 @@ WantedBy=default.target
 
     if let Ok(s) = reload_status {
         if s.success() {
-            info!("Successfully installed systemd user unit at {}", target_file.display());
+            info!(
+                "Successfully installed systemd user unit at {}",
+                target_file.display()
+            );
             return Ok(true);
         }
     }
@@ -174,7 +182,12 @@ pub async fn cleanup_stale_socket(socket_path: &Path) -> bool {
     }
 
     // Try a quick connection test
-    match tokio::time::timeout(Duration::from_millis(150), tokio::net::UnixStream::connect(socket_path)).await {
+    match tokio::time::timeout(
+        Duration::from_millis(150),
+        tokio::net::UnixStream::connect(socket_path),
+    )
+    .await
+    {
         Ok(Ok(_)) => {
             // Socket is active and listening
             false
@@ -228,7 +241,11 @@ impl DaemonDiagnostic {
         ));
         out.push_str(&format!(
             "Systemd:       {} (Unit: {})\n",
-            if self.systemd_available { "Available" } else { "Unavailable" },
+            if self.systemd_available {
+                "Available"
+            } else {
+                "Unavailable"
+            },
             self.systemd_unit_path
                 .as_ref()
                 .map(|p| p.display().to_string())
@@ -236,7 +253,11 @@ impl DaemonDiagnostic {
         ));
         out.push_str(&format!(
             "Systemd State: {} ({})\n",
-            if self.is_active_in_systemd { "Active (running)" } else { "Inactive/Failed" },
+            if self.is_active_in_systemd {
+                "Active (running)"
+            } else {
+                "Inactive/Failed"
+            },
             self.systemd_unit_status
         ));
         out.push_str(&format!(
@@ -265,10 +286,13 @@ pub async fn collect_diagnostics() -> DaemonDiagnostic {
     let socket_path = AppConfig::socket_path();
     let socket_exists = socket_path.exists();
     let socket_responsive = if socket_exists {
-        tokio::time::timeout(Duration::from_millis(150), tokio::net::UnixStream::connect(&socket_path))
-            .await
-            .map(|r| r.is_ok())
-            .unwrap_or(false)
+        tokio::time::timeout(
+            Duration::from_millis(150),
+            tokio::net::UnixStream::connect(&socket_path),
+        )
+        .await
+        .map(|r| r.is_ok())
+        .unwrap_or(false)
     } else {
         false
     };
@@ -297,7 +321,14 @@ pub async fn collect_diagnostics() -> DaemonDiagnostic {
     let mut recent_logs = Vec::new();
     if systemd_available {
         if let Ok(output) = Command::new("journalctl")
-            .args(["--user", "-u", "clipboard-history.service", "-n", "20", "--no-pager"])
+            .args([
+                "--user",
+                "-u",
+                "clipboard-history.service",
+                "-n",
+                "20",
+                "--no-pager",
+            ])
             .output()
         {
             let text = String::from_utf8_lossy(&output.stdout);

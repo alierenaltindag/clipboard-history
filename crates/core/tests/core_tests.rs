@@ -1586,14 +1586,10 @@ fn test_mutual_unpair_state_consistency() {
     let clean_ip_b = "192.168.1.20";
     let origin_dev_b = "ubuntu-desktop";
     dev_b_sync.trusted_peers.retain(|p| {
-        p != clean_ip_b
-            && !p.starts_with(&format!("{}:", clean_ip_b))
-            && p != origin_dev_b
+        p != clean_ip_b && !p.starts_with(&format!("{}:", clean_ip_b)) && p != origin_dev_b
     });
     dev_b_sync.peer_addresses.retain(|p| {
-        p != clean_ip_b
-            && !p.starts_with(&format!("{}:", clean_ip_b))
-            && p != origin_dev_b
+        p != clean_ip_b && !p.starts_with(&format!("{}:", clean_ip_b)) && p != origin_dev_b
     });
 
     // After unpairing: strict symmetry across both peers
@@ -2538,9 +2534,14 @@ fn test_pin_persistence_and_sync_override_prevention() {
     remote_sync_entry.id = uuid::Uuid::new_v4().to_string();
     remote_sync_entry.is_pinned = true;
 
-    let updated = repo.insert_or_update(&remote_sync_entry).expect("sync entry");
+    let updated = repo
+        .insert_or_update(&remote_sync_entry)
+        .expect("sync entry");
     // Local unpin MUST be preserved and not overwritten!
-    assert!(!updated.is_pinned, "Local unpinned state must not be overwritten by incoming sync");
+    assert!(
+        !updated.is_pinned,
+        "Local unpinned state must not be overwritten by incoming sync"
+    );
     let fetched = repo.get_by_id(&saved.id).expect("get entry");
     assert!(!fetched.is_pinned);
 
@@ -2550,7 +2551,10 @@ fn test_pin_persistence_and_sync_override_prevention() {
         .expect("batch sync");
     assert_eq!(batch_res.len(), 1);
     let after_batch = repo.get_by_id(&saved.id).expect("get entry");
-    assert!(!after_batch.is_pinned, "Batch sync must not overwrite unpinned entry");
+    assert!(
+        !after_batch.is_pinned,
+        "Batch sync must not overwrite unpinned entry"
+    );
 }
 
 #[tokio::test]
@@ -2560,12 +2564,7 @@ async fn test_pin_sync_message_transmission_and_handling() {
     let repo = SqliteRepository::open_in_memory().expect("open in-memory sqlite");
     let text = "Cross-device synced pin text".to_string();
     let hash = BlobStore::compute_hash(text.as_bytes());
-    let entry = ClipboardEntry::new_text(
-        text,
-        hash.clone(),
-        vec!["text/plain".to_string()],
-        None,
-    );
+    let entry = ClipboardEntry::new_text(text, hash.clone(), vec!["text/plain".to_string()], None);
     let saved = repo.insert_or_update(&entry).expect("insert");
     assert!(!saved.is_pinned);
 
@@ -2612,10 +2611,12 @@ async fn test_pin_sync_message_transmission_and_handling() {
     receiver.await.unwrap();
 
     // 2. Test set_pinned_by_hash to pin and unpin
-    repo.set_pinned_by_hash(&hash, true).expect("set_pinned_by_hash true");
+    repo.set_pinned_by_hash(&hash, true)
+        .expect("set_pinned_by_hash true");
     assert!(repo.get_by_id(&saved.id).unwrap().is_pinned);
 
-    repo.set_pinned_by_hash(&hash, false).expect("set_pinned_by_hash false");
+    repo.set_pinned_by_hash(&hash, false)
+        .expect("set_pinned_by_hash false");
     assert!(!repo.get_by_id(&saved.id).unwrap().is_pinned);
 }
 
@@ -2671,7 +2672,10 @@ async fn test_network_sync_pin_new_item_distribution() {
     }
 
     // Device B should now have the entry, and it must be pinned!
-    let entry_b = repo_b.get_by_hash(&hash).unwrap().expect("entry must exist on B");
+    let entry_b = repo_b
+        .get_by_hash(&hash)
+        .unwrap()
+        .expect("entry must exist on B");
     assert!(entry_b.is_pinned);
     assert_eq!(entry_b.preview, text);
 
@@ -2697,7 +2701,10 @@ async fn test_network_sync_pin_new_item_distribution() {
     }
 
     // Device B should now have it unpinned!
-    let entry_b_unpinned = repo_b.get_by_hash(&hash).unwrap().expect("entry must exist on B");
+    let entry_b_unpinned = repo_b
+        .get_by_hash(&hash)
+        .unwrap()
+        .expect("entry must exist on B");
     assert!(!entry_b_unpinned.is_pinned);
 }
 
@@ -2722,7 +2729,10 @@ fn test_snippet_pin_persistence_and_deletion() {
     // 2. Unpin the snippet via repo.set_pinned(&id, false)
     repo.set_pinned(&id, false).expect("unpin snippet");
     let after_unpin = repo.get_snippet(&id).unwrap().expect("snippet exists");
-    assert!(!after_unpin.is_pinned, "Snippet must remain unpinned in database");
+    assert!(
+        !after_unpin.is_pinned,
+        "Snippet must remain unpinned in database"
+    );
 
     // 3. Re-pin the snippet
     repo.set_pinned(&id, true).expect("re-pin snippet");
@@ -2734,4 +2744,3 @@ fn test_snippet_pin_persistence_and_deletion() {
     let after_delete = repo.get_snippet(&id).unwrap();
     assert!(after_delete.is_none(), "Snippet must be deleted");
 }
-

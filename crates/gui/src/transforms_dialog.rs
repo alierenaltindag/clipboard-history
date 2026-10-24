@@ -880,10 +880,13 @@ pub fn detect_ocr_install_command() -> (&'static str, &'static str) {
 }
 
 #[cfg(feature = "gtk")]
-fn create_ocr_install_script(distro_name: &str, install_cmd: &str) -> std::io::Result<std::path::PathBuf> {
+fn create_ocr_install_script(
+    distro_name: &str,
+    install_cmd: &str,
+) -> std::io::Result<std::path::PathBuf> {
     let script_path = std::env::temp_dir().join("clipboard-history-install-ocr.sh");
     let script_content = format!(
-r#"#!/usr/bin/env bash
+        r#"#!/usr/bin/env bash
 set -e
 
 echo "================================================================="
@@ -1032,43 +1035,126 @@ fn launch_ocr_terminal_install() -> bool {
     if let Ok(user_term) = std::env::var("TERMINAL") {
         let trimmed = user_term.trim();
         if !trimmed.is_empty() {
-            candidate_commands.push((trimmed.to_string(), vec!["-e".to_string(), "bash".to_string(), script_str.clone()]));
-            candidate_commands.push((trimmed.to_string(), vec!["--".to_string(), "bash".to_string(), script_str.clone()]));
-            candidate_commands.push((trimmed.to_string(), vec!["bash".to_string(), script_str.clone()]));
+            candidate_commands.push((
+                trimmed.to_string(),
+                vec!["-e".to_string(), "bash".to_string(), script_str.clone()],
+            ));
+            candidate_commands.push((
+                trimmed.to_string(),
+                vec!["--".to_string(), "bash".to_string(), script_str.clone()],
+            ));
+            candidate_commands.push((
+                trimmed.to_string(),
+                vec!["bash".to_string(), script_str.clone()],
+            ));
         }
     }
 
     // 2. Standard freedesktop terminal launcher (supported on Arch, CachyOS, Fedora, etc.)
-    candidate_commands.push(("xdg-terminal-exec".to_string(), vec!["--".to_string(), "bash".to_string(), script_str.clone()]));
-    candidate_commands.push(("xdg-terminal-exec".to_string(), vec!["bash".to_string(), script_str.clone()]));
+    candidate_commands.push((
+        "xdg-terminal-exec".to_string(),
+        vec!["--".to_string(), "bash".to_string(), script_str.clone()],
+    ));
+    candidate_commands.push((
+        "xdg-terminal-exec".to_string(),
+        vec!["bash".to_string(), script_str.clone()],
+    ));
 
     // 3. Modern & Popular Linux Terminals (including CachyOS favorites)
-    candidate_commands.push(("ghostty".to_string(), vec!["-e".to_string(), "bash".to_string(), script_str.clone()]));
-    candidate_commands.push(("alacritty".to_string(), vec!["-e".to_string(), "bash".to_string(), script_str.clone()]));
-    candidate_commands.push(("kitty".to_string(), vec!["--".to_string(), "bash".to_string(), script_str.clone()]));
-    candidate_commands.push(("wezterm".to_string(), vec!["start".to_string(), "--".to_string(), "bash".to_string(), script_str.clone()]));
-    candidate_commands.push(("ptyxis".to_string(), vec!["--".to_string(), "bash".to_string(), script_str.clone()]));
-    candidate_commands.push(("kgx".to_string(), vec!["-e".to_string(), format!("bash {}", script_str)]));
-    candidate_commands.push(("gnome-terminal".to_string(), vec!["--".to_string(), "bash".to_string(), script_str.clone()]));
-    candidate_commands.push(("konsole".to_string(), vec!["-e".to_string(), "bash".to_string(), script_str.clone()]));
-    candidate_commands.push(("xfce4-terminal".to_string(), vec!["-x".to_string(), "bash".to_string(), script_str.clone()]));
-    candidate_commands.push(("foot".to_string(), vec!["bash".to_string(), script_str.clone()]));
-    candidate_commands.push(("footclient".to_string(), vec!["bash".to_string(), script_str.clone()]));
-    candidate_commands.push(("terminator".to_string(), vec!["-x".to_string(), "bash".to_string(), script_str.clone()]));
-    candidate_commands.push(("tilix".to_string(), vec!["-e".to_string(), "bash".to_string(), script_str.clone()]));
-    candidate_commands.push(("qterminal".to_string(), vec!["-e".to_string(), "bash".to_string(), script_str.clone()]));
-    candidate_commands.push(("mate-terminal".to_string(), vec!["-e".to_string(), format!("bash {}", script_str)]));
-    candidate_commands.push(("lxterminal".to_string(), vec!["-e".to_string(), format!("bash {}", script_str)]));
-    candidate_commands.push(("x-terminal-emulator".to_string(), vec!["-e".to_string(), "bash".to_string(), script_str.clone()]));
-    candidate_commands.push(("xterm".to_string(), vec!["-e".to_string(), "bash".to_string(), script_str.clone()]));
-    candidate_commands.push(("urxvt".to_string(), vec!["-e".to_string(), "bash".to_string(), script_str.clone()]));
-    candidate_commands.push(("rxvt".to_string(), vec!["-e".to_string(), "bash".to_string(), script_str.clone()]));
+    candidate_commands.push((
+        "ghostty".to_string(),
+        vec!["-e".to_string(), "bash".to_string(), script_str.clone()],
+    ));
+    candidate_commands.push((
+        "alacritty".to_string(),
+        vec!["-e".to_string(), "bash".to_string(), script_str.clone()],
+    ));
+    candidate_commands.push((
+        "kitty".to_string(),
+        vec!["--".to_string(), "bash".to_string(), script_str.clone()],
+    ));
+    candidate_commands.push((
+        "wezterm".to_string(),
+        vec![
+            "start".to_string(),
+            "--".to_string(),
+            "bash".to_string(),
+            script_str.clone(),
+        ],
+    ));
+    candidate_commands.push((
+        "ptyxis".to_string(),
+        vec!["--".to_string(), "bash".to_string(), script_str.clone()],
+    ));
+    candidate_commands.push((
+        "kgx".to_string(),
+        vec!["-e".to_string(), format!("bash {}", script_str)],
+    ));
+    candidate_commands.push((
+        "gnome-terminal".to_string(),
+        vec!["--".to_string(), "bash".to_string(), script_str.clone()],
+    ));
+    candidate_commands.push((
+        "konsole".to_string(),
+        vec!["-e".to_string(), "bash".to_string(), script_str.clone()],
+    ));
+    candidate_commands.push((
+        "xfce4-terminal".to_string(),
+        vec!["-x".to_string(), "bash".to_string(), script_str.clone()],
+    ));
+    candidate_commands.push((
+        "foot".to_string(),
+        vec!["bash".to_string(), script_str.clone()],
+    ));
+    candidate_commands.push((
+        "footclient".to_string(),
+        vec!["bash".to_string(), script_str.clone()],
+    ));
+    candidate_commands.push((
+        "terminator".to_string(),
+        vec!["-x".to_string(), "bash".to_string(), script_str.clone()],
+    ));
+    candidate_commands.push((
+        "tilix".to_string(),
+        vec!["-e".to_string(), "bash".to_string(), script_str.clone()],
+    ));
+    candidate_commands.push((
+        "qterminal".to_string(),
+        vec!["-e".to_string(), "bash".to_string(), script_str.clone()],
+    ));
+    candidate_commands.push((
+        "mate-terminal".to_string(),
+        vec!["-e".to_string(), format!("bash {}", script_str)],
+    ));
+    candidate_commands.push((
+        "lxterminal".to_string(),
+        vec!["-e".to_string(), format!("bash {}", script_str)],
+    ));
+    candidate_commands.push((
+        "x-terminal-emulator".to_string(),
+        vec!["-e".to_string(), "bash".to_string(), script_str.clone()],
+    ));
+    candidate_commands.push((
+        "xterm".to_string(),
+        vec!["-e".to_string(), "bash".to_string(), script_str.clone()],
+    ));
+    candidate_commands.push((
+        "urxvt".to_string(),
+        vec!["-e".to_string(), "bash".to_string(), script_str.clone()],
+    ));
+    candidate_commands.push((
+        "rxvt".to_string(),
+        vec!["-e".to_string(), "bash".to_string(), script_str.clone()],
+    ));
 
     for (bin, args) in candidate_commands {
         if which::which(&bin).is_ok() {
             match std::process::Command::new(&bin).args(&args).spawn() {
                 Ok(_) => {
-                    tracing::info!("Successfully launched OCR install script using terminal: {}", bin);
+                    tracing::info!(
+                        "Successfully launched OCR install script using terminal: {}",
+                        bin
+                    );
                     return true;
                 }
                 Err(e) => {

@@ -80,17 +80,20 @@ install_dependencies() {
     if command -v apt-get >/dev/null 2>&1; then
         info "Debian/Ubuntu detected. Installing dependencies via apt..."
         sudo apt-get update
-        sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libx11-dev libxtst-dev wl-clipboard xdotool tesseract-ocr pkg-config build-essential curl git
+        sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libx11-dev libxtst-dev wl-clipboard xdotool tesseract-ocr pkg-config build-essential curl git mold clang 2>/dev/null || \
+            sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libx11-dev libxtst-dev wl-clipboard xdotool tesseract-ocr pkg-config build-essential curl git
     elif command -v dnf >/dev/null 2>&1; then
         info "Fedora/RHEL detected. Installing dependencies via dnf..."
-        sudo dnf install -y gtk4-devel libadwaita-devel libX11-devel libXtst-devel wl-clipboard xdotool tesseract pkgconf gcc curl git
+        sudo dnf install -y gtk4-devel libadwaita-devel libX11-devel libXtst-devel wl-clipboard xdotool tesseract pkgconf gcc curl git mold clang 2>/dev/null || \
+            sudo dnf install -y gtk4-devel libadwaita-devel libX11-devel libXtst-devel wl-clipboard xdotool tesseract pkgconf gcc curl git
     elif command -v pacman >/dev/null 2>&1; then
-        info "Arch Linux detected. Installing dependencies via pacman..."
+        info "Arch Linux / CachyOS detected. Installing dependencies via pacman..."
         sudo pacman -S --needed --noconfirm gtk4 libadwaita libx11 libxtst wl-clipboard xdotool tesseract pkgconf base-devel curl git mold clang 2>/dev/null || \
             sudo pacman -S --needed --noconfirm gtk4 libadwaita libx11 libxtst wl-clipboard xdotool tesseract pkgconf base-devel curl git
     elif command -v zypper >/dev/null 2>&1; then
         info "openSUSE detected. Installing dependencies via zypper..."
-        sudo zypper install -y gtk4-devel libadwaita-devel libX11-devel libXtst-devel wl-clipboard xdotool tesseract pkg-config gcc curl git
+        sudo zypper install -y gtk4-devel libadwaita-devel libX11-devel libXtst-devel wl-clipboard xdotool tesseract pkg-config gcc curl git mold clang 2>/dev/null || \
+            sudo zypper install -y gtk4-devel libadwaita-devel libX11-devel libXtst-devel wl-clipboard xdotool tesseract pkg-config gcc curl git
     else
         warn "Could not identify package manager automatically. Ensure GTK4, Libadwaita, and X11 dev headers are installed."
     fi
@@ -107,6 +110,20 @@ fi
 
 if [[ "${needs_deps}" -eq 1 ]]; then
     install_dependencies
+fi
+
+# Ensure high-speed linker (mold & clang) is installed for fast compilation
+if ! command -v mold >/dev/null 2>&1; then
+    info "Installing ultra-fast linker (mold & clang) to accelerate build linking..."
+    if command -v pacman >/dev/null 2>&1; then
+        sudo pacman -S --needed --noconfirm mold clang 2>/dev/null || true
+    elif command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get install -y mold clang 2>/dev/null || true
+    elif command -v dnf >/dev/null 2>&1; then
+        sudo dnf install -y mold clang 2>/dev/null || true
+    elif command -v zypper >/dev/null 2>&1; then
+        sudo zypper install -y mold clang 2>/dev/null || true
+    fi
 fi
 
 # 3. Ensure Rust Toolchain is Available
