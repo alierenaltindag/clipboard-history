@@ -365,6 +365,11 @@ pub async fn smart_start_daemon() -> Result<IpcClient, String> {
             ])
             .status();
 
+        // Reset failed state in case service hit systemd rate-limit
+        let _ = Command::new("systemctl")
+            .args(["--user", "reset-failed", "clipboard-history.service"])
+            .status();
+
         // Enable for autostart on login and restart service
         let _ = Command::new("systemctl")
             .args(["--user", "enable", "clipboard-history.service"])

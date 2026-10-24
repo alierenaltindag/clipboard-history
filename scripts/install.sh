@@ -86,7 +86,8 @@ install_dependencies() {
         sudo dnf install -y gtk4-devel libadwaita-devel libX11-devel libXtst-devel wl-clipboard xdotool tesseract pkgconf gcc curl git
     elif command -v pacman >/dev/null 2>&1; then
         info "Arch Linux detected. Installing dependencies via pacman..."
-        sudo pacman -S --needed --noconfirm gtk4 libadwaita libx11 libxtst wl-clipboard xdotool tesseract pkgconf base-devel curl git
+        sudo pacman -S --needed --noconfirm gtk4 libadwaita libx11 libxtst wl-clipboard xdotool tesseract pkgconf base-devel curl git mold clang 2>/dev/null || \
+            sudo pacman -S --needed --noconfirm gtk4 libadwaita libx11 libxtst wl-clipboard xdotool tesseract pkgconf base-devel curl git
     elif command -v zypper >/dev/null 2>&1; then
         info "openSUSE detected. Installing dependencies via zypper..."
         sudo zypper install -y gtk4-devel libadwaita-devel libX11-devel libXtst-devel wl-clipboard xdotool tesseract pkg-config gcc curl git
@@ -120,9 +121,14 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 # 4. Build Release Binaries
-info "Building release binaries with Cargo (this may take a moment)..."
+info "Building release binaries with Cargo..."
 cd "${PROJECT_ROOT}"
-cargo build --release --workspace
+if command -v mold >/dev/null 2>&1; then
+    info "Detected ultra-fast linker 'mold'. Linking will be accelerated..."
+    mold -run cargo build --release --workspace
+else
+    cargo build --release --workspace
+fi
 
 # 5. Create Target Directories
 DATA_DIR="${HOME}/.local/share/clipboard-history"
@@ -199,6 +205,7 @@ if command -v systemctl >/dev/null 2>&1 && systemctl --user list-units >/dev/nul
         dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_RUNTIME_DIR 2>/dev/null || true
     fi
     systemctl --user daemon-reload
+    systemctl --user reset-failed clipboard-history.service 2>/dev/null || true
     systemctl --user enable clipboard-history.service 2>/dev/null || true
     systemctl --user restart clipboard-history.service 2>/dev/null || true
     success "Systemd user service enabled and started."
