@@ -54,13 +54,9 @@ fn find_binary_named(bin_name: &str) -> Option<PathBuf> {
     candidates.push(PathBuf::from("target/release").join(bin_name));
     candidates.push(PathBuf::from("target/debug").join(bin_name));
 
-    for candidate in candidates {
-        if is_executable_file(&candidate) {
-            return Some(candidate);
-        }
-    }
-
-    None
+    candidates
+        .into_iter()
+        .find(|candidate| is_executable_file(candidate))
 }
 
 fn is_executable_file(path: &Path) -> bool {
@@ -93,13 +89,10 @@ pub fn find_systemd_unit_file() -> Option<PathBuf> {
         Some(PathBuf::from("/etc/systemd/user/clipboard-history.service")),
     ];
 
-    for candidate in candidates.into_iter().flatten() {
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-
-    None
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|candidate| candidate.is_file())
 }
 
 /// Auto-installs or validates the systemd user service unit in `~/.config/systemd/user/`.
