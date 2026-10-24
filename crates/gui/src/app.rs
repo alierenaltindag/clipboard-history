@@ -70,6 +70,9 @@ impl ClipboardApp {
                                 .retain(|id| current_ids.contains(id));
 
                             for req in requests {
+                                if req.desktop_notification_active {
+                                    continue;
+                                }
                                 if !active_set.borrow().contains(&req.request_id) {
                                     active_set.borrow_mut().insert(req.request_id.clone());
                                     let req_id = req.request_id.clone();

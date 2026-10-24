@@ -939,18 +939,27 @@ impl SettingsDialog {
                             let unpair_btn = gtk4::Button::with_label("Unpair");
                             unpair_btn.add_css_class("flat");
                             let addr_unpair = peer.addr.clone();
+                            let name_unpair = peer.display_name.clone();
                             let holder_unp = Rc::clone(&holder_inner);
                             unpair_btn.connect_clicked(move |btn| {
                                 btn.set_sensitive(false);
                                 let a = addr_unpair.clone();
+                                let n = name_unpair.clone();
                                 let h = Rc::clone(&holder_unp);
                                 glib::MainContext::default().spawn_local(async move {
                                     if let Ok(client) = IpcClient::connect().await {
                                         let _ = client
                                             .send(&IpcRequest::UnpairPeer {
-                                                peer_identifier: a,
+                                                peer_identifier: a.clone(),
                                             })
                                             .await;
+                                        if n != a && !n.is_empty() {
+                                            let _ = client
+                                                .send(&IpcRequest::UnpairPeer {
+                                                    peer_identifier: n,
+                                                })
+                                                .await;
+                                        }
                                     }
                                     if let Some(ref f) = *h.borrow() {
                                         f();

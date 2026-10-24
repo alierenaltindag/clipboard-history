@@ -4,6 +4,22 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{debug, info};
 
+/// Closes a previously displayed FreeDesktop desktop notification via D-Bus CloseNotification.
+pub async fn close_notification(notif_id: u32) {
+    if let Ok(connection) = zbus::Connection::session().await {
+        if let Ok(proxy) = zbus::Proxy::new(
+            &connection,
+            "org.freedesktop.Notifications",
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+        )
+        .await
+        {
+            let _: Result<(), _> = proxy.call("CloseNotification", &(notif_id,)).await;
+        }
+    }
+}
+
 /// Dispatches an actionable desktop notification for an incoming pairing request.
 /// Uses FreeDesktop Notifications D-Bus spec (org.freedesktop.Notifications) via zbus,
 /// with robust fallback to notify-send across different Linux distributions.
@@ -19,7 +35,7 @@ pub async fn dispatch_pairing_notification(
     );
 
     // 1. Try D-Bus FreeDesktop Notifications interface via zbus
-    if try_dbus_notification(
+    match try_dbus_notification(
         &origin_device,
         &peer_addr,
         &body,
@@ -27,12 +43,24 @@ pub async fn dispatch_pairing_notification(
         pending_pairings.clone(),
     )
     .await
-    .is_ok()
     {
-        return;
+        Ok(notif_id) => {
+            let mut map = pending_pairings.write().await;
+            if let Some(item) = map.get_mut(&request_id) {
+                item.notif_id = Some(notif_id);
+                item.info.desktop_notification_active = true;
+            }
+            return;
+        }
+        Err(e) => {
+            debug!(
+                "D-Bus notification failed ({}), falling back to notify-send...",
+                e
+            );
+        }
     }
 
-    // 2. Fallback to CLI notify-send with distribution-compatible flags
+    // 2. Fallback to CLI notify-send ONLY if D-Bus interface failed
     tokio::spawn(async move {
         fallback_notify_send(&body, &request_id, pending_pairings).await;
     });
@@ -44,7 +72,7 @@ async fn try_dbus_notification(
     body: &str,
     request_id: &str,
     pending_pairings: PendingPairingsMap,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
     let connection = zbus::Connection::session().await?;
     let proxy = zbus::Proxy::new(
         &connection,
@@ -104,6 +132,7 @@ async fn try_dbus_notification(
                                     let _ = item.tx.send(action_key == "accept");
                                 }
                             }
+                            close_notification(notif_id).await;
                             break;
                         }
                     }
@@ -112,12 +141,15 @@ async fn try_dbus_notification(
         }
     });
 
-    Ok(())
+    Ok(notif_id)
 }
 
 async fn fallback_notify_send(body: &str, request_id: &str, pending_pairings: PendingPairingsMap) {
-    // Try with -A flag first (standard on many Arch/CachyOS and Ubuntu systems)
-    let res = tokio::process::Command::new("notify-send")
+    if which::which("notify-send").is_err() {
+        return;
+    }
+
+    let output = tokio::process::Command::new("notify-send")
         .args([
             "-a",
             "Clipboard History",
@@ -133,30 +165,8 @@ async fn fallback_notify_send(body: &str, request_id: &str, pending_pairings: Pe
             body,
         ])
         .output()
-        .await;
-
-    let output = match res {
-        Ok(out) if out.status.success() => Some(out),
-        _ => {
-            // Fall back to --action format
-            tokio::process::Command::new("notify-send")
-                .args([
-                    "-a",
-                    "Clipboard History",
-                    "-i",
-                    "network-wireless-symbolic",
-                    "-u",
-                    "critical",
-                    "--action=accept=Accept",
-                    "--action=reject=Decline",
-                    "Clipboard Pairing Request",
-                    body,
-                ])
-                .output()
-                .await
-                .ok()
-        }
-    };
+        .await
+        .ok();
 
     if let Some(out) = output {
         let action = String::from_utf8_lossy(&out.stdout).trim().to_string();

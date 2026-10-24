@@ -130,6 +130,8 @@ pub struct PendingPairingInfo {
     pub request_id: String,
     pub device_name: String,
     pub peer_address: String,
+    #[serde(default)]
+    pub desktop_notification_active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

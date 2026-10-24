@@ -73,6 +73,40 @@ impl PeerTracker {
             .map(|p| (p.address.clone(), p.device_name.clone()))
             .collect()
     }
+
+    pub async fn remove_peer(&self, identifier: &str) {
+        let clean_id = clipboard_history_core::sync::clean_ip_address(identifier);
+        let mut map = self.peers.write().await;
+        map.retain(|addr, peer| {
+            let clean_addr = clipboard_history_core::sync::clean_ip_address(addr);
+            addr != identifier
+                && clean_addr != clean_id
+                && !clean_addr.starts_with(&clean_id)
+                && peer.device_name != identifier
+                && peer.device_name != clean_id
+        });
+    }
+
+    pub async fn find_aliases(&self, identifier: &str) -> (Vec<String>, Vec<String>) {
+        let clean_id = clipboard_history_core::sync::clean_ip_address(identifier);
+        let map = self.peers.read().await;
+        let mut addrs = Vec::new();
+        let mut names = Vec::new();
+        for (addr, peer) in map.iter() {
+            let clean_addr = clipboard_history_core::sync::clean_ip_address(addr);
+            if addr == identifier
+                || clean_addr == clean_id
+                || (!clean_id.is_empty() && clean_addr.starts_with(&clean_id))
+                || peer.device_name == identifier
+                || peer.device_name == clean_id
+            {
+                addrs.push(addr.clone());
+                addrs.push(clean_addr.clone());
+                names.push(peer.device_name.clone());
+            }
+        }
+        (addrs, names)
+    }
 }
 
 /// Discovers active broadcast targets including universal 255.255.255.255, interface subnet broadcasts, and ARP neighbors
@@ -349,39 +383,73 @@ pub async fn start_udp_discovery(
                                 .await
                                 .is_ok()
                             {
-                                if let Ok(SyncMessage::AuthResponse {
-                                    success: true,
-                                    device_name: peer_dev,
-                                    ..
-                                }) = read_sync_message(&mut reader, &pin).await
-                                {
-                                    let is_new = trk
-                                        .add_or_update(peer_addr.clone(), peer_dev.clone())
-                                        .await;
-                                    if is_new && current_sync.is_peer_trusted(&peer_addr, &peer_dev)
-                                    {
-                                        tokio::spawn(async move {
-                                            let (enc_enabled, max_entries) = {
-                                                let cfg = cfg_arc_clone.read().await;
-                                                (
-                                                    cfg.security.encryption_enabled,
-                                                    cfg.general.max_entries,
-                                                )
-                                            };
-                                            crate::sync_service::perform_mutual_history_sync(
-                                                &peer_addr,
-                                                &pin,
-                                                &dev,
-                                                repo_clone,
-                                                blob_clone,
-                                                crypto_clone,
-                                                enc_enabled,
-                                                max_entries,
-                                                echo_tracker_clone,
-                                            )
+                                match read_sync_message(&mut reader, &pin).await {
+                                    Ok(SyncMessage::AuthResponse {
+                                        success: true,
+                                        device_name: peer_dev,
+                                        ..
+                                    }) => {
+                                        let is_new = trk
+                                            .add_or_update(peer_addr.clone(), peer_dev.clone())
                                             .await;
-                                        });
+                                        if is_new
+                                            && current_sync.is_peer_trusted(&peer_addr, &peer_dev)
+                                        {
+                                            tokio::spawn(async move {
+                                                let (enc_enabled, max_entries) = {
+                                                    let cfg = cfg_arc_clone.read().await;
+                                                    (
+                                                        cfg.security.encryption_enabled,
+                                                        cfg.general.max_entries,
+                                                    )
+                                                };
+                                                crate::sync_service::perform_mutual_history_sync(
+                                                    &peer_addr,
+                                                    &pin,
+                                                    &dev,
+                                                    repo_clone,
+                                                    blob_clone,
+                                                    crypto_clone,
+                                                    enc_enabled,
+                                                    max_entries,
+                                                    echo_tracker_clone,
+                                                )
+                                                .await;
+                                            });
+                                        }
                                     }
+                                    Ok(SyncMessage::AuthResponse {
+                                        success: false,
+                                        message,
+                                        ..
+                                    }) if message.contains("not paired") => {
+                                        info!(
+                                            "Peer at {} reported this device is not paired. Purging local pairing state.",
+                                            peer_addr
+                                        );
+                                        let clean_p =
+                                            clipboard_history_core::sync::clean_ip_address(
+                                                &peer_addr,
+                                            );
+                                        let mut cfg = cfg_arc_clone.write().await;
+                                        cfg.sync.trusted_peers.retain(|p| {
+                                            let cp =
+                                                clipboard_history_core::sync::clean_ip_address(p);
+                                            p != &peer_addr
+                                                && cp != clean_p
+                                                && !cp.starts_with(&clean_p)
+                                        });
+                                        cfg.sync.peer_addresses.retain(|p| {
+                                            let cp =
+                                                clipboard_history_core::sync::clean_ip_address(p);
+                                            p != &peer_addr
+                                                && cp != clean_p
+                                                && !cp.starts_with(&clean_p)
+                                        });
+                                        let _ = cfg.save(AppConfig::config_path());
+                                        trk.remove_peer(&peer_addr).await;
+                                    }
+                                    _ => {}
                                 }
                             }
                         }

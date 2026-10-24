@@ -339,6 +339,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let pending_pairings_tcp = pending_pairings.clone();
+    let tracker_tcp = peer_tracker.clone();
     for port in ports_to_listen {
         let sync_cfg_arc = sync_cfg_arc.clone();
         let sync_repo = sync_repo.clone();
@@ -346,6 +347,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         let sync_crypto = sync_crypto_base.clone();
         let echo_tracker_rx = echo_tracker_tcp.clone();
         let pending_pairings_port = pending_pairings_tcp.clone();
+        let tracker_port = tracker_tcp.clone();
         tokio::spawn(async move {
             let addr = format!("0.0.0.0:{}", port);
             if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {
@@ -360,6 +362,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                     let echo_tracker_rx = echo_tracker_rx.clone();
                     let sync_cfg_arc = sync_cfg_arc.clone();
                     let pending_pairings_conn = pending_pairings_port.clone();
+                    let tracker_conn = tracker_port.clone();
 
                     tokio::spawn(async move {
                         use clipboard_history_core::sync::{
@@ -367,7 +370,9 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                         };
                         let (mut reader, mut writer) = socket.split();
                         let mut authenticated = false;
-                        let clean_ip = peer_addr.ip().to_string();
+                        let clean_ip = clipboard_history_core::sync::clean_ip_address(
+                            &peer_addr.ip().to_string(),
+                        );
 
                         while let Ok(msg) = read_sync_message(&mut reader, &pin).await {
                             let current_sync = sync_cfg_arc.read().await.sync.clone();
@@ -397,14 +402,37 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                             request_id: request_id.clone(),
                                             device_name: origin_device.clone(),
                                             peer_address: peer_addr.to_string(),
+                                            desktop_notification_active: false,
                                         };
                                     {
                                         let mut map = pending_pairings_conn.write().await;
+                                        // Deduplicate: cancel any prior pending pairing from the same origin device or IP
+                                        let existing_key = map.iter().find_map(|(id, item)| {
+                                            if item.info.device_name == origin_device
+                                                || item.info.peer_address.starts_with(&clean_ip)
+                                            {
+                                                Some(id.clone())
+                                            } else {
+                                                None
+                                            }
+                                        });
+                                        if let Some(old_id) = existing_key {
+                                            if let Some(old_item) = map.remove(&old_id) {
+                                                let _ = old_item.tx.send(false);
+                                                if let Some(nid) = old_item.notif_id {
+                                                    tokio::spawn(async move {
+                                                        notification::close_notification(nid).await;
+                                                    });
+                                                }
+                                            }
+                                        }
+
                                         map.insert(
                                             request_id.clone(),
                                             server::PendingPairingItem {
                                                 info: req_info,
                                                 tx: resp_tx,
+                                                notif_id: None,
                                             },
                                         );
                                     }
@@ -432,13 +460,27 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                         Ok(Ok(val)) => val,
                                         _ => false,
                                     };
-                                    pending_pairings_conn.write().await.remove(&request_id);
+                                    if let Some(item) =
+                                        pending_pairings_conn.write().await.remove(&request_id)
+                                    {
+                                        if let Some(nid) = item.notif_id {
+                                            tokio::spawn(async move {
+                                                notification::close_notification(nid).await;
+                                            });
+                                        }
+                                    }
 
                                     if accepted {
                                         info!(
                                             "Pairing accepted for peer '{}' ({})",
                                             origin_device, clean_ip
                                         );
+                                        tracker_conn
+                                            .add_or_update(
+                                                peer_addr.to_string(),
+                                                origin_device.clone(),
+                                            )
+                                            .await;
                                         {
                                             let mut cfg = sync_cfg_arc.write().await;
                                             if !cfg.sync.trusted_peers.contains(&clean_ip) {
@@ -510,18 +552,24 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
 
                                 SyncMessage::UnpairRequest { origin_device } => {
+                                    let clean_origin_ip =
+                                        clipboard_history_core::sync::clean_ip_address(&clean_ip);
                                     let mut cfg = sync_cfg_arc.write().await;
                                     cfg.sync.trusted_peers.retain(|p| {
-                                        p != &clean_ip
-                                            && !p.starts_with(&format!("{}:", clean_ip))
-                                            && p != &origin_device
+                                        let p_clean =
+                                            clipboard_history_core::sync::clean_ip_address(p);
+                                        p_clean != clean_origin_ip && p != &origin_device
                                     });
                                     cfg.sync.peer_addresses.retain(|p| {
-                                        p != &clean_ip
-                                            && !p.starts_with(&format!("{}:", clean_ip))
-                                            && p != &origin_device
+                                        let p_clean =
+                                            clipboard_history_core::sync::clean_ip_address(p);
+                                        p_clean != clean_origin_ip && p != &origin_device
                                     });
                                     let _ = cfg.save(AppConfig::config_path());
+                                    tracker_conn.remove_peer(&clean_ip).await;
+                                    if !origin_device.is_empty() {
+                                        tracker_conn.remove_peer(&origin_device).await;
+                                    }
                                     info!(
                                         "Peer '{}' ({}) requested unpairing. Removed from trusted_peers and peer_addresses.",
                                         origin_device, clean_ip

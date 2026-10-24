@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.9] - 2026-10-24
+
+### Fixed
+- **Network Sync Unpair Asymmetry & State Desynchronization**:
+  - Implemented `clean_ip_address` across all network sync components, stripping ports and normalizing IPv6-mapped IPv4 representations (e.g., `::ffff:192.168.1.50` -> `192.168.1.50`) so dual-stack socket connections match stored trust configurations regardless of Linux distribution differences (Ubuntu vs. CachyOS).
+  - Added alias-aware unpairing in daemon server and peer tracker: unpairing cleanses both IP addresses and device hostnames simultaneously across `trusted_peers` and `peer_addresses`.
+  - Added multi-candidate unpair broadcast targeting both active network ports (54123, 54124) and all known peer IP addresses when unpairing.
+  - Implemented automatic self-healing on background peer discovery: if a peer reports that the local device is not paired (`AuthResponse { success: false, message: "Peer not paired..." }`), the local device automatically purges the remote peer from its `trusted_peers` and `peer_addresses`.
+  - Updated GUI Settings Dialog unpair action to dispatch unpair requests for both IP address and device display name.
+
+- **Pairing Notification Spam & Triple UI Redundancy**:
+  - Eliminated duplicate notifications: when a desktop notification banner with Accept/Decline action buttons is already displayed (`desktop_notification_active = true`), the intrusive modal `PairingDialog` popup is suppressed.
+  - Implemented D-Bus notification lifecycle closing (`close_notification` via `org.freedesktop.Notifications.CloseNotification`): accepting, declining, or timing out a pairing request immediately dismisses the active desktop notification, preventing lingering zombie notifications.
+  - Added request deduplication in daemon server: incoming pairing requests from an already pending device or IP address cancel prior timers and dismiss their notifications before registering the new request.
+  - Fixed fallback `notify-send` invocation to prevent dual notification banners on systems using shell fallbacks.
+
 ## [1.2.8] - 2026-10-24
 
 ### Fixed

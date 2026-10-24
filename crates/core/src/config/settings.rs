@@ -256,17 +256,14 @@ impl Default for SyncConfig {
 
 impl SyncConfig {
     pub fn is_peer_trusted(&self, peer_addr: &str, device_name: &str) -> bool {
-        let clean_ip = if let Some(idx) = peer_addr.find(':') {
-            &peer_addr[..idx]
-        } else {
-            peer_addr
-        };
+        let clean_ip = crate::sync::clean_ip_address(peer_addr);
 
         self.trusted_peers.iter().any(|t| {
+            let clean_t = crate::sync::clean_ip_address(t);
             t == peer_addr
-                || t == clean_ip
-                || (!t.is_empty() && peer_addr.starts_with(t))
-                || (!device_name.is_empty() && t == device_name)
+                || clean_t == clean_ip
+                || (!clean_t.is_empty() && clean_ip.starts_with(&clean_t))
+                || (!device_name.is_empty() && (t == device_name || clean_t == device_name))
         })
     }
 }

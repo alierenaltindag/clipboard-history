@@ -149,6 +149,36 @@ pub fn get_primary_local_ip() -> Option<String> {
     None
 }
 
+/// Normalizes an IP address, handling IPv6-mapped IPv4 addresses (e.g. `::ffff:192.168.1.1` -> `192.168.1.1`).
+pub fn normalize_ip(ip: std::net::IpAddr) -> String {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.to_string(),
+        std::net::IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                v4.to_string()
+            } else if let Some(v4) = v6.to_ipv4() {
+                v4.to_string()
+            } else {
+                v6.to_string()
+            }
+        }
+    }
+}
+
+/// Strips ports and normalizes IP from an address string or returns the hostname/identifier as-is.
+pub fn clean_ip_address(addr_str: &str) -> String {
+    let host = if let Some(idx) = addr_str.find(':') {
+        &addr_str[..idx]
+    } else {
+        addr_str
+    };
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        normalize_ip(ip)
+    } else {
+        host.to_string()
+    }
+}
+
 /// Send an encrypted SyncMessage over an AsyncWrite stream
 pub async fn send_sync_message<W: AsyncWriteExt + Unpin>(
     writer: &mut W,

@@ -22,6 +22,7 @@ use tracing::{debug, error, info};
 pub struct PendingPairingItem {
     pub info: PendingPairingInfo,
     pub tx: tokio::sync::oneshot::Sender<bool>,
+    pub notif_id: Option<u32>,
 }
 
 pub type PendingPairingsMap = Arc<RwLock<HashMap<String, PendingPairingItem>>>;
@@ -550,46 +551,24 @@ impl DaemonServer {
                 IpcRequest::RespondPairingRequest { request_id, accept } => {
                     let mut map = pending_pairings.write().await;
                     if let Some(item) = map.remove(&request_id) {
+                        if let Some(nid) = item.notif_id {
+                            tokio::spawn(async move {
+                                crate::notification::close_notification(nid).await;
+                            });
+                        }
                         let _ = item.tx.send(accept);
                     }
                     IpcResponse::Success
                 }
 
                 IpcRequest::UnpairPeer { peer_identifier } => {
-                    let clean_id = if let Some(idx) = peer_identifier.find(':') {
-                        peer_identifier[..idx].to_string()
-                    } else {
-                        peer_identifier.clone()
-                    };
-
-                    let all_peers = peer_tracker.get_all_peers().await;
-                    let mut matching_names = Vec::new();
-                    let mut matching_addrs = Vec::new();
-
-                    for (addr, name) in &all_peers {
-                        let clean_a = if let Some(idx) = addr.find(':') {
-                            &addr[..idx]
-                        } else {
-                            addr.as_str()
-                        };
-                        if addr == &peer_identifier
-                            || clean_a == clean_id
-                            || name == &peer_identifier
-                            || (!clean_id.is_empty() && name == &clean_id)
-                        {
-                            matching_names.push(name.clone());
-                            matching_addrs.push(addr.clone());
-                            matching_addrs.push(clean_a.to_string());
-                        }
-                    }
+                    let clean_id = clipboard_history_core::sync::clean_ip_address(&peer_identifier);
+                    let (matching_addrs, matching_names) =
+                        peer_tracker.find_aliases(&peer_identifier).await;
 
                     let mut cfg = config.write().await;
                     cfg.sync.trusted_peers.retain(|p| {
-                        let clean_p = if let Some(idx) = p.find(':') {
-                            &p[..idx]
-                        } else {
-                            p.as_str()
-                        };
+                        let clean_p = clipboard_history_core::sync::clean_ip_address(p);
                         p != &peer_identifier
                             && clean_p != clean_id
                             && !clean_p.starts_with(&clean_id)
@@ -597,11 +576,7 @@ impl DaemonServer {
                             && !matching_addrs.contains(p)
                     });
                     cfg.sync.peer_addresses.retain(|p| {
-                        let clean_p = if let Some(idx) = p.find(':') {
-                            &p[..idx]
-                        } else {
-                            p.as_str()
-                        };
+                        let clean_p = clipboard_history_core::sync::clean_ip_address(p);
                         p != &peer_identifier
                             && clean_p != clean_id
                             && !clean_p.starts_with(&clean_id)
@@ -612,38 +587,23 @@ impl DaemonServer {
                     let my_dev = cfg.sync.device_name.clone();
                     drop(cfg);
 
-                    let mut candidate_addrs = Vec::new();
-                    if peer_identifier.contains(':') {
-                        let parts: Vec<&str> = peer_identifier.split(':').collect();
-                        let ip = parts[0];
-                        let port: u16 = parts[1].parse().unwrap_or(54123);
-                        let alt_port = if port == 54123 { 54124 } else { 54123 };
-                        candidate_addrs.push(peer_identifier.clone());
-                        candidate_addrs.push(format!("{}:{}", ip, alt_port));
-                    } else if peer_identifier.contains('.') {
-                        candidate_addrs.push(format!("{}:54123", peer_identifier));
-                        candidate_addrs.push(format!("{}:54124", peer_identifier));
+                    peer_tracker.remove_peer(&peer_identifier).await;
+                    for a in &matching_addrs {
+                        peer_tracker.remove_peer(a).await;
+                    }
+                    for n in &matching_names {
+                        peer_tracker.remove_peer(n).await;
                     }
 
-                    for a in matching_addrs {
-                        if a.contains(':') {
-                            let (ip, alt_port) = {
-                                let parts: Vec<&str> = a.split(':').collect();
-                                let ip = parts[0].to_string();
-                                let port: u16 = parts[1].parse().unwrap_or(54123);
-                                let alt = if port == 54123 { 54124 } else { 54123 };
-                                (ip, alt)
-                            };
-                            let alt = format!("{}:{}", ip, alt_port);
-                            if !candidate_addrs.contains(&a) {
-                                candidate_addrs.push(a);
-                            }
-                            if !candidate_addrs.contains(&alt) {
-                                candidate_addrs.push(alt);
-                            }
-                        } else if a.contains('.') {
-                            let p1 = format!("{}:54123", a);
-                            let p2 = format!("{}:54124", a);
+                    let mut candidate_addrs = Vec::new();
+                    let mut add_candidate = |addr: &str| {
+                        if addr.is_empty() {
+                            return;
+                        }
+                        let clean = clipboard_history_core::sync::clean_ip_address(addr);
+                        if clean.contains('.') {
+                            let p1 = format!("{}:54123", clean);
+                            let p2 = format!("{}:54124", clean);
                             if !candidate_addrs.contains(&p1) {
                                 candidate_addrs.push(p1);
                             }
@@ -651,6 +611,14 @@ impl DaemonServer {
                                 candidate_addrs.push(p2);
                             }
                         }
+                    };
+
+                    add_candidate(&peer_identifier);
+                    for a in &matching_addrs {
+                        add_candidate(a);
+                    }
+                    for n in &matching_names {
+                        add_candidate(n);
                     }
 
                     tokio::spawn(async move {
