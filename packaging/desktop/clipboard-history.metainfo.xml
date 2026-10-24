@@ -32,6 +32,11 @@
     <binary>clipboard-history-gui</binary>
   </provides>
   <releases>
+    <release version="1.2.7" date="2026-10-24">
+      <description>
+        <p>End-to-end build pipeline acceleration: streamlined SQLite bundled compilation, optimized release profile with fast linking, sccache compiler caching integration, and updated dependencies.</p>
+      </description>
+    </release>
     <release version="1.2.6" date="2026-10-24">
       <description>
         <p>Release build performance acceleration with ThinLTO and multi-threaded mold linker integration, automated mold dependency installation, code formatting compliance, and auto-healing systemd reset-failed handling.</p>

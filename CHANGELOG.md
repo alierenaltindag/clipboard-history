@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.7] - 2026-10-24
+
+### Performance
+- **End-to-End Build Pipeline Acceleration**:
+  - Replaced heavyweight `bundled-full` feature on `rusqlite` with lean `["bundled", "chrono", "blob"]`, stripping 25+ unused SQLite C extensions and slashing SQLite C compilation time.
+  - Tuned release profile with `opt-level = 2` and local-crate LTO (`lto = false`) with `codegen-units = 16`, eliminating the 70+ second binary linking bottleneck on `clipboard-history-daemon` and `clipboard-history-gui`.
+  - Added native `sccache` compiler caching detection and auto-configuration in `scripts/install.sh` for near-instant 3-5 second subsequent rebuilds.
+  - Added automated `sccache` dependency installation across Arch/CachyOS, Debian/Ubuntu, Fedora, and openSUSE.
+
 ## [1.2.6] - 2026-10-24
 
 ### Performance

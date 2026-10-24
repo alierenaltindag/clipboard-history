@@ -8,7 +8,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.2.6"
+version = "1.2.7"
 edition = "2021"
 authors = ["Ali Eren Altındağ <alierenaltindaag@gmail.com>"]
 license = "MIT OR Apache-2.0"
@@ -21,8 +21,8 @@ keywords = ["clipboard", "wayland", "x11", "history", "linux"]
 categories = ["command-line-utilities", "gui"]
 
 [profile.release]
-opt-level = 3
-lto = "thin"
+opt-level = 2
+lto = false
 codegen-units = 16
 panic = "abort"
 strip = true

@@ -88,7 +88,8 @@ install_dependencies() {
             sudo dnf install -y gtk4-devel libadwaita-devel libX11-devel libXtst-devel wl-clipboard xdotool tesseract pkgconf gcc curl git
     elif command -v pacman >/dev/null 2>&1; then
         info "Arch Linux / CachyOS detected. Installing dependencies via pacman..."
-        sudo pacman -S --needed --noconfirm gtk4 libadwaita libx11 libxtst wl-clipboard xdotool tesseract pkgconf base-devel curl git mold clang 2>/dev/null || \
+        sudo pacman -S --needed --noconfirm gtk4 libadwaita libx11 libxtst wl-clipboard xdotool tesseract pkgconf base-devel curl git mold clang sccache 2>/dev/null || \
+            sudo pacman -S --needed --noconfirm gtk4 libadwaita libx11 libxtst wl-clipboard xdotool tesseract pkgconf base-devel curl git mold clang 2>/dev/null || \
             sudo pacman -S --needed --noconfirm gtk4 libadwaita libx11 libxtst wl-clipboard xdotool tesseract pkgconf base-devel curl git
     elif command -v zypper >/dev/null 2>&1; then
         info "openSUSE detected. Installing dependencies via zypper..."
@@ -112,17 +113,17 @@ if [[ "${needs_deps}" -eq 1 ]]; then
     install_dependencies
 fi
 
-# Ensure high-speed linker (mold & clang) is installed for fast compilation
+# Ensure high-speed build tools (mold, clang, sccache) are installed for fast compilation
 if ! command -v mold >/dev/null 2>&1; then
     info "Installing ultra-fast linker (mold & clang) to accelerate build linking..."
     if command -v pacman >/dev/null 2>&1; then
-        sudo pacman -S --needed --noconfirm mold clang 2>/dev/null || true
+        sudo pacman -S --needed --noconfirm mold clang sccache 2>/dev/null || true
     elif command -v apt-get >/dev/null 2>&1; then
-        sudo apt-get install -y mold clang 2>/dev/null || true
+        sudo apt-get install -y mold clang sccache 2>/dev/null || true
     elif command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y mold clang 2>/dev/null || true
+        sudo dnf install -y mold clang sccache 2>/dev/null || true
     elif command -v zypper >/dev/null 2>&1; then
-        sudo zypper install -y mold clang 2>/dev/null || true
+        sudo zypper install -y mold clang sccache 2>/dev/null || true
     fi
 fi
 
@@ -140,6 +141,11 @@ fi
 # 4. Build Release Binaries
 info "Building release binaries with Cargo..."
 cd "${PROJECT_ROOT}"
+if command -v sccache >/dev/null 2>&1; then
+    export RUSTC_WRAPPER="sccache"
+    info "Active compiler cache 'sccache' detected. Build caching enabled."
+fi
+
 if command -v mold >/dev/null 2>&1; then
     info "Detected ultra-fast linker 'mold'. Linking will be accelerated..."
     mold -run cargo build --release --workspace

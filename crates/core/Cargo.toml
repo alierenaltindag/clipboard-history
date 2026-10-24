@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-rusqlite = { version = "0.32", features = ["bundled-full", "chrono", "blob"] }
+rusqlite = { version = "0.32", features = ["bundled", "chrono", "blob"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
