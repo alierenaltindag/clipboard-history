@@ -1,8 +1,16 @@
 use std::process::Command;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tracing::debug;
+
+struct WindowInfoCache {
+    timestamp: Instant,
+    info: Option<(String, String)>,
+}
 
 pub struct WindowFocusDetector {
     is_x11: bool,
+    cache: Mutex<Option<WindowInfoCache>>,
 }
 
 impl WindowFocusDetector {
@@ -10,16 +18,36 @@ impl WindowFocusDetector {
         let is_x11 = std::env::var("DISPLAY").is_ok()
             && std::env::var("WAYLAND_DISPLAY").is_err()
             && std::env::var("XDG_SESSION_TYPE").unwrap_or_default() != "wayland";
-        Self { is_x11 }
+        Self {
+            is_x11,
+            cache: Mutex::new(None),
+        }
     }
 
-    /// Queries the currently active window title and class if accessible.
+    /// Queries the currently active window title and class if accessible (cached for 500ms to avoid process storms).
     pub fn get_active_window_info(&self) -> Option<(String, String)> {
-        if self.is_x11 {
+        if let Ok(guard) = self.cache.lock() {
+            if let Some(ref entry) = *guard {
+                if entry.timestamp.elapsed() < Duration::from_millis(500) {
+                    return entry.info.clone();
+                }
+            }
+        }
+
+        let res = if self.is_x11 {
             self.get_x11_active_window()
         } else {
             self.get_wayland_active_window()
+        };
+
+        if let Ok(mut guard) = self.cache.lock() {
+            *guard = Some(WindowInfoCache {
+                timestamp: Instant::now(),
+                info: res.clone(),
+            });
         }
+
+        res
     }
 
     /// Checks if the active window matches any configured incognito/secret pattern.
@@ -316,8 +344,13 @@ impl WindowFocusDetector {
     }
 
     fn get_wayland_active_window(&self) -> Option<(String, String)> {
-        // 1. Try hyprctl (Hyprland)
-        if which::which("hyprctl").is_ok() {
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+            .or_else(|_| std::env::var("DESKTOP_SESSION"))
+            .unwrap_or_default()
+            .to_lowercase();
+
+        // 1. Try hyprctl (Hyprland) - only if actually running on Hyprland
+        if std::env::var("HYPRLAND_INSTANCE_SIGNATURE").is_ok() && which::which("hyprctl").is_ok() {
             if let Ok(output) = Command::new("hyprctl")
                 .args(["activewindow", "-j"])
                 .output()
@@ -334,8 +367,8 @@ impl WindowFocusDetector {
             }
         }
 
-        // 2. Try swaymsg (Sway)
-        if which::which("swaymsg").is_ok() {
+        // 2. Try swaymsg (Sway) - only if SWAYSOCK is set
+        if std::env::var("SWAYSOCK").is_ok() && which::which("swaymsg").is_ok() {
             if let Ok(output) = Command::new("swaymsg").args(["-t", "get_tree"]).output() {
                 if output.status.success() {
                     if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
@@ -347,45 +380,46 @@ impl WindowFocusDetector {
             }
         }
 
-        // 3. Try KDE Plasma via kdotool
-        if which::which("kdotool").is_ok() {
-            if let Ok(output) = Command::new("kdotool").arg("getactivewindow").output() {
-                if output.status.success() {
-                    let win_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    let name = Command::new("kdotool")
-                        .args(["getwindowname", &win_id])
-                        .output()
-                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                        .unwrap_or_default();
-                    let class = Command::new("kdotool")
-                        .args(["getwindowclassname", &win_id])
-                        .output()
-                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                        .unwrap_or_default();
-                    if !name.is_empty() || !class.is_empty() {
-                        return Some((name, class));
+        // 3. Try KDE Plasma via kdotool or qdbus - only if running KDE Plasma
+        if desktop.contains("kde") || desktop.contains("plasma") {
+            if which::which("kdotool").is_ok() {
+                if let Ok(output) = Command::new("kdotool").arg("getactivewindow").output() {
+                    if output.status.success() {
+                        let win_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        let name = Command::new("kdotool")
+                            .args(["getwindowname", &win_id])
+                            .output()
+                            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                            .unwrap_or_default();
+                        let class = Command::new("kdotool")
+                            .args(["getwindowclassname", &win_id])
+                            .output()
+                            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                            .unwrap_or_default();
+                        if !name.is_empty() || !class.is_empty() {
+                            return Some((name, class));
+                        }
+                    }
+                }
+            }
+
+            if which::which("qdbus").is_ok() {
+                if let Ok(output) = Command::new("qdbus")
+                    .args(["org.kde.KWin", "/KWin", "org.kde.KWin.activeWindow"])
+                    .output()
+                {
+                    if output.status.success() {
+                        let win_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        if !win_name.is_empty() {
+                            return Some((win_name.clone(), win_name));
+                        }
                     }
                 }
             }
         }
 
-        // 4. Try KDE Plasma via qdbus
-        if which::which("qdbus").is_ok() {
-            if let Ok(output) = Command::new("qdbus")
-                .args(["org.kde.KWin", "/KWin", "org.kde.KWin.activeWindow"])
-                .output()
-            {
-                if output.status.success() {
-                    let win_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    if !win_name.is_empty() {
-                        return Some((win_name.clone(), win_name));
-                    }
-                }
-            }
-        }
-
-        // 5. Try GNOME Shell Introspect via gdbus
-        if which::which("gdbus").is_ok() {
+        // 4. Try GNOME Shell Introspect via gdbus - only if running GNOME
+        if desktop.contains("gnome") && which::which("gdbus").is_ok() {
             if let Ok(output) = Command::new("gdbus")
                 .args([
                     "call",
@@ -422,8 +456,12 @@ impl WindowFocusDetector {
             }
         }
 
-        // 6. Fallback to Xwayland / xdotool
-        self.get_x11_active_window()
+        // 5. Fallback to Xwayland / xdotool only if DISPLAY is present
+        if std::env::var("DISPLAY").is_ok() {
+            self.get_x11_active_window()
+        } else {
+            None
+        }
     }
 }
 

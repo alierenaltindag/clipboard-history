@@ -175,8 +175,19 @@ impl StatusNotifierItem {
         )
     }
 
-    /// Primary left-click on tray icon toggles the GUI popup
+    /// Primary left-click on tray icon toggles the GUI popup (debounced to avoid toggle storms)
     async fn activate(&self, _x: i32, _y: i32) {
+        static LAST_ACTIVATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let prev = LAST_ACTIVATE.swap(now, std::sync::atomic::Ordering::Relaxed);
+        if now.saturating_sub(prev) < 500 {
+            debug!("Tray activate debounced");
+            return;
+        }
+
         info!("Tray icon activated: triggering popup window");
         let bin = get_executable_path("clipboard-history");
         let _ = tokio::process::Command::new(bin).arg("toggle").spawn();
@@ -193,11 +204,9 @@ impl StatusNotifierItem {
         );
     }
 
-    /// Right-click context menu action: toggles popup
+    /// Right-click context menu action (menu is provided by DBusMenu at /MenuBar)
     async fn context_menu(&self, _x: i32, _y: i32) {
-        debug!("Tray icon context menu requested");
-        let bin = get_executable_path("clipboard-history");
-        let _ = tokio::process::Command::new(bin).arg("toggle").spawn();
+        debug!("Tray icon context menu requested (handled via DBusMenu /MenuBar)");
     }
 
     async fn scroll(&self, _delta: i32, _orientation: &str) {}

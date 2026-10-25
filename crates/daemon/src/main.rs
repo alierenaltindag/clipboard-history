@@ -245,12 +245,13 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (event_tx, mut event_rx) = mpsc::channel::<RawClipboardEvent>(64);
     let mut spawned_any = false;
+    let capture_primary = config.general.capture_primary_selection;
 
     // 1. Spawn Wayland watcher if Wayland is available
     if is_wayland && which::which("wl-paste").is_ok() {
         let tx = event_tx.clone();
         tokio::spawn(async move {
-            let mut watcher = WaylandWatcher::new();
+            let mut watcher = WaylandWatcher::new(capture_primary);
             if let Err(e) = watcher.run(tx).await {
                 error!("Wayland watcher exited: {}", e);
             }
@@ -262,7 +263,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     if is_x11 {
         let tx = event_tx.clone();
         tokio::spawn(async move {
-            let mut watcher = X11Watcher::new();
+            let mut watcher = X11Watcher::new(capture_primary);
             if let Err(e) = watcher.run(tx).await {
                 debug!("X11 watcher exited: {}", e);
             }
@@ -273,7 +274,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     if !spawned_any {
         let tx = event_tx.clone();
         tokio::spawn(async move {
-            let mut watcher = WaylandWatcher::new();
+            let mut watcher = WaylandWatcher::new(capture_primary);
             let _ = watcher.run(tx).await;
         });
     }
@@ -889,6 +890,18 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 
         let current_cfg = config_arc.read().await.clone();
 
+        // Primary selection filtering FIRST before expensive focus detection
+        if event.selection == watcher::traits::SelectionTarget::Primary {
+            if !current_cfg.general.capture_primary_selection {
+                continue;
+            }
+            if let Some(ref t) = event.text {
+                if t.trim().len() < current_cfg.general.primary_min_length {
+                    continue;
+                }
+            }
+        }
+
         // 1. Query active window once per event (Deduplicated: HIGH-05)
         let active_win = window_focus_detector.get_active_window_info();
         let active_class = active_win.as_ref().map(|(_, c)| c.as_str());
@@ -930,18 +943,6 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 current_cfg.security.app_filter_mode, source_app, active_class
             );
             continue;
-        }
-
-        // Primary selection filtering
-        if event.selection == watcher::traits::SelectionTarget::Primary {
-            if !current_cfg.general.capture_primary_selection {
-                continue;
-            }
-            if let Some(ref t) = event.text {
-                if t.trim().len() < current_cfg.general.primary_min_length {
-                    continue;
-                }
-            }
         }
 
         // 4. Process Text / HTML / UriList

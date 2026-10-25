@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.12] - 2026-10-25
+
+### Fixed
+- **Super+C / Windows+C Rapid Toggle Loop**: Implemented strict 450ms rate limiting and debouncing on `--toggle` and activation in `ClipboardApp` to prevent infinite open/close loops caused by key-repeats or rapid shortcut events.
+- **Typing Stutter & High CPU Lag**:
+  - Gated Wayland and X11 primary selection watchers to only start when `capture_primary_selection` is enabled.
+  - Increased primary selection trailing debounce to 600ms and filtered out short character noise (< 3 chars).
+  - Moved primary selection filtering to the top of the event loop before any active window queries.
+  - Cached `WindowFocusDetector::get_active_window_info` for 500ms to eliminate multi-process storms (`hyprctl`, `swaymsg`, `kdotool`, `qdbus`, `gdbus`, `xdotool`) on every keystroke.
+  - Verified active compositor environment variables (`HYPRLAND_INSTANCE_SIGNATURE`, `SWAYSOCK`, `XDG_CURRENT_DESKTOP`) prior to spawning compositor-specific query tools.
+- **GTK UI Main Thread Responsiveness**:
+  - Offloaded `hyprctl` window floating and positioning commands into asynchronous background threads to avoid blocking GTK event handling.
+  - Removed popup window toggle trigger from StatusNotifierItem `context_menu`, preventing tray menu queries from toggling GUI visibility.
+  - Debounced StatusNotifierItem `activate` with a 500ms threshold.
+  - Debounced display socket probing in `ensure_display_environment` to prevent synchronous socket connections on every clipboard fetch.
+
 ## [1.2.11] - 2026-10-25
 
 ### Fixed

@@ -93,8 +93,19 @@ impl ClipboardApp {
             });
         });
 
+        let last_toggle = Rc::new(RefCell::new(
+            std::time::Instant::now() - std::time::Duration::from_secs(10),
+        ));
+
         let win_activate = Rc::clone(&window_cell);
+        let toggle_act = Rc::clone(&last_toggle);
         app.connect_activate(move |_| {
+            let now = std::time::Instant::now();
+            if now.duration_since(*toggle_act.borrow()) < std::time::Duration::from_millis(450) {
+                return;
+            }
+            *toggle_act.borrow_mut() = now;
+
             if let Some(win) = win_activate.borrow().as_ref() {
                 if win.window.is_visible() && win.window.is_active() {
                     win.window.set_visible(false);
@@ -105,6 +116,7 @@ impl ClipboardApp {
         });
 
         let win_cmd = Rc::clone(&window_cell);
+        let toggle_cmd = Rc::clone(&last_toggle);
         app.connect_command_line(move |_, cmd_line| {
             let args = cmd_line.arguments();
             let has_toggle = args.iter().any(|a| a == "--toggle" || a == "-t");
@@ -125,6 +137,13 @@ impl ClipboardApp {
                     cfg,
                 );
             } else if has_toggle {
+                let now = std::time::Instant::now();
+                if now.duration_since(*toggle_cmd.borrow()) < std::time::Duration::from_millis(450)
+                {
+                    return 0;
+                }
+                *toggle_cmd.borrow_mut() = now;
+
                 if let Some(win) = win_cmd.borrow().as_ref() {
                     if win.window.is_visible() && win.window.is_active() {
                         win.window.set_visible(false);
@@ -133,6 +152,12 @@ impl ClipboardApp {
                     }
                 }
             } else if let Some(win) = win_cmd.borrow().as_ref() {
+                let now = std::time::Instant::now();
+                if now.duration_since(*toggle_cmd.borrow()) < std::time::Duration::from_millis(450)
+                {
+                    return 0;
+                }
+                *toggle_cmd.borrow_mut() = now;
                 win.present_near_cursor();
             }
             0

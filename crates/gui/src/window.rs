@@ -305,7 +305,7 @@ impl ClipboardWindow {
                 }
 
                 // Minimum presentation grace period to prevent immediate dismiss on compositor focus race
-                if presented_tracker.borrow().elapsed() < std::time::Duration::from_millis(1200) {
+                if presented_tracker.borrow().elapsed() < std::time::Duration::from_millis(1500) {
                     return;
                 }
 
@@ -316,18 +316,18 @@ impl ClipboardWindow {
                 let focused_check = Rc::clone(&focused_tracker);
                 let pres_check = Rc::clone(&presented_tracker);
 
-                glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+                glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
                     // Do not close if mouse button is held down (e.g. user is dragging window)
                     if *mouse_down_check.borrow() {
                         return;
                     }
                     // Grace period after release so compositor focus settles
-                    if last_release_check.borrow().elapsed() < std::time::Duration::from_millis(600)
+                    if last_release_check.borrow().elapsed() < std::time::Duration::from_millis(800)
                     {
                         return;
                     }
                     // Minimum presentation grace period
-                    if pres_check.borrow().elapsed() < std::time::Duration::from_millis(1200) {
+                    if pres_check.borrow().elapsed() < std::time::Duration::from_millis(1500) {
                         return;
                     }
                     // Do not close if pointer is still inside window bounds
@@ -1761,8 +1761,8 @@ impl ClipboardWindow {
             return None;
         }
 
-        // 1. Try hyprctl (Hyprland Wayland)
-        if which::which("hyprctl").is_ok() {
+        // 1. Try hyprctl (Hyprland Wayland) only if running Hyprland
+        if std::env::var("HYPRLAND_INSTANCE_SIGNATURE").is_ok() && which::which("hyprctl").is_ok() {
             if let Ok(output) = std::process::Command::new("hyprctl")
                 .arg("cursorpos")
                 .output()
@@ -2080,34 +2080,36 @@ impl ClipboardWindow {
             return;
         }
 
-        // 1. Hyprland Wayland move and float
-        if which::which("hyprctl").is_ok() {
-            let _ = std::process::Command::new("hyprctl")
-                .args([
-                    "dispatch",
-                    "setfloating",
-                    "class:com.antigravity.ClipboardHistory",
-                ])
-                .output();
-            let _ = std::process::Command::new("hyprctl")
-                .args([
-                    "dispatch",
-                    "movewindowpixel",
-                    &format!("exact {} {}", target_x, target_y),
-                    "class:com.antigravity.ClipboardHistory",
-                ])
-                .output();
-            let _ = std::process::Command::new("hyprctl")
-                .args(["dispatch", "setfloating", "class:clipboard-history-gui"])
-                .output();
-            let _ = std::process::Command::new("hyprctl")
-                .args([
-                    "dispatch",
-                    "movewindowpixel",
-                    &format!("exact {} {}", target_x, target_y),
-                    "class:clipboard-history-gui",
-                ])
-                .output();
+        // 1. Hyprland Wayland move and float (only if actually on Hyprland, dispatched asynchronously)
+        if std::env::var("HYPRLAND_INSTANCE_SIGNATURE").is_ok() && which::which("hyprctl").is_ok() {
+            std::thread::spawn(move || {
+                let _ = std::process::Command::new("hyprctl")
+                    .args([
+                        "dispatch",
+                        "setfloating",
+                        "class:com.antigravity.ClipboardHistory",
+                    ])
+                    .output();
+                let _ = std::process::Command::new("hyprctl")
+                    .args([
+                        "dispatch",
+                        "movewindowpixel",
+                        &format!("exact {} {}", target_x, target_y),
+                        "class:com.antigravity.ClipboardHistory",
+                    ])
+                    .output();
+                let _ = std::process::Command::new("hyprctl")
+                    .args(["dispatch", "setfloating", "class:clipboard-history-gui"])
+                    .output();
+                let _ = std::process::Command::new("hyprctl")
+                    .args([
+                        "dispatch",
+                        "movewindowpixel",
+                        &format!("exact {} {}", target_x, target_y),
+                        "class:clipboard-history-gui",
+                    ])
+                    .output();
+            });
         }
 
         // 2. X11 / Xwayland window move

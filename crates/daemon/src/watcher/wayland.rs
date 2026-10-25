@@ -9,15 +9,22 @@ use tokio::sync::mpsc::Sender;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
-pub struct WaylandWatcher;
+pub struct WaylandWatcher {
+    capture_primary: bool,
+}
+
+impl Default for WaylandWatcher {
+    fn default() -> Self {
+        Self::new(true)
+    }
+}
 
 impl WaylandWatcher {
-    pub fn new() -> Self {
-        Self
+    pub fn new(capture_primary: bool) -> Self {
+        Self { capture_primary }
     }
 
     async fn run_wl_paste(args: &[&str]) -> Option<Vec<u8>> {
-        clipboard_history_core::clipboard::ensure_display_environment();
         let mut cmd = Command::new("wl-paste");
         cmd.args(args);
         cmd.kill_on_drop(true);
@@ -247,8 +254,8 @@ impl WaylandWatcher {
                             Ok(Some(_)) => {
                                 consecutive_failures = 0;
                                 if is_primary {
-                                    // Trailing debounce: reset timer to 300ms
-                                    debounce_timer = Some(tokio::time::Instant::now() + Duration::from_millis(300));
+                                    // Trailing debounce: reset timer to 600ms to avoid typing stutter
+                                    debounce_timer = Some(tokio::time::Instant::now() + Duration::from_millis(600));
                                 } else {
                                     // Fast debounce for standard clipboard (80ms)
                                     sleep(Duration::from_millis(80)).await;
@@ -274,9 +281,9 @@ impl WaylandWatcher {
                     }, if debounce_timer.is_some() => {
                         debounce_timer = None;
                         if let Some(event) = Self::fetch_clipboard_content(SelectionTarget::Primary).await {
-                            // Filter single-character noise
+                            // Filter single-character and short noise (require at least 3 chars)
                             if let Some(ref t) = event.text {
-                                if t.trim().len() >= 2 {
+                                if t.trim().len() >= 3 {
                                     info!("Wayland primary selection captured ({} chars)", t.len());
                                     let _ = sender.send(event).await;
                                 }
@@ -333,7 +340,10 @@ impl WaylandWatcher {
 #[async_trait]
 impl ClipboardWatcher for WaylandWatcher {
     async fn run(&mut self, sender: Sender<RawClipboardEvent>) -> Result<()> {
-        info!("Starting Wayland dual clipboard & primary watcher");
+        info!(
+            "Starting Wayland clipboard watcher (capture_primary={})",
+            self.capture_primary
+        );
 
         if which::which("wl-paste").is_err() {
             warn!("`wl-paste` binary not found in PATH. Please install wl-clipboard for Wayland support.");
@@ -343,16 +353,21 @@ impl ClipboardWatcher for WaylandWatcher {
             )));
         }
 
-        let sender_primary = sender.clone();
-        let primary_handle = tokio::spawn(async move {
-            Self::watch_loop(SelectionTarget::Primary, sender_primary).await;
-        });
-
+        let clipboard_sender = sender.clone();
         let clipboard_handle = tokio::spawn(async move {
-            Self::watch_loop(SelectionTarget::Clipboard, sender).await;
+            Self::watch_loop(SelectionTarget::Clipboard, clipboard_sender).await;
         });
 
-        let _ = tokio::join!(primary_handle, clipboard_handle);
+        if self.capture_primary {
+            let primary_sender = sender;
+            let primary_handle = tokio::spawn(async move {
+                Self::watch_loop(SelectionTarget::Primary, primary_sender).await;
+            });
+            let _ = tokio::join!(primary_handle, clipboard_handle);
+        } else {
+            let _ = clipboard_handle.await;
+        }
+
         Ok(())
     }
 }

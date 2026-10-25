@@ -32,6 +32,11 @@
     <binary>clipboard-history-gui</binary>
   </provides>
   <releases>
+    <release version="1.2.12" date="2026-10-25">
+      <description>
+        <p>Fix rapid toggle loop on Super+C, eliminate typing stutter by debouncing primary selection and caching active window queries, prevent GTK main thread blocking.</p>
+      </description>
+    </release>
     <release version="1.2.11" date="2026-10-25">
       <description>
         <p>Wayland and CachyOS/KDE Plasma window lifecycle stability: eliminated focus-loss auto-dismiss loop on Wayland by tracking focus history and adding an initial presentation grace period, removed disruptive xdotool calls on native Wayland surfaces, unified application ID and dock launcher via StartupWMClass=com.antigravity.ClipboardHistory to eliminate duplicate taskbar icons, prioritized ~/.local/bin in multi-path binary discovery, and added support for silent background initialization.</p>

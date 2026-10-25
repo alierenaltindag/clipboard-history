@@ -13,11 +13,19 @@ use x11rb::protocol::xproto::{
 use x11rb::protocol::Event;
 use x11rb::rust_connection::RustConnection;
 
-pub struct X11Watcher;
+pub struct X11Watcher {
+    capture_primary: bool,
+}
+
+impl Default for X11Watcher {
+    fn default() -> Self {
+        Self::new(true)
+    }
+}
 
 impl X11Watcher {
-    pub fn new() -> Self {
-        Self
+    pub fn new(capture_primary: bool) -> Self {
+        Self { capture_primary }
     }
 
     async fn read_target_data_with_incr(
@@ -396,11 +404,16 @@ impl ClipboardWatcher for X11Watcher {
 
             conn.xfixes_select_selection_input(root, clipboard_atom, mask)
                 .map_err(x11_err)?;
-            conn.xfixes_select_selection_input(root, primary_atom, mask)
-                .map_err(x11_err)?;
+            if self.capture_primary {
+                conn.xfixes_select_selection_input(root, primary_atom, mask)
+                    .map_err(x11_err)?;
+            }
             conn.flush().map_err(x11_err)?;
 
-            debug!("XFixes CLIPBOARD & PRIMARY listeners successfully registered");
+            debug!(
+                "XFixes clipboard listener registered (capture_primary={})",
+                self.capture_primary
+            );
 
             // Event channel: passes (SelectionTarget, timestamp)
             let (x_tx, mut x_rx) = tokio::sync::mpsc::channel::<(SelectionTarget, u32)>(32);

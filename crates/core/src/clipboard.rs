@@ -23,6 +23,25 @@ fn is_wayland_socket_active(runtime_dir: &std::path::Path, name: &str) -> bool {
 /// Discovers and sets missing or stale WAYLAND_DISPLAY and DISPLAY environment variables
 /// (e.g., when running under systemd user units or minimal environments).
 pub fn ensure_display_environment() {
+    static LAST_PROBE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    let has_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
+    let has_display = std::env::var("DISPLAY").is_ok();
+
+    // Fast path: if both environment variables already exist, skip probing unless 15 seconds have passed
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    if has_wayland && has_display {
+        let last = LAST_PROBE_MS.load(std::sync::atomic::Ordering::Relaxed);
+        if now_ms.saturating_sub(last) < 15_000 {
+            return;
+        }
+    }
+    LAST_PROBE_MS.store(now_ms, std::sync::atomic::Ordering::Relaxed);
+
     if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
         let p = std::path::Path::new(&runtime_dir);
         let current_valid = std::env::var("WAYLAND_DISPLAY")
