@@ -1,30 +1,79 @@
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
-/// Discovers and sets missing WAYLAND_DISPLAY and DISPLAY environment variables
+fn is_wayland_socket_active(runtime_dir: &std::path::Path, name: &str) -> bool {
+    let sock = if name.starts_with('/') {
+        std::path::PathBuf::from(name)
+    } else {
+        runtime_dir.join(name)
+    };
+    if !sock.exists() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::net::UnixStream::connect(&sock).is_ok()
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+/// Discovers and sets missing or stale WAYLAND_DISPLAY and DISPLAY environment variables
 /// (e.g., when running under systemd user units or minimal environments).
 pub fn ensure_display_environment() {
-    if std::env::var("WAYLAND_DISPLAY").is_err() {
-        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            let p = std::path::Path::new(&runtime_dir);
-            for name in &["wayland-0", "wayland-1", "wayland-2"] {
-                if p.join(name).exists() {
-                    std::env::set_var("WAYLAND_DISPLAY", name);
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        let p = std::path::Path::new(&runtime_dir);
+        let current_valid = std::env::var("WAYLAND_DISPLAY")
+            .ok()
+            .map(|disp| is_wayland_socket_active(p, &disp))
+            .unwrap_or(false);
+
+        if !current_valid {
+            for i in 0..=9 {
+                let name = format!("wayland-{}", i);
+                if is_wayland_socket_active(p, &name) {
+                    std::env::set_var("WAYLAND_DISPLAY", &name);
+                    std::env::set_var("XDG_SESSION_TYPE", "wayland");
                     break;
                 }
             }
         }
     }
 
-    if std::env::var("DISPLAY").is_err() {
-        let x11_dir = std::path::Path::new("/tmp/.X11-unix");
-        if x11_dir.exists() {
-            for name in &["X0", "X1", "X2"] {
-                if x11_dir.join(name).exists() {
-                    let disp = format!(":{}", &name[1..]);
-                    std::env::set_var("DISPLAY", disp);
-                    break;
-                }
+    let x11_dir = std::path::Path::new("/tmp/.X11-unix");
+    let x11_valid = std::env::var("DISPLAY")
+        .ok()
+        .map(|disp| {
+            let num = disp.trim_start_matches(':');
+            let sock = x11_dir.join(format!("X{}", num));
+            if !sock.exists() {
+                return false;
+            }
+            #[cfg(unix)]
+            {
+                std::os::unix::net::UnixStream::connect(&sock).is_ok()
+            }
+            #[cfg(not(unix))]
+            {
+                true
+            }
+        })
+        .unwrap_or(false);
+
+    if !x11_valid && x11_dir.exists() {
+        for i in 0..=9 {
+            let name = format!("X{}", i);
+            let sock = x11_dir.join(&name);
+            #[cfg(unix)]
+            let active = sock.exists() && std::os::unix::net::UnixStream::connect(&sock).is_ok();
+            #[cfg(not(unix))]
+            let active = sock.exists();
+
+            if active {
+                std::env::set_var("DISPLAY", format!(":{}", i));
+                break;
             }
         }
     }
@@ -140,5 +189,15 @@ pub async fn copy_image_to_system_clipboard(image_bytes: &[u8], mime_type: Optio
             }
             let _ = child.wait().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ensure_display_environment_runs_safely() {
+        ensure_display_environment();
     }
 }

@@ -114,6 +114,21 @@ fn populate_diagnostics_ui(
     }
     core_group.add(&daemon_row);
 
+    let wl_row = libadwaita::ActionRow::new();
+    wl_row.set_title("Wayland Helper (wl-paste)");
+    if diag.wl_paste_available {
+        wl_row.set_subtitle("Installed and available in PATH");
+        let icon = gtk4::Image::from_icon_name("emblem-ok-symbolic");
+        icon.add_css_class("success");
+        wl_row.add_suffix(&icon);
+    } else {
+        wl_row.set_subtitle("Not found — Install wl-clipboard for Wayland clipboard support");
+        let icon = gtk4::Image::from_icon_name("dialog-warning-symbolic");
+        icon.add_css_class("warning");
+        wl_row.add_suffix(&icon);
+    }
+    core_group.add(&wl_row);
+
     let socket_row = libadwaita::ActionRow::new();
     socket_row.set_title("Unix IPC Socket");
     let sock_status = match (diag.socket_exists, diag.socket_responsive) {

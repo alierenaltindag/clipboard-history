@@ -1,5 +1,5 @@
 Name:           clipboard-history
-Version:        1.2.9
+Version:        1.2.10
 Release:        1%{?dist}
 Summary:        High-performance Universal Clipboard History utility for Linux
 

@@ -17,13 +17,29 @@ impl WaylandWatcher {
     }
 
     async fn run_wl_paste(args: &[&str]) -> Option<Vec<u8>> {
+        clipboard_history_core::clipboard::ensure_display_environment();
         let mut cmd = Command::new("wl-paste");
         cmd.args(args);
         cmd.kill_on_drop(true);
 
-        match tokio::time::timeout(Duration::from_millis(1500), cmd.output()).await {
+        match tokio::time::timeout(Duration::from_millis(2500), cmd.output()).await {
             Ok(Ok(output)) if output.status.success() => Some(output.stdout),
-            _ => None,
+            Ok(Ok(output)) => {
+                debug!(
+                    "`wl-paste {}` failed with status {:?}",
+                    args.join(" "),
+                    output.status
+                );
+                None
+            }
+            Ok(Err(e)) => {
+                warn!("`wl-paste {}` execution error: {}", args.join(" "), e);
+                None
+            }
+            Err(_) => {
+                warn!("`wl-paste {}` timed out after 2.5s", args.join(" "));
+                None
+            }
         }
     }
 
@@ -37,17 +53,17 @@ impl WaylandWatcher {
             &["--list-types"]
         };
 
-        let types_bytes = Self::run_wl_paste(list_args).await?;
-        let types_str = String::from_utf8_lossy(&types_bytes);
-        let mime_types: Vec<String> = types_str
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .collect();
-
-        if mime_types.is_empty() {
-            return None;
-        }
+        let mime_types: Vec<String> = match Self::run_wl_paste(list_args).await {
+            Some(types_bytes) => {
+                let types_str = String::from_utf8_lossy(&types_bytes);
+                types_str
+                    .lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .collect()
+            }
+            None => Vec::new(),
+        };
 
         let mut text = None;
         let mut html = None;
@@ -111,13 +127,15 @@ impl WaylandWatcher {
                     text = Some(s);
                 }
             }
-        } else if image_data.is_none() && html.is_none() {
-            let mut args = if is_primary {
-                vec!["--primary"]
+        }
+
+        // Resilient fallback: If text is still None and no image was captured, ALWAYS try generic wl-paste --no-newline!
+        if text.is_none() && image_data.is_none() {
+            let args = if is_primary {
+                vec!["--primary", "--no-newline"]
             } else {
-                vec![]
+                vec!["--no-newline"]
             };
-            args.push("--no-newline");
             if let Some(bytes) = Self::run_wl_paste(&args).await {
                 let s = String::from_utf8_lossy(&bytes)
                     .trim_matches('\0')
@@ -132,9 +150,21 @@ impl WaylandWatcher {
             return None;
         }
 
+        let final_mime_types = if mime_types.is_empty() {
+            if text.is_some() {
+                vec!["text/plain".to_string()]
+            } else if image_data.is_some() {
+                vec!["image/png".to_string()]
+            } else {
+                vec![]
+            }
+        } else {
+            mime_types
+        };
+
         Some(RawClipboardEvent {
             selection,
-            mime_types,
+            mime_types: final_mime_types,
             text,
             html,
             image_data,
@@ -142,16 +172,44 @@ impl WaylandWatcher {
         })
     }
 
+    async fn poll_loop(selection: SelectionTarget, sender: Sender<RawClipboardEvent>) {
+        let mut last_hash = String::new();
+        loop {
+            sleep(Duration::from_millis(400)).await;
+            if let Some(event) = Self::fetch_clipboard_content(selection).await {
+                let current_hash = if let Some(ref text) = event.text {
+                    clipboard_history_core::blob::BlobStore::compute_hash(text.as_bytes())
+                } else if let Some(ref img) = event.image_data {
+                    clipboard_history_core::blob::BlobStore::compute_hash(img)
+                } else {
+                    continue;
+                };
+
+                if current_hash != last_hash {
+                    last_hash = current_hash;
+                    let _ = sender.send(event).await;
+                }
+            }
+        }
+    }
+
     async fn watch_loop(selection: SelectionTarget, sender: Sender<RawClipboardEvent>) {
         let is_primary = selection == SelectionTarget::Primary;
         let mut consecutive_failures = 0;
 
         loop {
+            clipboard_history_core::clipboard::ensure_display_environment();
             let spawn_time = std::time::Instant::now();
             let args = if is_primary {
-                vec!["--primary", "--watch", "echo", "change"]
+                vec![
+                    "--primary",
+                    "--watch",
+                    "sh",
+                    "-c",
+                    "cat > /dev/null; echo change",
+                ]
             } else {
-                vec!["--watch", "echo", "change"]
+                vec!["--watch", "sh", "-c", "cat > /dev/null; echo change"]
             };
 
             let mut child = match Command::new("wl-paste")
@@ -192,8 +250,8 @@ impl WaylandWatcher {
                                     // Trailing debounce: reset timer to 300ms
                                     debounce_timer = Some(tokio::time::Instant::now() + Duration::from_millis(300));
                                 } else {
-                                    // Fast debounce for standard clipboard (60ms)
-                                    sleep(Duration::from_millis(60)).await;
+                                    // Fast debounce for standard clipboard (80ms)
+                                    sleep(Duration::from_millis(80)).await;
                                     if let Some(event) = Self::fetch_clipboard_content(SelectionTarget::Clipboard).await {
                                         let has_text = event.text.is_some();
                                         let has_img = event.image_data.is_some();
@@ -239,6 +297,15 @@ impl WaylandWatcher {
                         selection,
                         err_msg.trim()
                     );
+                    if err_msg.contains("data-control") {
+                        warn!(
+                            "Compositor does not support data-control watch mode for {:?}. Falling back to active clipboard polling.",
+                            selection
+                        );
+                        Self::poll_loop(selection, sender).await;
+                        return;
+                    }
+
                     if spawn_time.elapsed() < Duration::from_millis(2000) {
                         consecutive_failures += 1;
                     } else {

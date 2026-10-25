@@ -211,6 +211,8 @@ pub struct DaemonDiagnostic {
     pub session_type: Option<String>,
     pub desktop_session: Option<String>,
     pub recent_logs: Vec<String>,
+    #[serde(default)]
+    pub wl_paste_available: bool,
 }
 
 impl DaemonDiagnostic {
@@ -231,6 +233,14 @@ impl DaemonDiagnostic {
                 .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "Not Found ❌".to_string())
+        ));
+        out.push_str(&format!(
+            "wl-paste:      {}\n",
+            if self.wl_paste_available {
+                "Available"
+            } else {
+                "Not Found / Not in PATH (Install wl-clipboard for Wayland) ❌"
+            }
         ));
         out.push_str(&format!(
             "Systemd:       {} (Unit: {})\n",
@@ -276,6 +286,7 @@ impl DaemonDiagnostic {
 
 /// Collects full system and daemon diagnostic information.
 pub async fn collect_diagnostics() -> DaemonDiagnostic {
+    crate::clipboard::ensure_display_environment();
     let socket_path = AppConfig::socket_path();
     let socket_exists = socket_path.exists();
     let socket_responsive = if socket_exists {
@@ -348,6 +359,7 @@ pub async fn collect_diagnostics() -> DaemonDiagnostic {
         session_type: std::env::var("XDG_SESSION_TYPE").ok(),
         desktop_session: std::env::var("XDG_CURRENT_DESKTOP").ok(),
         recent_logs,
+        wl_paste_available: which::which("wl-paste").is_ok(),
     }
 }
 

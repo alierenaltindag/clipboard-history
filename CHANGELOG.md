@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.10] - 2026-10-25
+
+### Fixed
+- **Wayland & CachyOS Clipboard Capture Reliability**:
+  - Resolved `wl-paste` SIGPIPE termination loop: child processes in `--watch` mode now properly drain standard input (`sh -c 'cat > /dev/null; echo change'`), preventing Linux kernel pipe break signals and the resulting 10-second watcher backoff loop.
+  - Implemented resilient fallback text retrieval: if `wl-paste --list-types` or a specific MIME type fails or returns empty, the watcher automatically queries generic `wl-paste --no-newline` rather than dropping the clipboard event.
+  - Added live `UnixStream` socket connectivity checking in `ensure_display_environment()`: scans active `wayland-0` through `wayland-9` sockets and automatically selects the running compositor instance, resolving SDDM multi-socket desync on CachyOS/KDE.
+  - Added graceful fallback polling loop: automatically transitions to 400ms periodic clipboard polling if the active compositor does not support the `wlr-data-control` protocol (e.g. GNOME Mutter on Wayland).
+  - Extended `wl-paste` timeout threshold to 2.5s with descriptive failure logging and added `wl-paste` dependency reporting to the GUI Service Diagnostics window.
+
 ## [1.2.9] - 2026-10-24
 
 ### Fixed
