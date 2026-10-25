@@ -192,13 +192,16 @@ fi
 # 7. Install Desktop Entry, Metainfo, and Icons
 info "Installing desktop entry, AppStream metadata, and application icons..."
 cp -f "${PROJECT_ROOT}/packaging/desktop/clipboard-history.desktop" "${DESKTOP_DIR}/"
+cp -f "${PROJECT_ROOT}/packaging/desktop/clipboard-history.desktop" "${DESKTOP_DIR}/com.antigravity.ClipboardHistory.desktop"
 cp -f "${PROJECT_ROOT}/packaging/desktop/clipboard-history.metainfo.xml" "${METAINFO_DIR}/"
 cp -f "${PROJECT_ROOT}/packaging/desktop/icons/clipboard-history.svg" "${ICON_DIR}/"
+cp -f "${PROJECT_ROOT}/packaging/desktop/icons/clipboard-history.svg" "${ICON_DIR}/com.antigravity.ClipboardHistory.svg"
 
 for size in 16 24 32 48 64 128 256 512; do
     if [[ -f "${PROJECT_ROOT}/packaging/desktop/icons/hicolor/${size}x${size}/apps/clipboard-history.png" ]]; then
         mkdir -p "${HOME}/.local/share/icons/hicolor/${size}x${size}/apps"
         cp -f "${PROJECT_ROOT}/packaging/desktop/icons/hicolor/${size}x${size}/apps/clipboard-history.png" "${HOME}/.local/share/icons/hicolor/${size}x${size}/apps/"
+        cp -f "${PROJECT_ROOT}/packaging/desktop/icons/hicolor/${size}x${size}/apps/clipboard-history.png" "${HOME}/.local/share/icons/hicolor/${size}x${size}/apps/com.antigravity.ClipboardHistory.png"
     fi
 done
 
@@ -328,6 +331,8 @@ if [[ -f "${HYPR_CONF}" ]] || [[ "${XDG_CURRENT_DESKTOP:-}" == *"Hyprland"* ]] |
 # -----------------------------------------------------------------------------
 windowrulev2 = float, class:^(clipboard-history-gui)$
 windowrulev2 = center, class:^(clipboard-history-gui)$
+windowrulev2 = float, class:^(com.antigravity.ClipboardHistory)$
+windowrulev2 = center, class:^(com.antigravity.ClipboardHistory)$
 bind = SUPER, C, exec, clipboard-history toggle
 exec-once = clipboard-history-daemon
 EOF
@@ -336,6 +341,10 @@ EOF
             if ! grep -q "class:\^(clipboard-history-gui)\$" "${HYPR_CONF}"; then
                 echo "windowrulev2 = float, class:^(clipboard-history-gui)$" >> "${HYPR_CONF}"
                 echo "windowrulev2 = center, class:^(clipboard-history-gui)$" >> "${HYPR_CONF}"
+            fi
+            if ! grep -q "class:\^(com.antigravity.ClipboardHistory)\$" "${HYPR_CONF}"; then
+                echo "windowrulev2 = float, class:^(com.antigravity.ClipboardHistory)$" >> "${HYPR_CONF}"
+                echo "windowrulev2 = center, class:^(com.antigravity.ClipboardHistory)$" >> "${HYPR_CONF}"
             fi
             if ! grep -q "clipboard-history-daemon" "${HYPR_CONF}"; then
                 echo "exec-once = clipboard-history-daemon" >> "${HYPR_CONF}"

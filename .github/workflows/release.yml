@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release Version (e.g. 1.2.10)"
+        description: "Release Version (e.g. 1.2.11)"
         required: true
-        default: "1.2.10"
+        default: "1.2.11"
       draft:
         description: "Draft release before publishing"
         type: boolean

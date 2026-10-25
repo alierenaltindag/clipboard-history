@@ -26,28 +26,28 @@ pub fn find_cli_binary() -> Option<PathBuf> {
 fn find_binary_named(bin_name: &str) -> Option<PathBuf> {
     let mut candidates = Vec::new();
 
-    // 1. Check directory of the currently running executable (sibling)
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(parent) = current_exe.parent() {
-            candidates.push(parent.join(bin_name));
-        }
-    }
-
-    // 2. Check PATH lookup via which
-    if let Ok(path) = which::which(bin_name) {
-        candidates.push(path);
-    }
-
-    // 3. Check user local directory ~/.local/bin
+    // 1. Check user local directory ~/.local/bin and ~/.cargo/bin first (in-place user updates take precedence)
     if let Ok(home) = std::env::var("HOME") {
         let home_path = PathBuf::from(home);
         candidates.push(home_path.join(".local/bin").join(bin_name));
         candidates.push(home_path.join(".cargo/bin").join(bin_name));
     }
 
+    // 2. Check directory of the currently running executable (sibling)
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(parent) = current_exe.parent() {
+            candidates.push(parent.join(bin_name));
+        }
+    }
+
+    // 3. Check PATH lookup via which
+    if let Ok(path) = which::which(bin_name) {
+        candidates.push(path);
+    }
+
     // 4. Standard system locations
-    candidates.push(PathBuf::from("/usr/bin").join(bin_name));
     candidates.push(PathBuf::from("/usr/local/bin").join(bin_name));
+    candidates.push(PathBuf::from("/usr/bin").join(bin_name));
     candidates.push(PathBuf::from("/opt/clipboard-history/bin").join(bin_name));
 
     // 5. Development target dirs (target/release, target/debug)

@@ -1,5 +1,5 @@
 Name:           clipboard-history
-Version:        1.2.10
+Version:        1.2.11
 Release:        1%{?dist}
 Summary:        High-performance Universal Clipboard History utility for Linux
 
@@ -44,6 +44,7 @@ install -m 755 target/release/clipboard-history-daemon $RPM_BUILD_ROOT%{_bindir}
 install -m 755 target/release/clipboard-history-gui $RPM_BUILD_ROOT%{_bindir}/
 
 install -m 644 packaging/desktop/clipboard-history.desktop $RPM_BUILD_ROOT%{_datadir}/applications/
+ln -sf clipboard-history.desktop $RPM_BUILD_ROOT%{_datadir}/applications/com.antigravity.ClipboardHistory.desktop
 install -m 644 packaging/desktop/clipboard-history-autostart.desktop $RPM_BUILD_ROOT%{_sysconfdir}/xdg/autostart/
 install -m 644 packaging/desktop/clipboard-history.metainfo.xml $RPM_BUILD_ROOT%{_datadir}/metainfo/
 install -m 644 packaging/desktop/icons/clipboard-history.svg $RPM_BUILD_ROOT%{_datadir}/icons/hicolor/scalable/apps/
@@ -55,6 +56,7 @@ install -m 644 packaging/systemd/clipboard-history.service $RPM_BUILD_ROOT%{_use
 %{_bindir}/clipboard-history-daemon
 %{_bindir}/clipboard-history-gui
 %{_datadir}/applications/clipboard-history.desktop
+%{_datadir}/applications/com.antigravity.ClipboardHistory.desktop
 %{_sysconfdir}/xdg/autostart/clipboard-history-autostart.desktop
 %{_datadir}/metainfo/clipboard-history.metainfo.xml
 %{_datadir}/icons/hicolor/*/apps/clipboard-history.*

@@ -28,6 +28,12 @@ struct Cli {
 
     #[arg(short, long, help = "Open preferences settings dialog")]
     settings: bool,
+
+    #[arg(long, help = "Start application silently in background")]
+    hidden: bool,
+
+    #[arg(long, help = "Start application silently in background")]
+    background: bool,
 }
 
 fn main() {

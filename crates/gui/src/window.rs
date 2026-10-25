@@ -41,6 +41,8 @@ pub struct ClipboardWindow {
     daemon_connected: Rc<RefCell<bool>>,
     #[allow(dead_code)]
     toast_overlay: libadwaita::ToastOverlay,
+    presented_time: Rc<RefCell<std::time::Instant>>,
+    has_been_focused: Rc<RefCell<bool>>,
 }
 
 #[cfg(feature = "gtk")]
@@ -283,17 +285,38 @@ impl ClipboardWindow {
         });
         header_box.add_controller(drag_capture);
 
-        // Auto-dismiss popup on focus lost (only when clicked outside)
+        let presented_time = Rc::new(RefCell::new(std::time::Instant::now()));
+        let has_been_focused = Rc::new(RefCell::new(false));
+
+        // Auto-dismiss popup on focus lost (only when clicked outside and after having gained focus)
         let is_mouse_down = Rc::clone(&mouse_down_inside);
         let last_release = Rc::clone(&last_release_time);
         let motion_ctrl = motion_controller.clone();
+        let focused_tracker = Rc::clone(&has_been_focused);
+        let presented_tracker = Rc::clone(&presented_time);
+
         window.connect_is_active_notify(move |w| {
-            if !w.is_active() {
+            if w.is_active() {
+                *focused_tracker.borrow_mut() = true;
+            } else {
+                // Ignore focus loss if window has never been focused by the compositor/user since presentation
+                if !*focused_tracker.borrow() {
+                    return;
+                }
+
+                // Minimum presentation grace period to prevent immediate dismiss on compositor focus race
+                if presented_tracker.borrow().elapsed() < std::time::Duration::from_millis(1200) {
+                    return;
+                }
+
                 let w_clone = w.clone();
                 let mouse_down_check = Rc::clone(&is_mouse_down);
                 let last_release_check = Rc::clone(&last_release);
                 let motion_check = motion_ctrl.clone();
-                glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
+                let focused_check = Rc::clone(&focused_tracker);
+                let pres_check = Rc::clone(&presented_tracker);
+
+                glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
                     // Do not close if mouse button is held down (e.g. user is dragging window)
                     if *mouse_down_check.borrow() {
                         return;
@@ -303,13 +326,18 @@ impl ClipboardWindow {
                     {
                         return;
                     }
+                    // Minimum presentation grace period
+                    if pres_check.borrow().elapsed() < std::time::Duration::from_millis(1200) {
+                        return;
+                    }
                     // Do not close if pointer is still inside window bounds
                     if motion_check.contains_pointer() {
                         return;
                     }
-                    // Truly clicked outside into another app
-                    if !w_clone.is_active() {
+                    // Truly clicked outside into another app after window was actively focused
+                    if !w_clone.is_active() && *focused_check.borrow() {
                         w_clone.set_visible(false);
+                        *focused_check.borrow_mut() = false;
                     }
                 });
             }
@@ -1711,6 +1739,8 @@ impl ClipboardWindow {
             filter_and_render,
             daemon_connected,
             toast_overlay,
+            presented_time,
+            has_been_focused,
         }
     }
 
@@ -1902,6 +1932,8 @@ impl ClipboardWindow {
         );
 
         // Present window
+        *self.has_been_focused.borrow_mut() = false;
+        *self.presented_time.borrow_mut() = std::time::Instant::now();
         self.window.present();
 
         // Immediately force activation and raise above any background/active windows
@@ -2026,23 +2058,13 @@ impl ClipboardWindow {
                 }
             }
 
-            // 2. Extra safeguard via xdotool
+            // 2. Extra safeguard via xdotool on X11
             let _ = std::process::Command::new("xdotool")
                 .args([
                     "windowactivate",
                     &xid.to_string(),
                     "windowraise",
                     &xid.to_string(),
-                ])
-                .spawn();
-        } else {
-            let _ = std::process::Command::new("xdotool")
-                .args([
-                    "search",
-                    "--class",
-                    "clipboard-history-gui",
-                    "windowactivate",
-                    "windowraise",
                 ])
                 .spawn();
         }
@@ -2060,6 +2082,21 @@ impl ClipboardWindow {
 
         // 1. Hyprland Wayland move and float
         if which::which("hyprctl").is_ok() {
+            let _ = std::process::Command::new("hyprctl")
+                .args([
+                    "dispatch",
+                    "setfloating",
+                    "class:com.antigravity.ClipboardHistory",
+                ])
+                .output();
+            let _ = std::process::Command::new("hyprctl")
+                .args([
+                    "dispatch",
+                    "movewindowpixel",
+                    &format!("exact {} {}", target_x, target_y),
+                    "class:com.antigravity.ClipboardHistory",
+                ])
+                .output();
             let _ = std::process::Command::new("hyprctl")
                 .args(["dispatch", "setfloating", "class:clipboard-history-gui"])
                 .output();
@@ -2093,17 +2130,6 @@ impl ClipboardWindow {
                 let _ = conn.configure_window(xid, &aux);
                 let _ = conn.flush();
             }
-        } else {
-            let _ = std::process::Command::new("xdotool")
-                .args([
-                    "search",
-                    "--class",
-                    "clipboard-history-gui",
-                    "windowmove",
-                    &target_x.to_string(),
-                    &target_y.to_string(),
-                ])
-                .spawn();
         }
     }
 

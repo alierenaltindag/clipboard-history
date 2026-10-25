@@ -9,4 +9,5 @@ Type=Application
 Categories=Utility;System;
 Keywords=clipboard;history;paste;super+c;win+c;win+v;copy;
 StartupNotify=false
+StartupWMClass=com.antigravity.ClipboardHistory
 X-GNOME-Autostart-enabled=false

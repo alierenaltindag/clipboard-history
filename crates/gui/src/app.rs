@@ -109,6 +109,14 @@ impl ClipboardApp {
             let args = cmd_line.arguments();
             let has_toggle = args.iter().any(|a| a == "--toggle" || a == "-t");
             let has_settings = args.iter().any(|a| a == "--settings" || a == "-s");
+            let has_hidden = args
+                .iter()
+                .any(|a| a == "--hidden" || a == "--background" || a == "-b");
+
+            if has_hidden {
+                // Silently initialize in background without presenting window
+                return 0;
+            }
 
             if has_settings {
                 let cfg = AppConfig::load_or_default();
@@ -158,7 +166,8 @@ pub fn restart_gui_application(open_settings: bool) {
     {
         use std::process::Command;
         let mut cmd = Command::new("sh");
-        cmd.args(["-c", &format!("sleep 0.3; exec '{}' {}", bin_str, flag)])
+        // Increased sleep to 0.6s to allow D-Bus bus name release and avoid GApplication name acquisition races
+        cmd.args(["-c", &format!("sleep 0.6; exec '{}' {}", bin_str, flag)])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());

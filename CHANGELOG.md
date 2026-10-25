@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.11] - 2026-10-25
+
+### Fixed
+- **Wayland & CachyOS/KDE Plasma Window Lifecycle and Dock Stability**:
+  - **Eliminated Focus-Loss Auto-Dismiss Loop**:
+    - The auto-dismiss handler (`connect_is_active_notify`) now tracks whether the window was actually focused by the user/compositor (`has_been_focused`), preventing newly mapped Wayland windows from prematurely closing before KWin or the user assigns active focus.
+    - Added an initial presentation grace period (1200ms) ensuring the window stays visible during Wayland compositor mapping animations and keyboard navigation.
+  - **Removed Disruptive `xdotool` Invocations on Wayland**:
+    - Purged invalid `xdotool windowactivate` and `xdotool windowmove` fallbacks on native Wayland GTK4 surfaces (`xid_opt.is_none()`). These calls previously targeted Xwayland and caused KWin to flicker or de-focus the native Wayland surface.
+  - **Unified Dock Application ID & Eliminated Duplicate Taskbar Icons**:
+    - Added `StartupWMClass=com.antigravity.ClipboardHistory` to `clipboard-history.desktop` and installed desktop and icon symlinks under `com.antigravity.ClipboardHistory`. This enables KDE Plasma, GNOME Dash, and other docks to associate the running window with the pinned launcher, resolving the duplicate dock icon issue.
+    - Updated Hyprland window rules and move dispatch to match both `class:clipboard-history-gui` and `class:com.antigravity.ClipboardHistory`.
+  - **Multi-Path Binary Discovery & Update Priority**:
+    - Updated `find_binary_named()` in `crates/core/src/service.rs` to prioritize `~/.local/bin` and `~/.cargo/bin` over `/usr/bin`, ensuring user in-place updates are discovered and launched immediately without being shadowed by older system packages.
+  - **Background Launch Support**:
+    - Added `--hidden` and `--background` CLI arguments to `clipboard-history-gui`, allowing silent startup without triggering premature window presentation during session restore.
+
 ## [1.2.10] - 2026-10-25
 
 ### Fixed

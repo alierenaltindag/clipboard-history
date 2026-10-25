@@ -1,6 +1,6 @@
 # Maintainer: Ali Eren Altındağ <alierenaltindaag@gmail.com>
 pkgname=clipboard-history
-pkgver=1.2.10
+pkgver=1.2.11
 pkgrel=1
 pkgdesc="High-performance Universal Clipboard History utility for Linux (Win+V alternative)"
 arch=('x86_64' 'aarch64')
@@ -31,9 +31,11 @@ package() {
     install -Dm755 target/release/clipboard-history-gui "$pkgdir/usr/bin/clipboard-history-gui"
 
     install -Dm644 packaging/desktop/clipboard-history.desktop "$pkgdir/usr/share/applications/clipboard-history.desktop"
+    ln -sf clipboard-history.desktop "$pkgdir/usr/share/applications/com.antigravity.ClipboardHistory.desktop"
     install -Dm644 packaging/desktop/clipboard-history-autostart.desktop "$pkgdir/etc/xdg/autostart/clipboard-history-autostart.desktop"
     install -Dm644 packaging/desktop/clipboard-history.metainfo.xml "$pkgdir/usr/share/metainfo/clipboard-history.metainfo.xml"
     install -Dm644 packaging/desktop/icons/clipboard-history.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/clipboard-history.svg"
+    ln -sf clipboard-history.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/com.antigravity.ClipboardHistory.svg"
     mkdir -p "$pkgdir/usr/share/icons/hicolor"
     cp -r packaging/desktop/icons/hicolor/* "$pkgdir/usr/share/icons/hicolor/"
     install -Dm644 packaging/systemd/clipboard-history.service "$pkgdir/usr/lib/systemd/user/clipboard-history.service"

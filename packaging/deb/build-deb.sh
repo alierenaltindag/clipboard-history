@@ -55,10 +55,12 @@ chmod 755 "${BUILD_ROOT}/usr/bin/"*
 
 # Desktop, Metainfo, Icon, Systemd, XDG Autostart
 cp -f "${PROJECT_ROOT}/packaging/desktop/clipboard-history.desktop" "${BUILD_ROOT}/usr/share/applications/"
+ln -sf clipboard-history.desktop "${BUILD_ROOT}/usr/share/applications/com.antigravity.ClipboardHistory.desktop"
 mkdir -p "${BUILD_ROOT}/etc/xdg/autostart"
 cp -f "${PROJECT_ROOT}/packaging/desktop/clipboard-history-autostart.desktop" "${BUILD_ROOT}/etc/xdg/autostart/"
-cp -f "${PROJECT_ROOT}/packaging/desktop/clipboard-history.metainfo.xml" "${BUILD_ROOT}/usr/share/metainfo/"
+cp -f "${PROJECT_ROOT}/packaging/desktop/clipboard-history.metainfo.xml" "${METAINFO_DIR:-${BUILD_ROOT}/usr/share/metainfo/}"
 cp -f "${PROJECT_ROOT}/packaging/desktop/icons/clipboard-history.svg" "${BUILD_ROOT}/usr/share/icons/hicolor/scalable/apps/"
+ln -sf clipboard-history.svg "${BUILD_ROOT}/usr/share/icons/hicolor/scalable/apps/com.antigravity.ClipboardHistory.svg"
 
 for size in 16 24 32 48 64 128 256 512; do
     if [[ -f "${PROJECT_ROOT}/packaging/desktop/icons/hicolor/${size}x${size}/apps/clipboard-history.png" ]]; then

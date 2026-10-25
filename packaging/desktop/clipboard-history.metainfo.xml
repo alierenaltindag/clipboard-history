@@ -32,6 +32,11 @@
     <binary>clipboard-history-gui</binary>
   </provides>
   <releases>
+    <release version="1.2.11" date="2026-10-25">
+      <description>
+        <p>Wayland and CachyOS/KDE Plasma window lifecycle stability: eliminated focus-loss auto-dismiss loop on Wayland by tracking focus history and adding an initial presentation grace period, removed disruptive xdotool calls on native Wayland surfaces, unified application ID and dock launcher via StartupWMClass=com.antigravity.ClipboardHistory to eliminate duplicate taskbar icons, prioritized ~/.local/bin in multi-path binary discovery, and added support for silent background initialization.</p>
+      </description>
+    </release>
     <release version="1.2.10" date="2026-10-25">
       <description>
         <p>Wayland and CachyOS clipboard capture reliability: eliminated wl-paste SIGPIPE crash loop using pipe-draining child execution, implemented resilient generic text fallback when MIME queries fail, added live UnixStream socket connectivity validation across SDDM/Wayland sessions, and integrated fallback polling for compositors without data-control support.</p>
