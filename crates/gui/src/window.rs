@@ -25,7 +25,7 @@ use tracing::info;
 #[cfg(feature = "gtk")]
 pub struct ClipboardWindow {
     pub window: Window,
-    config: AppConfig,
+    config: Rc<RefCell<AppConfig>>,
     #[allow(dead_code)]
     list_box: ListBox,
     entries: Rc<RefCell<Vec<ClipboardEntry>>>,
@@ -49,12 +49,21 @@ pub struct ClipboardWindow {
 impl ClipboardWindow {
     #[allow(clippy::type_complexity)]
     pub fn new(app: &impl IsA<gtk4::Application>, config: AppConfig) -> Self {
+        let config = Rc::new(RefCell::new(config));
+        let (init_width, init_height, auto_check_updates) = {
+            let cfg = config.borrow();
+            (
+                cfg.ui.window_width as i32,
+                cfg.ui.window_height as i32,
+                cfg.updates.auto_check,
+            )
+        };
         let window = Window::builder()
             .application(app)
             .title("Clipboard History")
             .icon_name("clipboard-history")
-            .default_width(config.ui.window_width as i32)
-            .default_height(config.ui.window_height as i32)
+            .default_width(init_width)
+            .default_height(init_height)
             .hide_on_close(true)
             .decorated(false)
             .build();
@@ -105,10 +114,15 @@ impl ClipboardWindow {
         header_box.append(&top_tab_container);
 
         let win_for_settings = window.clone();
-        let cfg_for_settings = config.clone();
+        let cfg_for_settings = Rc::clone(&config);
         settings_btn.connect_clicked(move |_| {
             win_for_settings.set_visible(false);
-            crate::settings_dialog::SettingsDialog::show(None, cfg_for_settings.clone());
+            let cfg_cell = Rc::clone(&cfg_for_settings);
+            glib::MainContext::default().spawn_local(async move {
+                let fresh_cfg = Self::fetch_latest_config().await;
+                *cfg_cell.borrow_mut() = fresh_cfg.clone();
+                crate::settings_dialog::SettingsDialog::show(None, fresh_cfg);
+            });
         });
 
         // 2. Windows 11 Subhead: Left "Clipboard" title, Right "Clear all" button
@@ -216,7 +230,7 @@ impl ClipboardWindow {
         let banner_show = update_banner.clone();
         let label_show = update_label.clone();
         let btn_show = update_btn.clone();
-        if config.updates.auto_check {
+        if auto_check_updates {
             glib::MainContext::default().spawn_local(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 if let Ok(client) = IpcClient::connect().await {
@@ -412,7 +426,7 @@ impl ClipboardWindow {
             let list_box_clone = list_box.clone();
             let filtered_clone = Rc::clone(&filtered_entries);
             let win_clone = window.clone();
-            let config_clone = config.clone();
+            let config_clone = Rc::clone(&config);
             let stack_clone = view_stack.clone();
             let empty_clone = empty_status.clone();
             let current_query_clone = Rc::clone(&current_query);
@@ -1127,15 +1141,20 @@ impl ClipboardWindow {
         let entries_for_act = Rc::clone(&entries);
         let fn_refresh_act = Rc::clone(&filter_and_render);
         let win_for_act = window.clone();
-        let cfg_for_act = config.clone();
+        let cfg_for_act = Rc::clone(&config);
         list_box.connect_row_activated(move |_, row| {
             let entry_id = row.widget_name();
             let items = filtered_for_act.borrow();
             if let Some(entry) = items.iter().find(|e| e.id == entry_id.as_str()) {
                 let entry_type = entry.entry_type;
-                let auto_paste = cfg_for_act.paste.auto_paste;
-                let move_to_top = cfg_for_act.paste.move_pasted_to_top;
-                let delay_ms = cfg_for_act.paste.effective_delay_ms();
+                let (auto_paste, move_to_top, delay_ms) = {
+                    let cfg = cfg_for_act.borrow();
+                    (
+                        cfg.paste.auto_paste,
+                        cfg.paste.move_pasted_to_top,
+                        cfg.paste.effective_delay_ms(),
+                    )
+                };
                 let entry_id_str = entry.id.clone();
                 let content_hash = entry.content_hash.clone();
 
@@ -1143,44 +1162,7 @@ impl ClipboardWindow {
                 win_for_act.set_visible(false);
 
                 if entry_type == clipboard_history_core::domain::EntryType::Image {
-                    let blobs_dir = AppConfig::blobs_dir();
-                    let find_blob = |hash: &str| -> Option<std::path::PathBuf> {
-                        let direct = blobs_dir.join(hash);
-                        if direct.exists() {
-                            return Some(direct);
-                        }
-                        let with_ext = blobs_dir.join(format!("{}.blob", hash));
-                        if with_ext.exists() {
-                            return Some(with_ext);
-                        }
-                        None
-                    };
-                    let img_path = entry.blob_hash.as_deref().and_then(find_blob);
-                    let id_for_touch = entry_id_str.clone();
-                    if let Some(p) = img_path {
-                        if let Ok(bytes) = std::fs::read(&p) {
-                            glib::MainContext::default().spawn_local(async move {
-                                if let Ok(client) = IpcClient::connect().await {
-                                    let _ = client.prepare_paste(&content_hash).await;
-                                    if move_to_top {
-                                        let _ = client.touch_entry(&id_for_touch).await;
-                                    }
-                                }
-                                clipboard_history_core::clipboard::copy_image_to_system_clipboard(
-                                    &bytes,
-                                    Some("image/png"),
-                                )
-                                .await;
-                                if auto_paste {
-                                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms))
-                                        .await;
-                                    let cascade = InjectorCascade::new();
-                                    let (name, success) = cascade.execute_paste().await;
-                                    info!("Paste executed: injector={}, success={}", name, success);
-                                }
-                            });
-                        }
-                    }
+                    Self::paste_image_entry(entry, auto_paste, move_to_top, delay_ms);
                 } else {
                     let mut text = entry
                         .text_content
@@ -1244,7 +1226,7 @@ impl ClipboardWindow {
         let filtered_key = Rc::clone(&filtered_entries);
         let entries_key = Rc::clone(&entries);
         let fn_refresh_key = Rc::clone(&filter_and_render);
-        let cfg_key = config.clone();
+        let cfg_key = Rc::clone(&config);
         let current_filter_key = Rc::clone(&current_filter);
         let switch_category_key = Rc::clone(&switch_category);
         let toggle_pin_key = Rc::clone(&toggle_pin);
@@ -1312,7 +1294,9 @@ impl ClipboardWindow {
                                 display.clipboard().set_text(&text);
                             }
                             let text_clone = text.clone();
-                            let hash = clipboard_history_core::blob::BlobStore::compute_hash(text_clone.as_bytes());
+                            let hash = clipboard_history_core::blob::BlobStore::compute_hash(
+                                text_clone.as_bytes(),
+                            );
                             glib::MainContext::default().spawn_local(async move {
                                 if let Ok(client) = IpcClient::connect().await {
                                     let _ = client.prepare_paste(&hash).await;
@@ -1403,11 +1387,12 @@ impl ClipboardWindow {
                                     .cloned()
                             })
                         };
+                        let cfg_snap = cfg_key.borrow().clone();
                         show_transforms_popover(
                             &selected_row,
                             entry,
                             &win_key,
-                            &cfg_key,
+                            &cfg_snap,
                             TransformsOptions {
                                 diff_target,
                                 on_pin: Some(Rc::clone(&toggle_pin_key)),
@@ -1434,11 +1419,18 @@ impl ClipboardWindow {
                             display.clipboard().set_text(&plain_text);
                         }
                         win_key.set_visible(false);
-                        let auto_paste = cfg_key.paste.auto_paste;
-                        let move_to_top = cfg_key.paste.move_pasted_to_top;
-                        let delay_ms = cfg_key.paste.effective_delay_ms();
+                        let (auto_paste, move_to_top, delay_ms) = {
+                            let cfg = cfg_key.borrow();
+                            (
+                                cfg.paste.auto_paste,
+                                cfg.paste.move_pasted_to_top,
+                                cfg.paste.effective_delay_ms(),
+                            )
+                        };
                         let entry_id_str = entry.id.clone();
-                        let hash = clipboard_history_core::blob::BlobStore::compute_hash(plain_text.as_bytes());
+                        let hash = clipboard_history_core::blob::BlobStore::compute_hash(
+                            plain_text.as_bytes(),
+                        );
                         let id_for_touch = entry_id_str.clone();
                         glib::MainContext::default().spawn_local(async move {
                             if let Ok(client) = IpcClient::connect().await {
@@ -1462,7 +1454,8 @@ impl ClipboardWindow {
 
                         if move_to_top {
                             let mut all_entries = entries_key.borrow_mut();
-                            if let Some(pos) = all_entries.iter().position(|e| e.id == entry_id_str) {
+                            if let Some(pos) = all_entries.iter().position(|e| e.id == entry_id_str)
+                            {
                                 all_entries[pos].last_used_at = chrono::Utc::now();
                                 all_entries.sort_by(|a, b| {
                                     b.is_pinned
@@ -1513,7 +1506,9 @@ impl ClipboardWindow {
                                     items
                                         .iter()
                                         .skip(pos + 1)
-                                        .find(|e| e.entry_type != EntryType::Image && e.id != entry.id)
+                                        .find(|e| {
+                                            e.entry_type != EntryType::Image && e.id != entry.id
+                                        })
                                         .or_else(|| {
                                             items.iter().take(pos).rev().find(|e| {
                                                 e.entry_type != EntryType::Image && e.id != entry.id
@@ -1617,50 +1612,21 @@ impl ClipboardWindow {
                         let items = filtered_key.borrow();
                         if let Some(entry) = items.get(digit) {
                             win_key.set_visible(false);
-                            let auto_paste = cfg_key.paste.auto_paste;
-                            let move_to_top = cfg_key.paste.move_pasted_to_top;
-                            let delay_ms = cfg_key.paste.effective_delay_ms();
+                            let (auto_paste, move_to_top, delay_ms) = {
+                                let cfg = cfg_key.borrow();
+                                (
+                                    cfg.paste.auto_paste,
+                                    cfg.paste.move_pasted_to_top,
+                                    cfg.paste.effective_delay_ms(),
+                                )
+                            };
                             let entry_id_str = entry.id.clone();
                             let content_hash = entry.content_hash.clone();
                             let id_for_touch = entry_id_str.clone();
 
-                            if entry.entry_type == clipboard_history_core::domain::EntryType::Image {
-                                let blobs_dir = AppConfig::blobs_dir();
-                                let find_blob = |hash: &str| -> Option<std::path::PathBuf> {
-                                    let direct = blobs_dir.join(hash);
-                                    if direct.exists() {
-                                        return Some(direct);
-                                    }
-                                    let with_ext = blobs_dir.join(format!("{}.blob", hash));
-                                    if with_ext.exists() {
-                                        return Some(with_ext);
-                                    }
-                                    None
-                                };
-                                let img_path = entry.blob_hash.as_deref().and_then(find_blob);
-                                if let Some(p) = img_path {
-                                    if let Ok(bytes) = std::fs::read(&p) {
-                                        glib::MainContext::default().spawn_local(async move {
-                                            if let Ok(client) = IpcClient::connect().await {
-                                                let _ = client.prepare_paste(&content_hash).await;
-                                                if move_to_top {
-                                                    let _ = client.touch_entry(&id_for_touch).await;
-                                                }
-                                            }
-                                            clipboard_history_core::clipboard::copy_image_to_system_clipboard(
-                                                &bytes,
-                                                Some("image/png"),
-                                            )
-                                            .await;
-                                            if auto_paste {
-                                                tokio::time::sleep(std::time::Duration::from_millis(delay_ms))
-                                                    .await;
-                                                let cascade = InjectorCascade::new();
-                                                let _ = cascade.execute_paste().await;
-                                            }
-                                        });
-                                    }
-                                }
+                            if entry.entry_type == clipboard_history_core::domain::EntryType::Image
+                            {
+                                Self::paste_image_entry(entry, auto_paste, move_to_top, delay_ms);
                             } else {
                                 let text = entry
                                     .text_content
@@ -1678,8 +1644,10 @@ impl ClipboardWindow {
                                     }
                                     clipboard_history_core::copy_to_system_clipboard(&text).await;
                                     if auto_paste {
-                                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms))
-                                            .await;
+                                        tokio::time::sleep(std::time::Duration::from_millis(
+                                            delay_ms,
+                                        ))
+                                        .await;
                                         let cascade = InjectorCascade::new();
                                         let _ = cascade.execute_paste().await;
                                     }
@@ -1688,7 +1656,9 @@ impl ClipboardWindow {
 
                             if move_to_top {
                                 let mut all_entries = entries_key.borrow_mut();
-                                if let Some(pos) = all_entries.iter().position(|e| e.id == entry_id_str) {
+                                if let Some(pos) =
+                                    all_entries.iter().position(|e| e.id == entry_id_str)
+                                {
                                     all_entries[pos].last_used_at = chrono::Utc::now();
                                     all_entries.sort_by(|a, b| {
                                         b.is_pinned
@@ -1799,11 +1769,17 @@ impl ClipboardWindow {
             }
         }
 
-        // 3. Fallback to xdotool getmouselocation
-        if let Ok(output) = std::process::Command::new("xdotool")
-            .arg("getmouselocation")
-            .output()
+        // 3. Fallback to xdotool getmouselocation (X11 only when DISPLAY and binary exist)
+        let xdotool_output = if std::env::var("DISPLAY").is_ok() && which::which("xdotool").is_ok()
         {
+            std::process::Command::new("xdotool")
+                .arg("getmouselocation")
+                .output()
+                .ok()
+        } else {
+            None
+        };
+        if let Some(output) = xdotool_output {
             if output.status.success() {
                 let out_str = String::from_utf8_lossy(&output.stdout);
                 let mut x_val = None;
@@ -1876,8 +1852,12 @@ impl ClipboardWindow {
         let max_width = (mon_w - 40).max(300);
         let max_height = (mon_h - 80).max(400);
 
-        let target_w = (self.config.ui.window_width as i32).clamp(300, max_width);
-        let target_h = (self.config.ui.window_height as i32).clamp(400, max_height);
+        let (cfg_width, cfg_height) = {
+            let cfg = self.config.borrow();
+            (cfg.ui.window_width as i32, cfg.ui.window_height as i32)
+        };
+        let target_w = cfg_width.clamp(300, max_width);
+        let target_h = cfg_height.clamp(400, max_height);
         self.window.set_default_size(target_w, target_h);
 
         let win_w = self.window.width().max(target_w);
@@ -1923,6 +1903,13 @@ impl ClipboardWindow {
             "Presenting window: is_gnome={} cursor={:?} target=({},{}) monitor=({},{},{}x{})",
             is_gnome, cursor_opt, target_x, target_y, mon_x, mon_y, mon_w, mon_h
         );
+
+        // Refresh runtime config from daemon so stale startup config never overrides daemon state
+        let cfg_refresh = Rc::clone(&self.config);
+        glib::MainContext::default().spawn_local(async move {
+            let fresh_cfg = Self::fetch_latest_config().await;
+            *cfg_refresh.borrow_mut() = fresh_cfg;
+        });
 
         // Fetch latest entries via IPC (auto-starting daemon if offline)
         Self::refresh_entries_internal(
@@ -2080,34 +2067,14 @@ impl ClipboardWindow {
             return;
         }
 
-        // 1. Hyprland Wayland move and float (only if actually on Hyprland, dispatched asynchronously)
+        // 1. Hyprland Wayland move and float (only if actually on Hyprland, batched into one IPC call)
         if std::env::var("HYPRLAND_INSTANCE_SIGNATURE").is_ok() && which::which("hyprctl").is_ok() {
             std::thread::spawn(move || {
+                let batch = format!(
+                    "dispatch setfloating class:com.antigravity.ClipboardHistory ; dispatch movewindowpixel exact {target_x} {target_y},class:com.antigravity.ClipboardHistory ; dispatch setfloating class:clipboard-history-gui ; dispatch movewindowpixel exact {target_x} {target_y},class:clipboard-history-gui"
+                );
                 let _ = std::process::Command::new("hyprctl")
-                    .args([
-                        "dispatch",
-                        "setfloating",
-                        "class:com.antigravity.ClipboardHistory",
-                    ])
-                    .output();
-                let _ = std::process::Command::new("hyprctl")
-                    .args([
-                        "dispatch",
-                        "movewindowpixel",
-                        &format!("exact {} {}", target_x, target_y),
-                        "class:com.antigravity.ClipboardHistory",
-                    ])
-                    .output();
-                let _ = std::process::Command::new("hyprctl")
-                    .args(["dispatch", "setfloating", "class:clipboard-history-gui"])
-                    .output();
-                let _ = std::process::Command::new("hyprctl")
-                    .args([
-                        "dispatch",
-                        "movewindowpixel",
-                        &format!("exact {} {}", target_x, target_y),
-                        "class:clipboard-history-gui",
-                    ])
+                    .args(["--batch", &batch])
                     .output();
             });
         }
@@ -2135,6 +2102,95 @@ impl ClipboardWindow {
         }
     }
 
+    pub async fn fetch_latest_config() -> AppConfig {
+        let Ok(client) = IpcClient::connect().await else {
+            return AppConfig::load_or_default();
+        };
+        match client.send(&IpcRequest::GetConfig).await {
+            Ok(IpcResponse::Config(cfg)) => *cfg,
+            _ => AppConfig::load_or_default(),
+        }
+    }
+
+    pub fn set_config(&self, cfg: AppConfig) {
+        *self.config.borrow_mut() = cfg;
+    }
+
+    fn find_blob_path(hash: &str) -> Option<std::path::PathBuf> {
+        let blobs_dir = AppConfig::blobs_dir();
+        let direct = blobs_dir.join(hash);
+        if direct.exists() {
+            return Some(direct);
+        }
+        let with_ext = blobs_dir.join(format!("{}.blob", hash));
+        if with_ext.exists() {
+            return Some(with_ext);
+        }
+        None
+    }
+
+    fn paste_image_entry(
+        entry: &ClipboardEntry,
+        auto_paste: bool,
+        move_to_top: bool,
+        delay_ms: u64,
+    ) {
+        let Some(blob_hash) = entry.blob_hash.clone() else {
+            return;
+        };
+        let content_hash = entry.content_hash.clone();
+        let id_for_touch = entry.id.clone();
+        let mime_type = entry
+            .mime_types
+            .iter()
+            .find(|m| m.starts_with("image/"))
+            .cloned()
+            .unwrap_or_else(|| "image/png".to_string());
+
+        glib::MainContext::default().spawn_local(async move {
+            let client_opt = IpcClient::connect().await.ok();
+            let ipc_bytes = match client_opt.as_ref() {
+                Some(client) => match client
+                    .send(&IpcRequest::GetBlob {
+                        hash: blob_hash.clone(),
+                    })
+                    .await
+                {
+                    Ok(IpcResponse::Blob(bytes)) => Some(bytes),
+                    _ => None,
+                },
+                None => None,
+            };
+            let bytes_opt = ipc_bytes
+                .or_else(|| Self::find_blob_path(&blob_hash).and_then(|p| std::fs::read(&p).ok()));
+
+            let Some(bytes) = bytes_opt else {
+                tracing::warn!("Failed to load image blob {} for pasting", blob_hash);
+                return;
+            };
+
+            if let Some(ref client) = client_opt {
+                let _ = client.prepare_paste(&content_hash).await;
+                if move_to_top {
+                    let _ = client.touch_entry(&id_for_touch).await;
+                }
+            }
+
+            clipboard_history_core::clipboard::copy_image_to_system_clipboard(
+                &bytes,
+                Some(mime_type.as_str()),
+            )
+            .await;
+
+            if auto_paste {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                let cascade = InjectorCascade::new();
+                let (name, success) = cascade.execute_paste().await;
+                info!("Paste executed: injector={}, success={}", name, success);
+            }
+        });
+    }
+
     pub async fn ensure_daemon_running() -> Option<IpcClient> {
         match clipboard_history_core::service::smart_start_daemon().await {
             Ok(client) => Some(client),
@@ -2153,6 +2209,7 @@ impl ClipboardWindow {
         glib::MainContext::default().spawn_local(async move {
             match Self::ensure_daemon_running().await {
                 Some(client) => {
+                    let was_connected = *daemon_connected_cell.borrow();
                     *daemon_connected_cell.borrow_mut() = true;
                     let req = IpcRequest::GetEntries {
                         limit: 100,
@@ -2191,12 +2248,32 @@ impl ClipboardWindow {
                                 .then_with(|| b.last_used_at.cmp(&a.last_used_at))
                         });
 
+                        let new_fp: Vec<(String, chrono::DateTime<chrono::Utc>, bool)> = items
+                            .iter()
+                            .map(|e| (e.id.clone(), e.last_used_at, e.is_pinned))
+                            .collect();
+                        let cur_fp: Vec<(String, chrono::DateTime<chrono::Utc>, bool)> =
+                            entries_cell
+                                .borrow()
+                                .iter()
+                                .map(|e| (e.id.clone(), e.last_used_at, e.is_pinned))
+                                .collect();
+
+                        if was_connected && new_fp == cur_fp {
+                            return;
+                        }
+
                         *entries_cell.borrow_mut() = items;
                         fn_refresh();
                     }
                 }
                 None => {
+                    let was_connected = *daemon_connected_cell.borrow();
+                    let was_empty = entries_cell.borrow().is_empty();
                     *daemon_connected_cell.borrow_mut() = false;
+                    if !was_connected && was_empty {
+                        return;
+                    }
                     *entries_cell.borrow_mut() = Vec::new();
                     fn_refresh();
                 }
@@ -2207,7 +2284,7 @@ impl ClipboardWindow {
 
 struct RowConfig<'a> {
     window: &'a Window,
-    config: &'a AppConfig,
+    config: &'a Rc<RefCell<AppConfig>>,
     list_box: &'a ListBox,
     on_pin: ActionCallback,
     on_del: ActionCallback,
@@ -2236,7 +2313,7 @@ fn create_configured_entry_row(
     // Actions / Transforms button (···)
     let entry_for_popover = entry.clone();
     let win_for_pop = cfg.window.clone();
-    let cfg_for_pop = cfg.config.clone();
+    let cfg_for_pop = Rc::clone(cfg.config);
     let options = TransformsOptions {
         diff_target: cfg.diff_target,
         on_pin: Some(cfg.on_pin),
@@ -2244,11 +2321,12 @@ fn create_configured_entry_row(
         on_mark_diff: cfg.on_mark_diff,
     };
     entry_row.actions_btn.connect_clicked(move |btn| {
+        let cfg_snap = cfg_for_pop.borrow().clone();
         show_transforms_popover(
             btn,
             &entry_for_popover,
             &win_for_pop,
-            &cfg_for_pop,
+            &cfg_snap,
             TransformsOptions {
                 diff_target: options.diff_target.clone(),
                 on_pin: options.on_pin.as_ref().map(Rc::clone),

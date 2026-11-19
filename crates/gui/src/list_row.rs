@@ -47,42 +47,54 @@ impl EntryRow {
 
         match entry.entry_type {
             EntryType::Image => {
-                let blobs_dir = AppConfig::blobs_dir();
-                let find_blob = |hash: &str| -> Option<std::path::PathBuf> {
-                    let direct = blobs_dir.join(hash);
-                    if direct.exists() {
-                        return Some(direct);
-                    }
-                    let with_ext = blobs_dir.join(format!("{}.blob", hash));
-                    if with_ext.exists() {
-                        return Some(with_ext);
-                    }
-                    None
-                };
-
-                let thumb_path = entry
-                    .thumbnail_blob_hash
-                    .as_deref()
-                    .and_then(find_blob)
-                    .or_else(|| entry.blob_hash.as_deref().and_then(find_blob));
-
-                let mut preview_added = false;
-                if let Some(p) = thumb_path {
-                    let picture = Picture::for_filename(&p);
-                    picture.set_content_fit(gtk4::ContentFit::ScaleDown);
-                    picture.set_can_shrink(true);
-                    picture.set_size_request(-1, 52);
-                    picture.add_css_class("thumbnail-preview");
-                    content_box.append(&picture);
-                    preview_added = true;
-                }
-                if !preview_added {
+                let make_fallback_label = || {
                     let preview_label = Label::new(Some(&truncated_text));
                     preview_label.set_xalign(0.0);
                     preview_label.set_lines(2);
                     preview_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
                     preview_label.add_css_class("card-content-text");
-                    content_box.append(&preview_label);
+                    preview_label
+                };
+
+                let thumb_hash = entry
+                    .thumbnail_blob_hash
+                    .clone()
+                    .or_else(|| entry.blob_hash.clone());
+
+                if let Some(hash) = thumb_hash {
+                    let picture = Picture::new();
+                    picture.set_content_fit(gtk4::ContentFit::ScaleDown);
+                    picture.set_can_shrink(true);
+                    picture.set_size_request(-1, 52);
+                    picture.add_css_class("thumbnail-preview");
+                    content_box.append(&picture);
+
+                    let fallback_label = make_fallback_label();
+                    fallback_label.set_visible(false);
+                    content_box.append(&fallback_label);
+
+                    let pic_weak = picture.downgrade();
+                    let lbl_weak = fallback_label.downgrade();
+                    glib::MainContext::default().spawn_local(async move {
+                        let bytes_opt = load_decrypted_blob(&hash).await;
+                        if let Some(bytes) = bytes_opt {
+                            let gbytes = glib::Bytes::from_owned(bytes);
+                            if let Ok(texture) = gdk4::Texture::from_bytes(&gbytes) {
+                                if let Some(pic) = pic_weak.upgrade() {
+                                    pic.set_paintable(Some(&texture));
+                                }
+                                return;
+                            }
+                        }
+                        if let Some(pic) = pic_weak.upgrade() {
+                            pic.set_visible(false);
+                        }
+                        if let Some(lbl) = lbl_weak.upgrade() {
+                            lbl.set_visible(true);
+                        }
+                    });
+                } else {
+                    content_box.append(&make_fallback_label());
                 }
             }
             EntryType::Code => {
@@ -128,42 +140,26 @@ impl EntryRow {
         // 3. Hover Tooltip with Metadata (Character/Line count or Dimensions/Size)
         let tooltip_text = match entry.entry_type {
             EntryType::Image => {
-                let blobs_dir = AppConfig::blobs_dir();
-                let find_blob = |hash: &str| -> Option<std::path::PathBuf> {
-                    let direct = blobs_dir.join(hash);
-                    if direct.exists() {
-                        return Some(direct);
-                    }
-                    let with_ext = blobs_dir.join(format!("{}.blob", hash));
-                    if with_ext.exists() {
-                        return Some(with_ext);
-                    }
-                    None
-                };
-                let img_path = entry
-                    .blob_hash
-                    .as_deref()
-                    .and_then(find_blob)
-                    .or_else(|| entry.thumbnail_blob_hash.as_deref().and_then(find_blob));
-                let dims = img_path.and_then(|p| image::image_dimensions(&p).ok());
-                let size_kb = (entry.size_bytes as f64) / 1024.0;
-                if let Some((w, h)) = dims {
-                    format!("Image • {} × {} px • {:.1} KB", w, h, size_kb)
+                if !entry.preview.is_empty() {
+                    entry.preview.clone()
                 } else {
-                    format!("Image • {:.1} KB", size_kb)
+                    format!("Image • {:.1} KB", (entry.size_bytes as f64) / 1024.0)
                 }
             }
-            EntryType::Code => {
-                let text = entry.text_content.as_deref().unwrap_or(&entry.preview);
-                let chars = text.chars().count();
-                let lines = text.lines().count();
-                format!("Code Snippet • {} characters • {} lines", chars, lines)
-            }
             _ => {
+                let kind_label = if entry.entry_type == EntryType::Code {
+                    "Code Snippet"
+                } else {
+                    "Text"
+                };
                 let text = entry.text_content.as_deref().unwrap_or(&entry.preview);
-                let chars = text.chars().count();
-                let lines = text.lines().count();
-                format!("Text • {} characters • {} lines", chars, lines)
+                if text.len() <= 65_536 {
+                    let chars = text.chars().count();
+                    let lines = text.lines().count();
+                    format!("{} • {} characters • {} lines", kind_label, chars, lines)
+                } else {
+                    format!("{} • {}", kind_label, format_payload_size(entry.size_bytes))
+                }
             }
         };
         row.set_tooltip_text(Some(&tooltip_text));
@@ -218,15 +214,96 @@ pub fn format_relative_time(created_at: chrono::DateTime<chrono::Utc>) -> String
     }
 }
 
+fn find_blob_path(hash: &str) -> Option<std::path::PathBuf> {
+    let blobs_dir = AppConfig::blobs_dir();
+    let direct = blobs_dir.join(hash);
+    if direct.exists() {
+        return Some(direct);
+    }
+    let with_ext = blobs_dir.join(format!("{}.blob", hash));
+    if with_ext.exists() {
+        return Some(with_ext);
+    }
+    None
+}
+
+async fn load_decrypted_blob(hash: &str) -> Option<Vec<u8>> {
+    use clipboard_history_core::ipc::{IpcClient, IpcRequest, IpcResponse};
+    if let Ok(client) = IpcClient::connect().await {
+        let res = client
+            .send(&IpcRequest::GetBlob {
+                hash: hash.to_string(),
+            })
+            .await;
+        if let Ok(IpcResponse::Blob(bytes)) = res {
+            return Some(bytes);
+        }
+    }
+    find_blob_path(hash).and_then(|p| std::fs::read(&p).ok())
+}
+
+fn format_payload_size(size_bytes: usize) -> String {
+    if size_bytes >= 1_048_576 {
+        format!("{:.1} MB", (size_bytes as f64) / 1_048_576.0)
+    } else {
+        format!("{:.1} KB", (size_bytes as f64) / 1024.0)
+    }
+}
+
 /// Helper to truncate long preview text and normalize linebreaks
 pub fn truncate_preview_text(text: &str, max_chars: usize) -> String {
     let trimmed = text.trim();
-    let single_line = trimmed.replace("\r\n", " ").replace(['\n', '\t'], " ");
-    let char_count = single_line.chars().count();
-    if char_count > max_chars {
-        let truncated: String = single_line.chars().take(max_chars).collect();
+    let byte_limit = max_chars.saturating_mul(4).saturating_add(64);
+    let slice = if trimmed.len() > byte_limit {
+        let mut end = byte_limit;
+        while end > 0 && !trimmed.is_char_boundary(end) {
+            end -= 1;
+        }
+        &trimmed[..end]
+    } else {
+        trimmed
+    };
+    let was_byte_sliced = slice.len() < trimmed.len();
+    let single_line = slice.replace("\r\n", " ").replace(['\n', '\t'], " ");
+    let mut chars = single_line.chars();
+    let truncated: String = chars.by_ref().take(max_chars).collect();
+    if was_byte_sliced || chars.next().is_some() {
         format!("{}...", truncated.trim_end())
     } else {
         single_line
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_preview_text;
+
+    #[test]
+    fn test_truncate_preview_text_turkish_and_emoji() {
+        assert_eq!(truncate_preview_text("ğüşıöçĞÜŞİÖÇ", 12), "ğüşıöçĞÜŞİÖÇ");
+        assert_eq!(truncate_preview_text("ğüşıöçĞÜŞİÖÇ", 6), "ğüşıöç...");
+        assert_eq!(truncate_preview_text("🚀🔥✨🎉🥳🧪", 4), "🚀🔥✨🎉...");
+        assert_eq!(
+            truncate_preview_text("  Merhaba\r\nğüşıöç\t🚀🔥✨  ", 16),
+            "Merhaba ğüşıöç 🚀..."
+        );
+    }
+
+    #[test]
+    fn test_truncate_preview_text_multi_mb_utf8() {
+        let chunk = "ğüşıöçĞÜŞİÖÇ😀🎉\n";
+        let large = chunk.repeat(150_000);
+        assert!(large.len() > 4_000_000);
+
+        for max_chars in [0usize, 1, 10, 17, 85] {
+            let result = truncate_preview_text(&large, max_chars);
+            assert!(result.ends_with("..."));
+            let prefix = result.strip_suffix("...").unwrap();
+            assert!(prefix.chars().count() <= max_chars);
+        }
+
+        let emojis = "😀".repeat(500_000);
+        let truncated = truncate_preview_text(&emojis, 85);
+        assert_eq!(truncated, format!("{}...", "😀".repeat(85)));
     }
 }

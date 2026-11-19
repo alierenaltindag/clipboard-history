@@ -236,33 +236,82 @@ pub struct SyncConfig {
     pub peer_addresses: Vec<String>,
     #[serde(default)]
     pub trusted_peers: Vec<String>,
+    #[serde(default)]
+    pub peer_pins: std::collections::HashMap<String, String>,
+}
+
+fn default_device_name() -> String {
+    for path in ["/etc/hostname", "/proc/sys/kernel/hostname"] {
+        if let Ok(content) = fs::read_to_string(path) {
+            let trimmed = content.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+    std::env::var("HOSTNAME")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::env::var("USER")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| "Linux-Desktop".to_string())
 }
 
 impl Default for SyncConfig {
     fn default() -> Self {
-        let hostname = std::env::var("HOSTNAME")
-            .or_else(|_| std::env::var("USER"))
-            .unwrap_or_else(|_| "Linux-Desktop".to_string());
         Self {
             enabled: false,
-            device_name: hostname,
+            device_name: default_device_name(),
             listen_port: 54123,
             pairing_pin: "123456".to_string(),
             peer_addresses: Vec::new(),
             trusted_peers: Vec::new(),
+            peer_pins: std::collections::HashMap::new(),
         }
     }
 }
 
 impl SyncConfig {
+    /// Returns the pairing PIN configured for a specific peer (by normalized IP or device name),
+    /// falling back to the local `pairing_pin`.
+    pub fn pin_for_peer(&self, peer_addr: &str, device_name: &str) -> String {
+        let clean_ip = crate::sync::clean_ip_address(peer_addr);
+        if !clean_ip.is_empty() {
+            if let Some(pin) = self.peer_pins.get(&clean_ip) {
+                if !pin.is_empty() {
+                    return pin.clone();
+                }
+            }
+        }
+        if !peer_addr.is_empty() {
+            if let Some(pin) = self.peer_pins.get(peer_addr) {
+                if !pin.is_empty() {
+                    return pin.clone();
+                }
+            }
+        }
+        if !device_name.is_empty() {
+            if let Some(pin) = self.peer_pins.get(device_name) {
+                if !pin.is_empty() {
+                    return pin.clone();
+                }
+            }
+        }
+        self.pairing_pin.clone()
+    }
+
     pub fn is_peer_trusted(&self, peer_addr: &str, device_name: &str) -> bool {
         let clean_ip = crate::sync::clean_ip_address(peer_addr);
 
         self.trusted_peers.iter().any(|t| {
             let clean_t = crate::sync::clean_ip_address(t);
-            t == peer_addr
-                || clean_t == clean_ip
-                || (!clean_t.is_empty() && clean_ip.starts_with(&clean_t))
+            (!peer_addr.is_empty() && t == peer_addr)
+                || (!clean_t.is_empty() && !clean_ip.is_empty() && clean_t == clean_ip)
                 || (!device_name.is_empty() && (t == device_name || clean_t == device_name))
         })
     }
@@ -435,5 +484,60 @@ mod tests {
         // High delay should be preserved
         cfg.paste_delay_ms = 350;
         assert_eq!(cfg.effective_delay_ms(), 350);
+    }
+
+    #[test]
+    fn test_sync_config_is_peer_trusted_exact_matching() {
+        let cfg = SyncConfig {
+            trusted_peers: vec![
+                "192.168.1.1".to_string(),
+                "192.168.1.50".to_string(),
+                "cachyos-laptop".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        assert!(cfg.is_peer_trusted("192.168.1.1:54123", ""));
+        assert!(
+            !cfg.is_peer_trusted("192.168.1.10", ""),
+            "192.168.1.1 must NOT match 192.168.1.10 by prefix"
+        );
+        assert!(
+            !cfg.is_peer_trusted("192.168.1.10:54123", "other-pc"),
+            "192.168.1.1 must NOT match 192.168.1.10:54123"
+        );
+        assert!(
+            cfg.is_peer_trusted("::ffff:192.168.1.50:54123", ""),
+            "::ffff:192.168.1.50:54123 must normalize and match 192.168.1.50"
+        );
+        assert!(
+            cfg.is_peer_trusted("[::ffff:192.168.1.50]:49382", ""),
+            "[::ffff:192.168.1.50]:49382 must normalize and match 192.168.1.50"
+        );
+        assert!(cfg.is_peer_trusted("10.0.0.99:54123", "cachyos-laptop"));
+        assert!(!cfg.is_peer_trusted("", ""));
+    }
+
+    #[test]
+    fn test_sync_config_pin_for_peer() {
+        let mut cfg = SyncConfig {
+            pairing_pin: "111111".to_string(),
+            ..Default::default()
+        };
+        cfg.peer_pins
+            .insert("192.168.1.50".to_string(), "654321".to_string());
+        cfg.peer_pins
+            .insert("cachyos-laptop".to_string(), "777777".to_string());
+
+        assert_eq!(cfg.pin_for_peer("192.168.1.50:54123", ""), "654321");
+        assert_eq!(
+            cfg.pin_for_peer("[::ffff:192.168.1.50]:49382", ""),
+            "654321"
+        );
+        assert_eq!(
+            cfg.pin_for_peer("10.0.0.5:54123", "cachyos-laptop"),
+            "777777"
+        );
+        assert_eq!(cfg.pin_for_peer("10.0.0.99:54123", "unknown"), "111111");
     }
 }

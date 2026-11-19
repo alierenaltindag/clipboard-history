@@ -414,16 +414,27 @@ impl SettingsDialog {
             Self::save_and_sync(&cfg_mode.borrow());
         });
 
+        let list_debounce: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
         let cfg_list = Rc::clone(&cfg_cell);
         list_row.connect_changed(move |row| {
+            if let Some(source) = list_debounce.borrow_mut().take() {
+                source.remove();
+            }
             let text = row.text().to_string();
-            let items = text
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>();
-            cfg_list.borrow_mut().security.app_filter_list = items;
-            Self::save_and_sync(&cfg_list.borrow());
+            let cfg_ref = Rc::clone(&cfg_list);
+            let deb_ref = Rc::clone(&list_debounce);
+            let source_id =
+                glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+                    deb_ref.borrow_mut().take();
+                    let items = text
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>();
+                    cfg_ref.borrow_mut().security.app_filter_list = items;
+                    Self::save_and_sync(&cfg_ref.borrow());
+                });
+            *list_debounce.borrow_mut() = Some(source_id);
         });
 
         let cfg_paste = Rc::clone(&cfg_cell);
@@ -475,11 +486,23 @@ impl SettingsDialog {
             *deb_clone.borrow_mut() = Some(source_id);
         });
 
-        // Device name listener
+        // Device name listener (300ms debounce)
+        let dev_debounce: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
         let cfg_dev = Rc::clone(&cfg_cell);
         dev_name_row.connect_changed(move |row| {
-            cfg_dev.borrow_mut().sync.device_name = row.text().to_string();
-            Self::save_and_sync(&cfg_dev.borrow());
+            if let Some(source) = dev_debounce.borrow_mut().take() {
+                source.remove();
+            }
+            let new_name = row.text().to_string();
+            let cfg_ref = Rc::clone(&cfg_dev);
+            let deb_ref = Rc::clone(&dev_debounce);
+            let source_id =
+                glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+                    deb_ref.borrow_mut().take();
+                    cfg_ref.borrow_mut().sync.device_name = new_name;
+                    Self::save_and_sync(&cfg_ref.borrow());
+                });
+            *dev_debounce.borrow_mut() = Some(source_id);
         });
 
         let cfg_update = Rc::clone(&cfg_cell);
@@ -872,17 +895,7 @@ impl SettingsDialog {
                     let mut peer_map: Vec<PeerEntry> = Vec::new();
 
                     let check_trusted = |addr: &str, name: &str| -> bool {
-                        let clean_ip = if let Some(idx) = addr.find(':') {
-                            &addr[..idx]
-                        } else {
-                            addr
-                        };
-                        trusted_peers.iter().any(|t| {
-                            t == addr
-                                || t == clean_ip
-                                || (!t.is_empty() && addr.starts_with(t))
-                                || (!name.is_empty() && t == name)
-                        })
+                        is_peer_trusted_match(&trusted_peers, addr, name)
                     };
 
                     for p in discovered_peers {
@@ -903,7 +916,12 @@ impl SettingsDialog {
                     }
 
                     for m in manual_peers {
-                        if !peer_map.iter().any(|p| p.addr == m || p.addr.starts_with(&m)) {
+                        let clean_m = clipboard_history_core::sync::clean_ip_address(&m);
+                        let already_present = peer_map.iter().any(|p| {
+                            let clean_p = clipboard_history_core::sync::clean_ip_address(&p.addr);
+                            p.addr == m || (!clean_m.is_empty() && clean_p == clean_m)
+                        });
+                        if !already_present {
                             let trusted = check_trusted(&m, "");
                             peer_map.push(PeerEntry {
                                 display_name: m.clone(),
@@ -914,9 +932,12 @@ impl SettingsDialog {
                     }
 
                     for t in &trusted_peers {
-                        if (t.contains('.') || t.contains(':'))
-                            && !peer_map.iter().any(|p| p.addr == *t || p.addr.starts_with(t))
-                        {
+                        let clean_t = clipboard_history_core::sync::clean_ip_address(t);
+                        let already_present = peer_map.iter().any(|p| {
+                            let clean_p = clipboard_history_core::sync::clean_ip_address(&p.addr);
+                            p.addr == *t || (!clean_t.is_empty() && clean_p == clean_t)
+                        });
+                        if (t.contains('.') || t.contains(':')) && !already_present {
                             peer_map.push(PeerEntry {
                                 display_name: t.clone(),
                                 addr: t.clone(),
@@ -1266,14 +1287,30 @@ impl SettingsDialog {
         let holder_add = Rc::clone(&render_manual_peers);
         let refresh_add = Rc::clone(&refresh_peers);
         add_peer_row.connect_apply(move |row| {
-            let addr = row.text().trim().to_string();
-            if !addr.is_empty() {
+            if let Some(normalized) = normalize_peer_input(&row.text()) {
+                let clean_new = normalize_host_str(&normalized);
+                let new_has_port = normalized != clean_new;
                 let mut guard = cfg_add.borrow_mut();
-                if !guard.sync.peer_addresses.contains(&addr) {
-                    guard.sync.peer_addresses.push(addr);
+                let mut changed = false;
+
+                if let Some(existing_idx) = guard.sync.peer_addresses.iter().position(|existing| {
+                    let clean_existing = normalize_host_str(existing);
+                    existing == &normalized
+                        || (!clean_new.is_empty() && clean_existing == clean_new)
+                }) {
+                    if new_has_port && guard.sync.peer_addresses[existing_idx] != normalized {
+                        guard.sync.peer_addresses[existing_idx] = normalized;
+                        changed = true;
+                    }
+                } else {
+                    guard.sync.peer_addresses.push(normalized);
+                    changed = true;
                 }
+
                 drop(guard);
-                Self::save_and_sync(&cfg_add.borrow());
+                if changed {
+                    Self::save_and_sync(&cfg_add.borrow());
+                }
                 row.set_text("");
                 if let Some(ref f) = *holder_add.borrow() {
                     f();
@@ -1316,5 +1353,127 @@ impl SettingsDialog {
                 info!("Sent updated configuration to daemon via IPC");
             }
         });
+    }
+}
+
+fn is_peer_trusted_match(trusted_peers: &[String], addr: &str, name: &str) -> bool {
+    let clean_ip = clipboard_history_core::sync::clean_ip_address(addr);
+    trusted_peers.iter().any(|t| {
+        let clean_t = clipboard_history_core::sync::clean_ip_address(t);
+        t == addr
+            || (!clean_ip.is_empty() && !clean_t.is_empty() && clean_t == clean_ip)
+            || (!name.is_empty() && (t == name || clean_t == name))
+    })
+}
+
+fn normalize_host_str(host: &str) -> String {
+    let trimmed = host.trim();
+    if let Ok(ip) = trimmed.parse::<std::net::IpAddr>() {
+        return clipboard_history_core::sync::normalize_ip(ip);
+    }
+    clipboard_history_core::sync::clean_ip_address(trimmed)
+}
+
+fn format_host_port(host: &str, port: Option<u16>) -> String {
+    match port.filter(|&p| p > 0) {
+        Some(p) if host.contains(':') => format!("[{}]:{}", host, p),
+        Some(p) => format!("{}:{}", host, p),
+        None => host.to_string(),
+    }
+}
+
+fn normalize_peer_input(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Ok(sa) = trimmed.parse::<std::net::SocketAddr>() {
+        let host = clipboard_history_core::sync::normalize_ip(sa.ip());
+        return Some(format_host_port(&host, Some(sa.port())));
+    }
+
+    if let Ok(ip) = trimmed.parse::<std::net::IpAddr>() {
+        return Some(clipboard_history_core::sync::normalize_ip(ip));
+    }
+
+    if let Some(rest) = trimmed.strip_prefix('[') {
+        let end_bracket = rest.find(']')?;
+        let inner = rest[..end_bracket].trim();
+        let after = rest[end_bracket + 1..].trim();
+        let host = normalize_host_str(inner);
+        if host.is_empty() {
+            return None;
+        }
+        let port = after
+            .strip_prefix(':')
+            .and_then(|p| p.trim().parse::<u16>().ok())
+            .filter(|&p| p > 0);
+        return Some(format_host_port(&host, port));
+    }
+
+    if let Some((raw_host, raw_port)) = trimmed.rsplit_once(':') {
+        if raw_host.contains(':') {
+            let host = normalize_host_str(trimmed);
+            return (!host.is_empty()).then_some(host);
+        }
+        let host = normalize_host_str(raw_host.trim());
+        if host.is_empty() {
+            return None;
+        }
+        let port = raw_port.trim().parse::<u16>().ok().filter(|&p| p > 0);
+        return Some(format_host_port(&host, port));
+    }
+
+    let host = normalize_host_str(trimmed);
+    (!host.is_empty()).then_some(host)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_peer_trusted_match, normalize_peer_input};
+
+    #[test]
+    fn test_is_peer_trusted_match_no_prefix_collision() {
+        let trusted = vec!["192.168.1.1".to_string(), "workstation".to_string()];
+        assert!(is_peer_trusted_match(&trusted, "192.168.1.1:54123", ""));
+        assert!(is_peer_trusted_match(&trusted, "192.168.1.1", ""));
+        assert!(!is_peer_trusted_match(&trusted, "192.168.1.10:54123", ""));
+        assert!(!is_peer_trusted_match(&trusted, "192.168.1.100", ""));
+        assert!(is_peer_trusted_match(
+            &trusted,
+            "10.0.0.5:54123",
+            "workstation"
+        ));
+    }
+
+    #[test]
+    fn test_normalize_peer_input_variants() {
+        assert_eq!(
+            normalize_peer_input("  192.168.1.50:54123  "),
+            Some("192.168.1.50:54123".to_string())
+        );
+        assert_eq!(
+            normalize_peer_input("192.168.1.50"),
+            Some("192.168.1.50".to_string())
+        );
+        assert_eq!(
+            normalize_peer_input("[::ffff:192.168.1.50]:54123"),
+            Some("192.168.1.50:54123".to_string())
+        );
+        assert_eq!(
+            normalize_peer_input("::ffff:192.168.1.50"),
+            Some("192.168.1.50".to_string())
+        );
+        assert_eq!(
+            normalize_peer_input("[fe80::1]:54124"),
+            Some("[fe80::1]:54124".to_string())
+        );
+        assert_eq!(
+            normalize_peer_input("192.168.1.50:badport"),
+            Some("192.168.1.50".to_string())
+        );
+        assert_eq!(normalize_peer_input("   "), None);
+        assert_eq!(normalize_peer_input(":54123"), None);
     }
 }

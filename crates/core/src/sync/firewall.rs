@@ -121,6 +121,18 @@ pub fn check_firewall_status() -> FirewallCheckResult {
 
     // 3. Check nftables (Arch / CachyOS / Debian)
     if is_service_active("nftables") {
+        if check_nftables_allowed() {
+            return FirewallCheckResult {
+                is_firewall_active: true,
+                firewall_name: "nftables".to_string(),
+                has_issue: false,
+                description: format!(
+                    "nftables is active and sync port 54123 is allowed for local network ({}).",
+                    subnet
+                ),
+                recommended_command: None,
+            };
+        }
         let cmd = format!(
             "sudo nft add rule inet filter input ip saddr {} udp dport 54123 accept && sudo nft add rule inet filter input ip saddr {} tcp dport {{ 54123, 54124 }} accept",
             subnet, subnet
@@ -261,6 +273,31 @@ fn check_ufw_ports() -> (bool, bool) {
     (false, false)
 }
 
+fn ruleset_allows_sync_port(ruleset: &str) -> bool {
+    ruleset.lines().any(|line| {
+        let trimmed = line.trim();
+        !trimmed.starts_with('#') && trimmed.contains("54123") && trimmed.contains("accept")
+    })
+}
+
+fn check_nftables_allowed() -> bool {
+    let probes: &[(&str, &[&str])] = &[
+        ("nft", &["list", "ruleset"]),
+        ("sudo", &["-n", "nft", "list", "ruleset"]),
+    ];
+    for (bin, args) in probes {
+        if let Ok(output) = Command::new(bin).args(*args).output() {
+            if output.status.success() {
+                let text = String::from_utf8_lossy(&output.stdout);
+                if ruleset_allows_sync_port(&text) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,5 +333,30 @@ mod tests {
                 assert!(!active, "UFW should not be reported active when ENABLED=no");
             }
         }
+    }
+
+    #[test]
+    fn test_nftables_ruleset_allows_sync_port() {
+        let allowed = r#"
+table inet filter {
+    chain input {
+        type filter hook input priority filter; policy drop;
+        ip saddr 192.168.1.0/24 udp dport 54123 accept
+        ip saddr 192.168.1.0/24 tcp dport { 54123, 54124 } accept
+    }
+}
+"#;
+        assert!(ruleset_allows_sync_port(allowed));
+
+        let blocked = r#"
+table inet filter {
+    chain input {
+        type filter hook input priority filter; policy drop;
+        # udp dport 54123 accept
+        tcp dport 54123 drop
+    }
+}
+"#;
+        assert!(!ruleset_allows_sync_port(blocked));
     }
 }

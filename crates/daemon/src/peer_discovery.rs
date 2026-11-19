@@ -1,14 +1,18 @@
 use clipboard_history_core::blob::BlobStore;
 use clipboard_history_core::config::AppConfig;
 use clipboard_history_core::storage::SqliteRepository;
-use clipboard_history_core::sync::{read_sync_message, send_sync_message, SyncMessage};
+use clipboard_history_core::sync::{
+    build_candidate_sync_addrs, clean_ip_address, format_peer_socket_addr, normalize_ip,
+    read_sync_message_with_pins, send_sync_message, split_host_and_port, SyncMessage,
+};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::io::AsyncWriteExt;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone)]
 pub struct DiscoveredPeer {
@@ -74,34 +78,66 @@ impl PeerTracker {
             .collect()
     }
 
+    pub async fn get_port_for_ip(&self, clean_ip: &str) -> Option<u16> {
+        let target_ip = clean_ip_address(clean_ip);
+        if target_ip.is_empty() {
+            return None;
+        }
+        let map = self.peers.read().await;
+        let mut best: Option<(u16, Instant)> = None;
+        for peer in map.values() {
+            let (host, port_opt) = split_host_and_port(&peer.address);
+            if clean_ip_address(&host) == target_ip {
+                if let Some(port) = port_opt {
+                    let is_listening = port == 54123 || port == 54124 || (port > 0 && port < 32768);
+                    if is_listening {
+                        match best {
+                            Some((_, best_seen)) if best_seen >= peer.last_seen => {}
+                            _ => best = Some((port, peer.last_seen)),
+                        }
+                    }
+                }
+            }
+        }
+        best.map(|(p, _)| p)
+    }
+
+    pub async fn is_recently_seen(&self, clean_ip: &str, within: Duration) -> bool {
+        let target_ip = clean_ip_address(clean_ip);
+        if target_ip.is_empty() {
+            return false;
+        }
+        let map = self.peers.read().await;
+        map.values().any(|peer| {
+            clean_ip_address(&peer.address) == target_ip && peer.last_seen.elapsed() < within
+        })
+    }
+
     pub async fn remove_peer(&self, identifier: &str) {
-        let clean_id = clipboard_history_core::sync::clean_ip_address(identifier);
+        let clean_id = clean_ip_address(identifier);
         let mut map = self.peers.write().await;
         map.retain(|addr, peer| {
-            let clean_addr = clipboard_history_core::sync::clean_ip_address(addr);
+            let clean_addr = clean_ip_address(addr);
             addr != identifier
-                && clean_addr != clean_id
-                && !clean_addr.starts_with(&clean_id)
+                && (clean_id.is_empty() || clean_addr != clean_id)
                 && peer.device_name != identifier
-                && peer.device_name != clean_id
+                && (clean_id.is_empty() || peer.device_name != clean_id)
         });
     }
 
     pub async fn find_aliases(&self, identifier: &str) -> (Vec<String>, Vec<String>) {
-        let clean_id = clipboard_history_core::sync::clean_ip_address(identifier);
+        let clean_id = clean_ip_address(identifier);
         let map = self.peers.read().await;
         let mut addrs = Vec::new();
         let mut names = Vec::new();
         for (addr, peer) in map.iter() {
-            let clean_addr = clipboard_history_core::sync::clean_ip_address(addr);
-            if addr == identifier
-                || clean_addr == clean_id
-                || (!clean_id.is_empty() && clean_addr.starts_with(&clean_id))
-                || peer.device_name == identifier
-                || peer.device_name == clean_id
+            let clean_addr = clean_ip_address(addr);
+            if (!identifier.is_empty() && (addr == identifier || peer.device_name == identifier))
+                || (!clean_id.is_empty()
+                    && (clean_addr == clean_id || peer.device_name == clean_id))
             {
                 addrs.push(addr.clone());
-                addrs.push(clean_addr.clone());
+                addrs.push(clean_addr);
                 names.push(peer.device_name.clone());
             }
         }
@@ -212,9 +248,15 @@ pub async fn start_udp_discovery(
 
     tokio::spawn(async move {
         let mut buf = [0u8; 1024];
-        let local_ips = get_local_ips();
+        let mut local_ips = get_local_ips();
+        let mut last_ip_refresh = Instant::now();
 
         while let Ok((len, src_addr)) = recv_socket.recv_from(&mut buf).await {
+            if last_ip_refresh.elapsed() >= Duration::from_secs(30) {
+                local_ips = get_local_ips();
+                last_ip_refresh = Instant::now();
+            }
+
             let text = String::from_utf8_lossy(&buf[..len]);
             let parts: Vec<&str> = text.trim().split(':').collect();
 
@@ -223,11 +265,11 @@ pub async fn start_udp_discovery(
             // Legacy: CH_BEACON:v1:<device_name>:<tcp_port>
             if parts.len() >= 4 && (parts[0] == "CH_BEACON" || parts[0] == "CH_ACK") {
                 // Drop if beacon is a broadcast loopback from ourselves
-                let is_from_own_ip = if let std::net::IpAddr::V4(ipv4) = src_addr.ip() {
-                    local_ips.contains(&ipv4)
-                } else {
-                    false
-                };
+                let normalized_src_ip = normalize_ip(src_addr.ip());
+                let is_from_own_ip = normalized_src_ip == "::1"
+                    || local_ips
+                        .iter()
+                        .any(|ipv4| ipv4.to_string() == normalized_src_ip);
 
                 let matches_own_instance = parts.len() >= 5 && parts[4] == my_instance_filter;
 
@@ -237,7 +279,7 @@ pub async fn start_udp_discovery(
 
                 let peer_dev_name = parts[2].trim().to_string();
                 let peer_port: u16 = parts[3].trim().parse().unwrap_or(listen_port);
-                let peer_tcp_addr = format!("{}:{}", src_addr.ip(), peer_port);
+                let peer_tcp_addr = format_peer_socket_addr(&normalized_src_ip, peer_port);
 
                 let my_cfg = recv_cfg_arc.read().await.sync.clone();
                 if !my_cfg.enabled {
@@ -246,7 +288,7 @@ pub async fn start_udp_discovery(
 
                 // If peer has identical configured name as ours, disambiguate with its IP
                 let display_name = if peer_dev_name == my_cfg.device_name {
-                    format!("{} ({})", peer_dev_name, src_addr.ip())
+                    format!("{} ({})", peer_dev_name, normalized_src_ip)
                 } else {
                     peer_dev_name.clone()
                 };
@@ -272,14 +314,13 @@ pub async fn start_udp_discovery(
                 }
 
                 if is_new && my_cfg.is_peer_trusted(&peer_tcp_addr, &peer_dev_name) {
-                    let pin = my_cfg.pairing_pin.clone();
+                    let pin = my_cfg.pin_for_peer(&peer_tcp_addr, &peer_dev_name);
                     let dev_name = my_cfg.device_name.clone();
-                    let target_ip = src_addr.ip().to_string();
                     let repo_clone = recv_repo.clone();
                     let blob_clone = recv_blob.clone();
                     let crypto_clone = recv_crypto.clone();
                     let echo_tracker_clone = recv_echo_tracker.clone();
-                    let target_addr = format!("{}:{}", target_ip, peer_port);
+                    let target_addr = peer_tcp_addr.clone();
                     let cfg_arc_clone = recv_cfg_arc.clone();
 
                     tokio::spawn(async move {
@@ -334,11 +375,11 @@ pub async fn start_udp_discovery(
 
                 // Add configured manual peer addresses as direct unicast UDP targets
                 for peer in &current.peer_addresses {
-                    let addr_str = if peer.contains(':') {
-                        peer.clone()
-                    } else {
-                        format!("{}:{}", peer, listen_port)
-                    };
+                    let clean_host = clean_ip_address(peer);
+                    if clean_host.is_empty() {
+                        continue;
+                    }
+                    let addr_str = format_peer_socket_addr(&clean_host, listen_port);
                     if let Ok(sa) = addr_str.parse::<SocketAddr>() {
                         if !targets.contains(&sa) {
                             targets.push(sa);
@@ -350,15 +391,25 @@ pub async fn start_udp_discovery(
                     let _ = send_socket.send_to(beacon.as_bytes(), target).await;
                 }
 
-                // If manual peers are configured, probe them directly via TCP if not already active
+                // If manual peers are configured, probe them directly via TCP if not recently seen
+                let mut probed_hosts: Vec<String> = Vec::new();
                 for peer in &current.peer_addresses {
-                    let peer_addr = if peer.contains(':') {
-                        peer.clone()
-                    } else {
-                        format!("{}:54123", peer)
-                    };
+                    let clean_host = clean_ip_address(peer);
+                    if clean_host.is_empty() || probed_hosts.contains(&clean_host) {
+                        continue;
+                    }
+                    probed_hosts.push(clean_host.clone());
 
-                    let pin = current.pairing_pin.clone();
+                    if send_tracker
+                        .is_recently_seen(&clean_host, Duration::from_secs(10))
+                        .await
+                    {
+                        continue;
+                    }
+
+                    let candidate_addrs = build_candidate_sync_addrs(peer, listen_port);
+                    let pin = current.pin_for_peer(peer, "");
+                    let default_pin = current.pairing_pin.clone();
                     let dev = current.device_name.clone();
                     let trk = send_tracker.clone();
                     let repo_clone = broadcast_repo.clone();
@@ -369,26 +420,49 @@ pub async fn start_udp_discovery(
                     let cfg_arc_clone = send_cfg_arc.clone();
 
                     tokio::spawn(async move {
-                        let connect_fut = tokio::net::TcpStream::connect(&peer_addr);
-                        if let Ok(Ok(mut stream)) =
-                            tokio::time::timeout(Duration::from_secs(3), connect_fut).await
-                        {
-                            let (mut reader, mut writer) = stream.split();
-                            let auth_req = SyncMessage::AuthRequest {
-                                device_name: dev.clone(),
-                                pairing_pin: pin.clone(),
-                                nonce: rand::random(),
-                            };
-                            if send_sync_message(&mut writer, &pin, &auth_req)
-                                .await
-                                .is_ok()
+                        for peer_addr in candidate_addrs {
+                            let connect_fut = tokio::net::TcpStream::connect(&peer_addr);
+                            if let Ok(Ok(mut stream)) =
+                                tokio::time::timeout(Duration::from_secs(3), connect_fut).await
                             {
-                                match read_sync_message(&mut reader, &pin).await {
-                                    Ok(SyncMessage::AuthResponse {
-                                        success: true,
-                                        device_name: peer_dev,
-                                        ..
-                                    }) => {
+                                let (mut reader, mut writer) = stream.split();
+                                let auth_req = SyncMessage::AuthRequest {
+                                    device_name: dev.clone(),
+                                    pairing_pin: pin.clone(),
+                                    nonce: rand::random(),
+                                };
+                                let send_ok = tokio::time::timeout(
+                                    Duration::from_secs(5),
+                                    send_sync_message(&mut writer, &pin, &auth_req),
+                                )
+                                .await
+                                .is_ok_and(|r| r.is_ok());
+
+                                if !send_ok {
+                                    let _ = writer.shutdown().await;
+                                    continue;
+                                }
+
+                                let read_res = tokio::time::timeout(
+                                    Duration::from_secs(5),
+                                    read_sync_message_with_pins(
+                                        &mut reader,
+                                        &[pin.as_str()],
+                                        &default_pin,
+                                    ),
+                                )
+                                .await;
+                                let _ = writer.shutdown().await;
+
+                                match read_res {
+                                    Ok(Ok((
+                                        SyncMessage::AuthResponse {
+                                            success: true,
+                                            device_name: peer_dev,
+                                            ..
+                                        },
+                                        matched_pin,
+                                    ))) => {
                                         let is_new = trk
                                             .add_or_update(peer_addr.clone(), peer_dev.clone())
                                             .await;
@@ -405,7 +479,7 @@ pub async fn start_udp_discovery(
                                                 };
                                                 crate::sync_service::perform_mutual_history_sync(
                                                     &peer_addr,
-                                                    &pin,
+                                                    &matched_pin,
                                                     &dev,
                                                     repo_clone,
                                                     blob_clone,
@@ -417,37 +491,54 @@ pub async fn start_udp_discovery(
                                                 .await;
                                             });
                                         }
+                                        break;
                                     }
-                                    Ok(SyncMessage::AuthResponse {
-                                        success: false,
-                                        message,
-                                        ..
-                                    }) if message.contains("not paired") => {
+                                    Ok(Ok((
+                                        SyncMessage::AuthResponse {
+                                            success: false,
+                                            device_name: peer_dev,
+                                            message,
+                                        },
+                                        _,
+                                    ))) if message.contains("not paired") => {
                                         info!(
                                             "Peer at {} reported this device is not paired. Purging local pairing state.",
                                             peer_addr
                                         );
-                                        let clean_p =
-                                            clipboard_history_core::sync::clean_ip_address(
-                                                &peer_addr,
-                                            );
+                                        let clean_p = clean_ip_address(&peer_addr);
                                         let mut cfg = cfg_arc_clone.write().await;
                                         cfg.sync.trusted_peers.retain(|p| {
-                                            let cp =
-                                                clipboard_history_core::sync::clean_ip_address(p);
+                                            let cp = clean_ip_address(p);
                                             p != &peer_addr
-                                                && cp != clean_p
-                                                && !cp.starts_with(&clean_p)
+                                                && (clean_p.is_empty() || cp != clean_p)
+                                                && (peer_dev.is_empty() || p != &peer_dev)
                                         });
                                         cfg.sync.peer_addresses.retain(|p| {
-                                            let cp =
-                                                clipboard_history_core::sync::clean_ip_address(p);
-                                            p != &peer_addr
-                                                && cp != clean_p
-                                                && !cp.starts_with(&clean_p)
+                                            let cp = clean_ip_address(p);
+                                            p != &peer_addr && (clean_p.is_empty() || cp != clean_p)
                                         });
+                                        if !clean_p.is_empty() {
+                                            cfg.sync.peer_pins.remove(&clean_p);
+                                        }
+                                        if !peer_dev.is_empty() {
+                                            cfg.sync.peer_pins.remove(&peer_dev);
+                                        }
                                         let _ = cfg.save(AppConfig::config_path());
+                                        drop(cfg);
                                         trk.remove_peer(&peer_addr).await;
+                                        break;
+                                    }
+                                    Ok(Err(e)) => {
+                                        debug!(
+                                            "TCP probe AuthResponse decode error from {}: {}",
+                                            peer_addr, e
+                                        );
+                                    }
+                                    Err(_) => {
+                                        debug!(
+                                            "TCP probe timed out waiting for AuthResponse from {}",
+                                            peer_addr
+                                        );
                                     }
                                     _ => {}
                                 }
@@ -460,4 +551,38 @@ pub async fn start_udp_discovery(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_peer_tracker_port_lookup_and_exact_remove() {
+        let tracker = PeerTracker::new();
+        tracker
+            .add_or_update("192.168.1.1:54123".to_string(), "router-pc".to_string())
+            .await;
+        tracker
+            .add_or_update("192.168.1.10:54124".to_string(), "cachyos".to_string())
+            .await;
+        tracker
+            .add_or_update(
+                "192.168.1.10:49382".to_string(),
+                "cachyos-ephemeral".to_string(),
+            )
+            .await;
+
+        assert_eq!(tracker.get_port_for_ip("192.168.1.10").await, Some(54124));
+        assert!(
+            tracker
+                .is_recently_seen("192.168.1.10", Duration::from_secs(10))
+                .await
+        );
+
+        tracker.remove_peer("192.168.1.1").await;
+        let remaining = tracker.get_all_peers().await;
+        assert!(remaining.iter().any(|(a, _)| a == "192.168.1.10:54124"));
+        assert!(!remaining.iter().any(|(a, _)| a == "192.168.1.1:54123"));
+    }
 }

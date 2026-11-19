@@ -14,8 +14,13 @@ impl CircuitBreaker {
             max_per_second: max_per_second.max(1),
             window_start: Instant::now(),
             event_count: 0,
-            max_payload_bytes: max_payload_mb * 1024 * 1024,
+            max_payload_bytes: max_payload_mb.saturating_mul(1024 * 1024),
         }
+    }
+
+    pub fn update_limits(&mut self, max_per_second: u32, max_payload_mb: usize) {
+        self.max_per_second = max_per_second.max(1);
+        self.max_payload_bytes = max_payload_mb.saturating_mul(1024 * 1024);
     }
 
     /// Returns true if the event should be processed, false if rate limit exceeded

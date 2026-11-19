@@ -32,6 +32,11 @@
     <binary>clipboard-history-gui</binary>
   </provides>
   <releases>
+    <release version="1.2.13" date="2026-11-19">
+      <description>
+        <p>Fix CachyOS and KDE Plasma 6 Wayland clipboard capture with native Klipper D-Bus watcher, robust environment discovery, and wl-paste hardening; resolve Ubuntu and CachyOS bidirectional LAN sync asymmetry with IPv6 normalization, ephemeral port self-healing, and per-peer PIN persistence; improve daemon reliability and GTK4 GUI responsiveness.</p>
+      </description>
+    </release>
     <release version="1.2.12" date="2026-10-25">
       <description>
         <p>Fix rapid toggle loop on Super+C, eliminate typing stutter by debouncing primary selection and caching active window queries, prevent GTK main thread blocking.</p>

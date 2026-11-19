@@ -3,7 +3,10 @@ use clipboard_history_core::domain::{ClipboardEntry, EntryType};
 use clipboard_history_core::error::Result;
 use clipboard_history_core::security::CryptoEngine;
 use clipboard_history_core::storage::SqliteRepository;
-use clipboard_history_core::sync::{read_sync_message, send_sync_message, SyncMessage};
+use clipboard_history_core::sync::{
+    build_candidate_sync_addrs, clean_ip_address, read_sync_message, read_sync_message_with_pins,
+    send_sync_message, split_host_and_port, SyncMessage,
+};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
@@ -134,12 +137,24 @@ pub async fn stream_history_to_writer<W: AsyncWriteExt + Unpin>(
             is_history_batch: true,
         };
 
-        if send_sync_message(writer, pin, &msg).await.is_err() {
-            warn!(
-                "History sync aborted early after {}/{} entries",
-                sent_count, total
-            );
-            break;
+        match tokio::time::timeout(Duration::from_secs(5), send_sync_message(writer, pin, &msg))
+            .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                warn!(
+                    "History sync aborted early after {}/{} entries: {}",
+                    sent_count, total, e
+                );
+                break;
+            }
+            Err(_) => {
+                warn!(
+                    "History sync timed out after {}/{} entries",
+                    sent_count, total
+                );
+                break;
+            }
         }
         sent_count += 1;
     }
@@ -148,7 +163,11 @@ pub async fn stream_history_to_writer<W: AsyncWriteExt + Unpin>(
         origin_device: my_dev_name.to_string(),
         count: sent_count,
     };
-    let _ = send_sync_message(writer, pin, &complete_msg).await;
+    let _ = tokio::time::timeout(
+        Duration::from_secs(5),
+        send_sync_message(writer, pin, &complete_msg),
+    )
+    .await;
 
     debug!("Streamed {} history entries to peer", sent_count);
     Ok(sent_count)
@@ -196,6 +215,18 @@ impl SyncedEchoTracker {
         let mut list = self.recent_hashes.write().await;
         list.retain(|(_, time)| time.elapsed() < Duration::from_secs(20));
         list.iter().any(|(h, _)| h == hash)
+    }
+}
+
+fn encrypt_entry_strings_fallback(entry: &mut ClipboardEntry, crypto: &CryptoEngine) {
+    entry.preview = crypto
+        .encrypt_str(&entry.preview)
+        .unwrap_or_else(|_| entry.preview.clone());
+    if let Some(ref text) = entry.text_content {
+        entry.text_content = crypto.encrypt_str(text).ok().or(entry.text_content.clone());
+    }
+    if let Some(ref html) = entry.html_content {
+        entry.html_content = crypto.encrypt_str(html).ok().or(entry.html_content.clone());
     }
 }
 
@@ -250,7 +281,12 @@ pub async fn handle_incoming_entry_sync(
             }
         }
 
-        let _ = repo.insert_or_update(&entry);
+        if let Err(e) = repo.insert_or_update(&entry) {
+            warn!(
+                "Failed to store incoming synced image entry {}: {}",
+                entry.id, e
+            );
+        }
 
         // Inject into OS system clipboard if real-time single copy event
         if !is_history_batch {
@@ -274,26 +310,51 @@ pub async fn handle_incoming_entry_sync(
         }
     } else {
         // Text / HTML / Code / UriList
+        let plain_text_for_clipboard = entry.text_content.clone();
         if encryption_enabled {
-            entry.preview = crypto.encrypt_str(&entry.preview).unwrap_or(entry.preview);
-            if let Some(ref text) = entry.text_content {
-                entry.text_content = crypto.encrypt_str(text).ok().or(entry.text_content);
+            let orig_id = entry.id.clone();
+            let already_exists = repo
+                .get_by_hash(&entry.content_hash)
+                .ok()
+                .flatten()
+                .is_some();
+            if !already_exists {
+                if let Ok(wrapped_dek) = crypto.encrypt_entry_envelope(&mut entry) {
+                    match repo.insert_or_update(&entry) {
+                        Ok(saved) => {
+                            if saved.id == orig_id {
+                                if let Err(e) = repo.insert_entry_dek(&saved.id, &wrapped_dek, &[])
+                                {
+                                    warn!(
+                                        "Failed to store DEK for synced entry {}: {}",
+                                        saved.id, e
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to store incoming synced entry {}: {}", orig_id, e);
+                        }
+                    }
+                } else {
+                    encrypt_entry_strings_fallback(&mut entry, crypto);
+                    if let Err(e) = repo.insert_or_update(&entry) {
+                        warn!("Failed to store incoming synced entry {}: {}", entry.id, e);
+                    }
+                }
+            } else {
+                encrypt_entry_strings_fallback(&mut entry, crypto);
+                if let Err(e) = repo.insert_or_update(&entry) {
+                    warn!("Failed to store incoming synced entry {}: {}", entry.id, e);
+                }
             }
-            if let Some(ref html) = entry.html_content {
-                entry.html_content = crypto.encrypt_str(html).ok().or(entry.html_content);
-            }
+        } else if let Err(e) = repo.insert_or_update(&entry) {
+            warn!("Failed to store incoming synced entry {}: {}", entry.id, e);
         }
-
-        let _ = repo.insert_or_update(&entry);
 
         // Inject into OS system clipboard if real-time single copy event
         if !is_history_batch {
-            if let Some(ref text) = entry.text_content {
-                let plain_text = if encryption_enabled {
-                    crypto.decrypt_str(text).unwrap_or_else(|_| text.clone())
-                } else {
-                    text.clone()
-                };
+            if let Some(plain_text) = plain_text_for_clipboard {
                 let content_hash = BlobStore::compute_hash(plain_text.as_bytes());
                 echo_tracker.record_synced_hash(content_hash).await;
                 tokio::spawn(async move {
@@ -319,20 +380,7 @@ pub async fn perform_mutual_history_sync(
     max_entries: usize,
     echo_tracker: SyncedEchoTracker,
 ) -> bool {
-    use std::time::Duration;
-
-    let candidate_addrs = if peer_address.contains(':') {
-        let parts: Vec<&str> = peer_address.split(':').collect();
-        let ip = parts[0];
-        let port: u16 = parts[1].parse().unwrap_or(54123);
-        let alt_port = if port == 54123 { 54124 } else { 54123 };
-        vec![peer_address.to_string(), format!("{}:{}", ip, alt_port)]
-    } else {
-        vec![
-            format!("{}:54123", peer_address),
-            format!("{}:54124", peer_address),
-        ]
-    };
+    let candidate_addrs = build_candidate_sync_addrs(peer_address, 54123);
 
     let mut connected_stream = None;
     for addr in &candidate_addrs {
@@ -347,9 +395,9 @@ pub async fn perform_mutual_history_sync(
     let mut stream = match connected_stream {
         Some(s) => s,
         None => {
-            debug!(
-                "Could not connect to peer {} for mutual history sync",
-                peer_address
+            warn!(
+                "Could not connect to peer {} for mutual history sync (candidates: {:?})",
+                peer_address, candidate_addrs
             );
             return false;
         }
@@ -363,15 +411,68 @@ pub async fn perform_mutual_history_sync(
         pairing_pin: pin.to_string(),
         nonce: rand::random(),
     };
-    if send_sync_message(&mut writer, pin, &auth_req)
-        .await
-        .is_err()
+    match tokio::time::timeout(
+        Duration::from_secs(5),
+        send_sync_message(&mut writer, pin, &auth_req),
+    )
+    .await
     {
-        return false;
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            warn!(
+                "Failed to send AuthRequest for mutual history sync to {}: {}",
+                peer_address, e
+            );
+            let _ = writer.shutdown().await;
+            return false;
+        }
+        Err(_) => {
+            warn!(
+                "Timed out sending AuthRequest for mutual history sync to {}",
+                peer_address
+            );
+            let _ = writer.shutdown().await;
+            return false;
+        }
     }
-    match tokio::time::timeout(Duration::from_secs(4), read_sync_message(&mut reader, pin)).await {
+    match tokio::time::timeout(Duration::from_secs(5), read_sync_message(&mut reader, pin)).await {
         Ok(Ok(SyncMessage::AuthResponse { success: true, .. })) => {}
-        _ => return false,
+        Ok(Ok(SyncMessage::AuthResponse {
+            success: false,
+            message,
+            ..
+        })) => {
+            warn!(
+                "Mutual history sync auth rejected by {}: {}",
+                peer_address, message
+            );
+            let _ = writer.shutdown().await;
+            return false;
+        }
+        Ok(Ok(other)) => {
+            warn!(
+                "Unexpected auth response during mutual history sync with {}: {:?}",
+                peer_address, other
+            );
+            let _ = writer.shutdown().await;
+            return false;
+        }
+        Ok(Err(e)) => {
+            warn!(
+                "Failed to read/decrypt AuthResponse during mutual history sync with {}: {}",
+                peer_address, e
+            );
+            let _ = writer.shutdown().await;
+            return false;
+        }
+        Err(_) => {
+            warn!(
+                "Timed out waiting for AuthResponse during mutual history sync with {}",
+                peer_address
+            );
+            let _ = writer.shutdown().await;
+            return false;
+        }
     }
 
     info!("Starting mutual history sync with peer {}", peer_address);
@@ -394,81 +495,114 @@ pub async fn perform_mutual_history_sync(
         origin_device: my_dev_name.to_string(),
         limit: max_entries,
     };
-    if send_sync_message(&mut writer, pin, &sync_req)
-        .await
-        .is_err()
+    match tokio::time::timeout(
+        Duration::from_secs(5),
+        send_sync_message(&mut writer, pin, &sync_req),
+    )
+    .await
     {
-        return false;
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            warn!(
+                "Failed to send HistorySyncRequest to {}: {}",
+                peer_address, e
+            );
+            let _ = writer.shutdown().await;
+            return false;
+        }
+        Err(_) => {
+            warn!("Timed out sending HistorySyncRequest to {}", peer_address);
+            let _ = writer.shutdown().await;
+            return false;
+        }
     }
 
     // 4. Receive peer's history entries until HistorySyncComplete or timeout
     let mut received_count = 0;
-    while let Ok(Ok(msg)) =
-        tokio::time::timeout(Duration::from_secs(10), read_sync_message(&mut reader, pin)).await
-    {
-        match msg {
-            SyncMessage::EntrySync {
-                entry,
-                blob_payload,
-                thumbnail_payload,
-                is_history_batch,
-                ..
-            } => {
-                let _ = handle_incoming_entry_sync(
-                    *entry,
+    loop {
+        match tokio::time::timeout(Duration::from_secs(10), read_sync_message(&mut reader, pin))
+            .await
+        {
+            Ok(Ok(msg)) => match msg {
+                SyncMessage::EntrySync {
+                    entry,
                     blob_payload,
                     thumbnail_payload,
                     is_history_batch,
-                    &repo,
-                    &blob_store,
-                    &crypto,
-                    encryption_enabled,
-                    &echo_tracker,
-                )
-                .await;
-                received_count += 1;
-            }
-            SyncMessage::PinSync {
-                content_hash,
-                is_pinned,
-                entry,
-                blob_payload,
-                thumbnail_payload,
-                ..
-            } => {
-                if is_pinned {
-                    let res = repo.set_pinned_by_hash(&content_hash, true);
-                    if res.is_err() {
-                        if let Some(entry_box) = entry {
-                            let _ = handle_incoming_entry_sync(
-                                *entry_box,
-                                blob_payload,
-                                thumbnail_payload,
-                                true,
-                                &repo,
-                                &blob_store,
-                                &crypto,
-                                encryption_enabled,
-                                &echo_tracker,
-                            )
-                            .await;
-                            let _ = repo.set_pinned_by_hash(&content_hash, true);
-                        }
-                    }
-                } else {
-                    let _ = repo.set_pinned_by_hash(&content_hash, false);
+                    ..
+                } => {
+                    let _ = handle_incoming_entry_sync(
+                        *entry,
+                        blob_payload,
+                        thumbnail_payload,
+                        is_history_batch,
+                        &repo,
+                        &blob_store,
+                        &crypto,
+                        encryption_enabled,
+                        &echo_tracker,
+                    )
+                    .await;
+                    received_count += 1;
                 }
-            }
-            SyncMessage::HistorySyncComplete { count, .. } => {
-                debug!(
-                    "Peer completed history sync ({} reported, {} received)",
-                    count, received_count
+                SyncMessage::PinSync {
+                    content_hash,
+                    is_pinned,
+                    entry,
+                    blob_payload,
+                    thumbnail_payload,
+                    ..
+                } => {
+                    if is_pinned {
+                        let res = repo.set_pinned_by_hash(&content_hash, true);
+                        if res.is_err() {
+                            if let Some(entry_box) = entry {
+                                let _ = handle_incoming_entry_sync(
+                                    *entry_box,
+                                    blob_payload,
+                                    thumbnail_payload,
+                                    true,
+                                    &repo,
+                                    &blob_store,
+                                    &crypto,
+                                    encryption_enabled,
+                                    &echo_tracker,
+                                )
+                                .await;
+                                let _ = repo.set_pinned_by_hash(&content_hash, true);
+                            }
+                        }
+                    } else {
+                        let _ = repo.set_pinned_by_hash(&content_hash, false);
+                    }
+                }
+                SyncMessage::HistorySyncComplete { count, .. } => {
+                    debug!(
+                        "Peer completed history sync ({} reported, {} received)",
+                        count, received_count
+                    );
+                    break;
+                }
+                _ => {}
+            },
+            Ok(Err(e)) => {
+                warn!(
+                    "Protocol error receiving history sync from {}: {}",
+                    peer_address, e
                 );
                 break;
             }
-            _ => {}
+            Err(_) => {
+                warn!(
+                    "Timed out waiting for history sync entries from {}",
+                    peer_address
+                );
+                break;
+            }
         }
     }
+
+    let _ = writer.shutdown().await;
 
     // 5. Retain capacity limit
     let _ = repo.evict_capacity(max_entries);
@@ -479,9 +613,25 @@ pub async fn perform_mutual_history_sync(
     true
 }
 
-/// Helper to extract host/IP without port
+/// Helper to extract host/IP without port (handles bracketed IPv6 and bare IPv6 safely).
 pub fn extract_host(s: &str) -> &str {
-    s.split(':').next().unwrap_or(s)
+    let trimmed = s.trim();
+    if let Some(rest) = trimmed.strip_prefix('[') {
+        if let Some(end) = rest.find(']') {
+            return &rest[..end];
+        }
+    }
+    if trimmed.parse::<std::net::IpAddr>().is_ok() {
+        return trimmed;
+    }
+    if let Some((prefix, port_str)) = trimmed.rsplit_once(':') {
+        if port_str.parse::<u16>().is_ok()
+            && (!prefix.contains(':') || prefix.parse::<std::net::IpAddr>().is_ok())
+        {
+            return prefix;
+        }
+    }
+    trimmed
 }
 
 /// Broadcasts a SyncMessage (e.g. EntrySync or ClearHistorySync) to all active, trusted, or configured peers.
@@ -494,30 +644,46 @@ pub fn broadcast_sync_message(
         return;
     }
 
-    let mut targets: Vec<String> = Vec::new();
-    let mut add_target = |addr: &str| {
-        let host = extract_host(addr);
-        if !targets.iter().any(|t| extract_host(t) == host) {
-            targets.push(addr.to_string());
+    let mut targets: Vec<(String, String)> = Vec::new();
+    let mut seen_clean_hosts: Vec<String> = Vec::new();
+    let mut add_target = |addr: &str, dev_name: &str| {
+        let host = clean_ip_address(addr);
+        if host.is_empty() || seen_clean_hosts.contains(&host) {
+            return;
         }
+        seen_clean_hosts.push(host);
+        targets.push((addr.to_string(), dev_name.to_string()));
     };
 
-    // 1. Add active peers known from peer_tracker if trusted
+    // 1. Add active peers known from peer_tracker if trusted (preferring non-ephemeral ports first)
+    let mut non_ephemeral_known: Vec<(&str, &str)> = Vec::new();
+    let mut other_known: Vec<(&str, &str)> = Vec::new();
     for (addr, dev_name) in known_peers {
         if cfg.is_peer_trusted(addr, dev_name) {
-            add_target(addr);
+            let (_, port_opt) = split_host_and_port(addr);
+            let is_listening = port_opt.is_some_and(|p| {
+                p > 0 && (p == cfg.listen_port || p == 54123 || p == 54124 || p < 32768)
+            });
+            if is_listening {
+                non_ephemeral_known.push((addr.as_str(), dev_name.as_str()));
+            } else {
+                other_known.push((addr.as_str(), dev_name.as_str()));
+            }
         }
+    }
+    for (addr, dev_name) in non_ephemeral_known.into_iter().chain(other_known) {
+        add_target(addr, dev_name);
     }
 
     // 2. Add configured manual peer addresses
     for peer in &cfg.peer_addresses {
-        add_target(peer);
+        add_target(peer, "");
     }
 
     // 3. Add any IP addresses directly in trusted_peers
     for peer in &cfg.trusted_peers {
         if peer.contains('.') || peer.contains(':') {
-            add_target(peer);
+            add_target(peer, "");
         }
     }
 
@@ -542,55 +708,142 @@ pub fn broadcast_sync_message(
         targets
     );
 
-    for peer in targets {
-        let pin = cfg.pairing_pin.clone();
+    for (peer, dev_name) in targets {
+        let pin = cfg.pin_for_peer(&peer, &dev_name);
+        let default_pin = cfg.pairing_pin.clone();
+        let listen_port = cfg.listen_port;
         let my_dev_name = cfg.device_name.clone();
         let msg = msg.clone();
         tokio::spawn(async move {
-            use std::time::Duration;
+            let candidate_peers = build_candidate_sync_addrs(&peer, listen_port);
+            let mut delivered = false;
+            let mut aborted_by_auth = false;
 
-            let candidate_peers = if peer.contains(':') {
-                let parts: Vec<&str> = peer.split(':').collect();
-                let ip = parts[0];
-                let port: u16 = parts[1].parse().unwrap_or(54123);
-                let alt_port = if port == 54123 { 54124 } else { 54123 };
-                vec![peer.clone(), format!("{}:{}", ip, alt_port)]
-            } else {
-                vec![format!("{}:54123", peer), format!("{}:54124", peer)]
-            };
-
-            for candidate in candidate_peers {
-                let connect_fut = tokio::net::TcpStream::connect(&candidate);
-                if let Ok(Ok(mut stream)) =
-                    tokio::time::timeout(Duration::from_secs(3), connect_fut).await
-                {
-                    let (mut reader, mut writer) = stream.split();
-                    // 1. Handshake with AuthRequest
-                    let auth_req = SyncMessage::AuthRequest {
-                        device_name: my_dev_name.clone(),
-                        pairing_pin: pin.clone(),
-                        nonce: rand::random(),
-                    };
-                    if send_sync_message(&mut writer, &pin, &auth_req)
+            for candidate in &candidate_peers {
+                let connect_fut = tokio::net::TcpStream::connect(candidate);
+                match tokio::time::timeout(Duration::from_secs(3), connect_fut).await {
+                    Ok(Ok(mut stream)) => {
+                        let (mut reader, mut writer) = stream.split();
+                        // 1. Handshake with AuthRequest
+                        let auth_req = SyncMessage::AuthRequest {
+                            device_name: my_dev_name.clone(),
+                            pairing_pin: pin.clone(),
+                            nonce: rand::random(),
+                        };
+                        match tokio::time::timeout(
+                            Duration::from_secs(5),
+                            send_sync_message(&mut writer, &pin, &auth_req),
+                        )
                         .await
-                        .is_err()
-                    {
-                        continue;
-                    }
-                    // 2. Await AuthResponse
-                    if let Ok(SyncMessage::AuthResponse { success: true, .. }) =
-                        read_sync_message(&mut reader, &pin).await
-                    {
-                        // 3. Send message
-                        if send_sync_message(&mut writer, &pin, &msg).await.is_ok() {
-                            info!(
-                                "Successfully synchronized {} to peer at {}",
-                                msg_name, candidate
-                            );
+                        {
+                            Ok(Ok(())) => {}
+                            Ok(Err(e)) => {
+                                warn!("Failed to send AuthRequest to {}: {}", candidate, e);
+                                let _ = writer.shutdown().await;
+                                continue;
+                            }
+                            Err(_) => {
+                                warn!("Timed out sending AuthRequest to {}", candidate);
+                                let _ = writer.shutdown().await;
+                                continue;
+                            }
                         }
-                        break;
+                        // 2. Await AuthResponse
+                        let auth_res = tokio::time::timeout(
+                            Duration::from_secs(5),
+                            read_sync_message_with_pins(&mut reader, &[pin.as_str()], &default_pin),
+                        )
+                        .await;
+                        match auth_res {
+                            Ok(Ok((
+                                SyncMessage::AuthResponse { success: true, .. },
+                                session_pin,
+                            ))) => {
+                                // 3. Send message
+                                match tokio::time::timeout(
+                                    Duration::from_secs(5),
+                                    send_sync_message(&mut writer, &session_pin, &msg),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(())) => {
+                                        let _ = writer.shutdown().await;
+                                        info!(
+                                            "Successfully synchronized {} to peer at {}",
+                                            msg_name, candidate
+                                        );
+                                        delivered = true;
+                                        break;
+                                    }
+                                    Ok(Err(e)) => {
+                                        warn!(
+                                            "Failed to send {} to peer at {}: {}",
+                                            msg_name, candidate, e
+                                        );
+                                        let _ = writer.shutdown().await;
+                                    }
+                                    Err(_) => {
+                                        warn!(
+                                            "Timed out sending {} to peer at {}",
+                                            msg_name, candidate
+                                        );
+                                        let _ = writer.shutdown().await;
+                                    }
+                                }
+                            }
+                            Ok(Ok((
+                                SyncMessage::AuthResponse {
+                                    success: false,
+                                    message,
+                                    ..
+                                },
+                                _,
+                            ))) => {
+                                warn!(
+                                    "Sync authentication rejected by peer at {}: {}",
+                                    candidate, message
+                                );
+                                let _ = writer.shutdown().await;
+                                aborted_by_auth = true;
+                                break;
+                            }
+                            Ok(Ok((other, _))) => {
+                                warn!(
+                                    "Unexpected AuthResponse variant from peer at {}: {:?}",
+                                    candidate, other
+                                );
+                                let _ = writer.shutdown().await;
+                            }
+                            Ok(Err(e)) => {
+                                warn!(
+                                    "Failed to decrypt/read AuthResponse from peer at {}: {}",
+                                    candidate, e
+                                );
+                                let _ = writer.shutdown().await;
+                            }
+                            Err(_) => {
+                                warn!(
+                                    "Timed out waiting for AuthResponse from peer at {}",
+                                    candidate
+                                );
+                                let _ = writer.shutdown().await;
+                            }
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        debug!("Connect failed to sync candidate {}: {}", candidate, e);
+                    }
+                    Err(_) => {
+                        debug!("Connect timed out to sync candidate {}", candidate);
                     }
                 }
+            }
+
+            if !delivered && !aborted_by_auth {
+                warn!(
+                    "Failed to broadcast {} to peer {} across candidates {:?}",
+                    msg_name, peer, candidate_peers
+                );
             }
         });
     }
@@ -637,5 +890,22 @@ mod tests {
         };
         // Should safely no-op without panicking
         broadcast_sync_message(&cfg, &[], msg);
+    }
+
+    #[test]
+    fn test_extract_host_variants() {
+        assert_eq!(extract_host("192.168.1.50:54123"), "192.168.1.50");
+        assert_eq!(extract_host("192.168.1.50"), "192.168.1.50");
+        assert_eq!(
+            extract_host("[::ffff:192.168.1.50]:49382"),
+            "::ffff:192.168.1.50"
+        );
+        assert_eq!(extract_host("[2001:db8::1]:54123"), "2001:db8::1");
+        assert_eq!(extract_host("2001:db8::1"), "2001:db8::1");
+        assert_eq!(
+            extract_host("::ffff:192.168.1.50:54123"),
+            "::ffff:192.168.1.50"
+        );
+        assert_eq!(extract_host("cachyos-laptop:54123"), "cachyos-laptop");
     }
 }

@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.13] - 2026-11-19
+
+### Added
+- Native KDE Plasma 6 D-Bus `KlipperWatcher` (`org.kde.klipper`) with startup retry, signal monitoring, and periodic fallback so clipboard copies on CachyOS/KDE are captured reliably even when `wl-paste --watch` or `wlr-data-control` is unavailable.
+- Regression test suite (`crates/core/tests/cachyos_sync_regression_tests.rs`) covering IPv6/ephemeral port normalization, `peer_pins`, and Wayland/display helpers.
+
+### Fixed
+- **CachyOS / Wayland Clipboard Capture**:
+  - Hardened `ensure_display_environment` with mutex serialization, `systemctl --user show-environment` import, `/run/user/<uid>` fallback, `.lock`-ignoring Wayland socket probing, and `:0.0` X11 display parsing.
+  - Fixed `wl-paste --watch` stderr 64KB pipe deadlock (bounded concurrent drain), added `wl-clipboard` 2.3.0 `CLIPBOARD_STATE` (`sensitive`/`nil`) handling, preferred UTF-8 over UTF-16 MIME selection, expanded `data-control` unsupported error detection, and added `stdin(Stdio::null())` and 2.5s timeouts with `kill_on_drop`.
+  - Fixed `PasswordManagerGuard` MIME matching (`x-kde-passwordmanagerhint` case fix and narrowed overly broad `"private"` pattern that could silently drop normal copies).
+  - Updated `packaging/systemd/clipboard-history.service`, `crates/core/src/service.rs`, and `packaging/arch/PKGBUILD` (`PartOf=graphical-session.target`, extended `PassEnvironment`, moved `wl-clipboard` to `depends`).
+- **Bidirectional Ubuntu ↔ CachyOS LAN Sync**:
+  - Fixed `clean_ip_address` for IPv6 and IPv4-mapped IPv6 addresses (`::ffff:x.x.x.x`), removed unsafe IP prefix matching in `is_peer_trusted`, and added `build_candidate_sync_addrs` to avoid dialing stored ephemeral ports (`>= 32768`).
+  - Added startup `sanitize_peer_addresses()` self-healing, stopped storing ephemeral inbound TCP ports during pairing, added per-peer `peer_pins` persistence and `session_pin` matching, and added `nftables` (`nft list ruleset`) firewall detection.
+  - Fixed default `device_name` discovery to read `/etc/hostname` and `/proc/sys/kernel/hostname`, fixed SQLite duplicate insert DEK preservation, and preserved daemon `trusted_peers`/`peer_pins` on GUI `UpdateConfig`.
+- **Daemon & GUI Stability / Performance**:
+  - Added 300ms `spawn_blocking` timeout for `WindowFocusDetector`, dynamic Wayland/X11 focus detection with `qdbus6` support, `DISPLAY` check in `XdotoolInjector::is_available()`, and 2s `kill_on_drop` timeouts across paste injectors.
+  - Eliminated 1.5s GUI full-list rebuild jank via list fingerprinting, moved image thumbnails and encrypted image pasting to async `GetBlob`, refreshed live `AppConfig` over IPC, debounced settings edits, and batched `hyprctl` window commands.
+
 ## [1.2.12] - 2026-10-25
 
 ### Fixed

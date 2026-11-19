@@ -183,32 +183,6 @@ impl X11Watcher {
         let mut html = None;
         let mut image_data = None;
 
-        let img_target = if mime_types.iter().any(|m| m == "image/png") {
-            Some(png_atom)
-        } else if mime_types.iter().any(|m| m == "image/webp") {
-            Some(webp_atom)
-        } else if mime_types.iter().any(|m| m == "image/jpeg") {
-            Some(jpeg_atom)
-        } else {
-            None
-        };
-
-        if let Some(target) = img_target {
-            if let Some(bytes) = Self::read_target_data_with_incr(
-                reader_conn,
-                reader_win,
-                selection_atom,
-                target,
-                prop_atom,
-                incr_atom,
-                timestamp,
-            )
-            .await
-            {
-                image_data = Some(bytes);
-            }
-        }
-
         if mime_types.iter().any(|m| m == "text/html") {
             if let Some(bytes) = Self::read_target_data_with_incr(
                 reader_conn,
@@ -257,6 +231,35 @@ impl X11Watcher {
             }
         }
 
+        // Only fetch image/* when text is None
+        if text.is_none() {
+            let img_target = if mime_types.iter().any(|m| m == "image/png") {
+                Some(png_atom)
+            } else if mime_types.iter().any(|m| m == "image/webp") {
+                Some(webp_atom)
+            } else if mime_types.iter().any(|m| m == "image/jpeg") {
+                Some(jpeg_atom)
+            } else {
+                None
+            };
+
+            if let Some(target) = img_target {
+                if let Some(bytes) = Self::read_target_data_with_incr(
+                    reader_conn,
+                    reader_win,
+                    selection_atom,
+                    target,
+                    prop_atom,
+                    incr_atom,
+                    timestamp,
+                )
+                .await
+                {
+                    image_data = Some(bytes);
+                }
+            }
+        }
+
         if text.is_some() || image_data.is_some() || !mime_types.is_empty() {
             Some(RawClipboardEvent {
                 selection,
@@ -286,6 +289,7 @@ impl ClipboardWatcher for X11Watcher {
                 Ok(c) => c,
                 Err(e) => {
                     warn!("Failed to connect to X11 server: {}. Retrying in 2s...", e);
+                    clipboard_history_core::clipboard::ensure_display_environment();
                     sleep(Duration::from_secs(2)).await;
                     continue;
                 }

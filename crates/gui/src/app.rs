@@ -43,7 +43,7 @@ impl ClipboardApp {
             > = Rc::new(RefCell::new(std::collections::HashMap::new()));
             let win_ref_dialog = Rc::clone(&win_startup);
 
-            glib::timeout_add_local(std::time::Duration::from_millis(1500), move || {
+            glib::timeout_add_local(std::time::Duration::from_millis(3000), move || {
                 let active_set = Rc::clone(&active_dialogs);
                 let active_wins = Rc::clone(&active_dialog_windows);
                 let win_r = Rc::clone(&win_ref_dialog);
@@ -131,11 +131,16 @@ impl ClipboardApp {
             }
 
             if has_settings {
-                let cfg = AppConfig::load_or_default();
-                crate::settings_dialog::SettingsDialog::show(
-                    win_cmd.borrow().as_ref().map(|w| &w.window),
-                    cfg,
-                );
+                let win_settings = Rc::clone(&win_cmd);
+                glib::MainContext::default().spawn_local(async move {
+                    let cfg = Self::fetch_config_or_default().await;
+                    let win_guard = win_settings.borrow();
+                    if let Some(win) = win_guard.as_ref() {
+                        win.set_config(cfg.clone());
+                    }
+                    let parent = win_guard.as_ref().map(|w| &w.window);
+                    crate::settings_dialog::SettingsDialog::show(parent, cfg);
+                });
             } else if has_toggle {
                 let now = std::time::Instant::now();
                 if now.duration_since(*toggle_cmd.borrow()) < std::time::Duration::from_millis(450)
@@ -164,6 +169,17 @@ impl ClipboardApp {
         });
 
         Self { app }
+    }
+
+    async fn fetch_config_or_default() -> AppConfig {
+        use clipboard_history_core::ipc::{IpcClient, IpcRequest, IpcResponse};
+        let Ok(client) = IpcClient::connect().await else {
+            return AppConfig::load_or_default();
+        };
+        match client.send(&IpcRequest::GetConfig).await {
+            Ok(IpcResponse::Config(cfg)) => *cfg,
+            _ => AppConfig::load_or_default(),
+        }
     }
 
     pub fn run(&self) -> i32 {

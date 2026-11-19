@@ -1,7 +1,9 @@
 use crate::injector::traits::PasteInjector;
 use async_trait::async_trait;
+use std::process::Stdio;
+use std::time::Duration;
 use tokio::process::Command;
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub struct XdotoolInjector;
 
@@ -24,7 +26,7 @@ impl PasteInjector for XdotoolInjector {
     }
 
     fn is_available(&self) -> bool {
-        which::which("xdotool").is_ok()
+        std::env::var("DISPLAY").is_ok() && which::which("xdotool").is_ok()
     }
 
     async fn inject(&self) -> bool {
@@ -38,11 +40,21 @@ impl PasteInjector for XdotoolInjector {
         } else {
             "ctrl+v"
         };
-        Command::new("xdotool")
-            .args(["key", "--clearmodifiers", key_combination])
-            .status()
-            .await
-            .map(|s| s.success())
-            .unwrap_or(false)
+        let mut cmd = Command::new("xdotool");
+        cmd.args(["key", "--clearmodifiers", key_combination])
+            .stdin(Stdio::null())
+            .kill_on_drop(true);
+
+        match tokio::time::timeout(Duration::from_secs(2), cmd.status()).await {
+            Ok(Ok(status)) => status.success(),
+            Ok(Err(e)) => {
+                debug!("xdotool execution failed: {}", e);
+                false
+            }
+            Err(_) => {
+                warn!("xdotool timed out after 2s");
+                false
+            }
+        }
     }
 }

@@ -188,6 +188,14 @@ impl SqliteRepository {
             let mut update_blob_stmt = tx.prepare_cached(
                 "UPDATE entries SET blob_hash = COALESCE(blob_hash, ?1), thumbnail_blob_hash = COALESCE(thumbnail_blob_hash, ?2) WHERE id = ?3",
             )?;
+            let mut select_existing_stmt = tx.prepare_cached(
+                r#"
+                SELECT id, content_hash, entry_type, preview, text_content, html_content,
+                       blob_hash, thumbnail_blob_hash, mime_types, size_bytes,
+                       created_at, last_used_at, is_pinned, source_app
+                FROM entries WHERE id = ?1 LIMIT 1
+                "#,
+            )?;
             let mut insert_stmt = tx.prepare_cached(
                 r#"
                 INSERT INTO entries (
@@ -223,9 +231,9 @@ impl SqliteRepository {
                         ]);
                     }
 
-                    let mut updated_entry = entry.clone();
-                    updated_entry.id = id;
-                    results.push(updated_entry);
+                    let existing_entry =
+                        select_existing_stmt.query_row(params![&id], Self::map_row)?;
+                    results.push(existing_entry);
                 } else {
                     let mime_types_json = serde_json::to_string(&entry.mime_types)?;
                     insert_stmt.execute(params![
@@ -1140,5 +1148,41 @@ mod tests {
             vacuum.is_ok(),
             "repo.vacuum() must recover from poisoned mutex"
         );
+    }
+
+    #[test]
+    fn test_batch_insert_or_update_returns_existing_row_on_duplicate() {
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        let mut first = ClipboardEntry::new_text(
+            "hello world".to_string(),
+            "hash_abc".to_string(),
+            vec!["text/plain".to_string()],
+            None,
+        );
+        first.preview = "$ENC$existing_preview".to_string();
+        first.text_content = Some("$ENC$existing_ciphertext".to_string());
+        let saved_first = repo.batch_insert_or_update(&[first.clone()]).unwrap();
+        assert_eq!(saved_first.len(), 1);
+        assert_eq!(saved_first[0].id, first.id);
+
+        let mut duplicate = ClipboardEntry::new_text(
+            "hello world".to_string(),
+            "hash_abc".to_string(),
+            vec!["text/plain".to_string()],
+            None,
+        );
+        duplicate.preview = "$ENC$different_dek_preview".to_string();
+        duplicate.text_content = Some("$ENC$different_dek_ciphertext".to_string());
+        duplicate.last_used_at = first.last_used_at + chrono::Duration::seconds(5);
+
+        let saved_dup = repo.batch_insert_or_update(&[duplicate.clone()]).unwrap();
+        assert_eq!(saved_dup.len(), 1);
+        assert_eq!(saved_dup[0].id, first.id);
+        assert_eq!(saved_dup[0].preview, "$ENC$existing_preview");
+        assert_eq!(
+            saved_dup[0].text_content.as_deref(),
+            Some("$ENC$existing_ciphertext")
+        );
+        assert!(saved_dup[0].last_used_at > first.last_used_at);
     }
 }

@@ -14,7 +14,7 @@ use eviction::EvictionWorker;
 use peer_discovery::{start_udp_discovery, PeerTracker};
 use server::DaemonServer;
 use watcher::traits::{ClipboardWatcher, RawClipboardEvent};
-use watcher::{WaylandWatcher, X11Watcher};
+use watcher::{KlipperWatcher, WaylandWatcher, X11Watcher};
 use window_focus::WindowFocusDetector;
 
 use clap::Parser;
@@ -155,12 +155,23 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let config = if let Some(path) = cli.config {
-        let content = std::fs::read_to_string(&path)?;
+    let mut config = if let Some(ref path) = cli.config {
+        let content = std::fs::read_to_string(path)?;
         toml::from_str::<AppConfig>(&content)?
     } else {
         AppConfig::load_or_default()
     };
+
+    if sanitize_peer_addresses(&mut config) {
+        let save_path = cli.config.clone().unwrap_or_else(AppConfig::config_path);
+        if let Err(e) = config.save(&save_path) {
+            tracing::warn!(
+                "Failed to save sanitized config to {}: {}",
+                save_path.display(),
+                e
+            );
+        }
+    }
 
     let config_arc = Arc::new(RwLock::new(config.clone()));
     let is_paused = Arc::new(AtomicBool::new(false));
@@ -229,34 +240,32 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let session_type = std::env::var("XDG_SESSION_TYPE")
         .unwrap_or_default()
         .to_lowercase();
-    let wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
+    let wayland_display = std::env::var("WAYLAND_DISPLAY")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let has_wayland_socket = has_active_wayland_socket();
+    let is_pure_x11 = session_type == "x11" && wayland_display.is_none() && !has_wayland_socket;
 
-    let is_wayland = session_type == "wayland"
-        || wayland_display.is_some()
-        || (which::which("wl-paste").is_ok()
-            && (session_type.is_empty() || session_type == "wayland"));
-
-    let is_x11 = std::env::var("DISPLAY").is_ok() || !is_wayland;
+    let is_wayland = !is_pure_x11;
+    let is_x11 = std::env::var("DISPLAY").is_ok() || is_pure_x11;
 
     info!(
-        "Detected display environment: Wayland={}, X11={} (session: {}, wayland_display: {:?})",
-        is_wayland, is_x11, session_type, wayland_display
+        "Detected display environment: Wayland={}, X11={} (session: {}, wayland_display: {:?}, active_socket: {})",
+        is_wayland, is_x11, session_type, wayland_display, has_wayland_socket
     );
 
     let (event_tx, mut event_rx) = mpsc::channel::<RawClipboardEvent>(64);
-    let mut spawned_any = false;
     let capture_primary = config.general.capture_primary_selection;
 
-    // 1. Spawn Wayland watcher if Wayland is available
-    if is_wayland && which::which("wl-paste").is_ok() {
+    // 1. Spawn Wayland watcher unless we are certain this is a pure X11 session
+    if is_wayland {
         let tx = event_tx.clone();
         tokio::spawn(async move {
             let mut watcher = WaylandWatcher::new(capture_primary);
             if let Err(e) = watcher.run(tx).await {
-                error!("Wayland watcher exited: {}", e);
+                tracing::warn!("Wayland watcher exited: {}", e);
             }
         });
-        spawned_any = true;
     }
 
     // 2. Spawn X11 watcher if X11 / Xwayland is available
@@ -268,14 +277,16 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 debug!("X11 watcher exited: {}", e);
             }
         });
-        spawned_any = true;
     }
 
-    if !spawned_any {
+    // 3. Spawn KDE Klipper D-Bus watcher alongside Wayland/X11 watchers
+    {
         let tx = event_tx.clone();
         tokio::spawn(async move {
-            let mut watcher = WaylandWatcher::new(capture_primary);
-            let _ = watcher.run(tx).await;
+            let mut watcher = KlipperWatcher::new();
+            if let Err(e) = watcher.run(tx).await {
+                debug!("Klipper watcher exited: {}", e);
+            }
         });
     }
 
@@ -354,9 +365,6 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {
                 info!("P2P LAN Encrypted Sync listening on {}", addr);
                 while let Ok((mut socket, peer_addr)) = listener.accept().await {
-                    let current_sync = sync_cfg_arc.read().await.sync.clone();
-                    let pin = current_sync.pairing_pin.clone();
-                    let dev_name = current_sync.device_name.clone();
                     let sync_repo = sync_repo.clone();
                     let sync_blob_store = sync_blob_store_base.clone();
                     let sync_crypto = sync_crypto.clone();
@@ -367,23 +375,97 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 
                     tokio::spawn(async move {
                         use clipboard_history_core::sync::{
-                            read_sync_message, send_sync_message, SyncMessage,
+                            clean_ip_address, format_peer_socket_addr, normalize_ip,
+                            read_sync_message_with_pins, send_sync_message, SyncMessage,
                         };
+                        use tokio::io::AsyncWriteExt;
+
                         let (mut reader, mut writer) = socket.split();
                         let mut authenticated = false;
-                        let clean_ip = clipboard_history_core::sync::clean_ip_address(
-                            &peer_addr.ip().to_string(),
-                        );
+                        let mut session_pin: Option<String> = None;
+                        let clean_ip = normalize_ip(peer_addr.ip());
 
-                        while let Ok(msg) = read_sync_message(&mut reader, &pin).await {
+                        loop {
+                            let current_sync = sync_cfg_arc.read().await.sync.clone();
+                            let dev_name = current_sync.device_name.clone();
+                            let default_pin = current_sync.pairing_pin.clone();
+
+                            let mut candidate_pins: Vec<String> = Vec::new();
+                            if let Some(ref sp) = session_pin {
+                                if !sp.is_empty() && !candidate_pins.contains(sp) {
+                                    candidate_pins.push(sp.clone());
+                                }
+                            }
+                            if let Some(peer_pin) = current_sync.peer_pins.get(&clean_ip) {
+                                if !peer_pin.is_empty() && !candidate_pins.contains(peer_pin) {
+                                    candidate_pins.push(peer_pin.clone());
+                                }
+                            }
+                            for pin_val in current_sync.peer_pins.values() {
+                                if !pin_val.is_empty() && !candidate_pins.contains(pin_val) {
+                                    candidate_pins.push(pin_val.clone());
+                                }
+                            }
+                            let extra_pin_refs: Vec<&str> =
+                                candidate_pins.iter().map(|s| s.as_str()).collect();
+
+                            let read_res = tokio::time::timeout(
+                                std::time::Duration::from_secs(60),
+                                read_sync_message_with_pins(
+                                    &mut reader,
+                                    &extra_pin_refs,
+                                    &default_pin,
+                                ),
+                            )
+                            .await;
+
+                            let (msg, matched_pin) = match read_res {
+                                Ok(Ok(pair)) => pair,
+                                Ok(Err(e)) => {
+                                    debug!("Sync connection from {} ended: {}", clean_ip, e);
+                                    break;
+                                }
+                                Err(_) => {
+                                    debug!("Sync connection from {} timed out after 60s", clean_ip);
+                                    break;
+                                }
+                            };
+
+                            if matched_pin != "CH_PAIRING_V1" {
+                                session_pin = Some(matched_pin.clone());
+                            }
+
                             let current_sync = sync_cfg_arc.read().await.sync.clone();
                             match msg {
                                 SyncMessage::PairingRequest {
                                     origin_device,
-                                    pairing_pin: _remote_pin,
+                                    pairing_pin: remote_pin,
                                     request_id,
                                 } => {
                                     if current_sync.is_peer_trusted(&clean_ip, &origin_device) {
+                                        let peer_listen_port = tracker_conn
+                                            .get_port_for_ip(&clean_ip)
+                                            .await
+                                            .unwrap_or(54123);
+                                        let peer_listen_addr =
+                                            format_peer_socket_addr(&clean_ip, peer_listen_port);
+                                        tracker_conn
+                                            .add_or_update(
+                                                peer_listen_addr.clone(),
+                                                origin_device.clone(),
+                                            )
+                                            .await;
+                                        {
+                                            let mut cfg = sync_cfg_arc.write().await;
+                                            update_paired_peer_config(
+                                                &mut cfg,
+                                                &clean_ip,
+                                                &origin_device,
+                                                &peer_listen_addr,
+                                                &remote_pin,
+                                            );
+                                            let _ = cfg.save(AppConfig::config_path());
+                                        }
                                         let resp = SyncMessage::PairingResponse {
                                             request_id,
                                             accepted: true,
@@ -393,8 +475,16 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                         let _ =
                                             send_sync_message(&mut writer, "CH_PAIRING_V1", &resp)
                                                 .await;
-                                        continue;
+                                        let _ = writer.shutdown().await;
+                                        break;
                                     }
+
+                                    let peer_listen_port = tracker_conn
+                                        .get_port_for_ip(&clean_ip)
+                                        .await
+                                        .unwrap_or(54123);
+                                    let display_addr =
+                                        format_peer_socket_addr(&clean_ip, peer_listen_port);
 
                                     let (resp_tx, resp_rx) =
                                         tokio::sync::oneshot::channel::<bool>();
@@ -402,7 +492,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                         clipboard_history_core::ipc::PendingPairingInfo {
                                             request_id: request_id.clone(),
                                             device_name: origin_device.clone(),
-                                            peer_address: peer_addr.to_string(),
+                                            peer_address: display_addr,
                                             desktop_notification_active: false,
                                         };
                                     {
@@ -410,7 +500,8 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                         // Deduplicate: cancel any prior pending pairing from the same origin device or IP
                                         let existing_key = map.iter().find_map(|(id, item)| {
                                             if item.info.device_name == origin_device
-                                                || item.info.peer_address.starts_with(&clean_ip)
+                                                || clean_ip_address(&item.info.peer_address)
+                                                    == clean_ip
                                             {
                                                 Some(id.clone())
                                             } else {
@@ -439,7 +530,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
 
                                     let dev_clone = origin_device.clone();
-                                    let ip_str = peer_addr.ip().to_string();
+                                    let ip_str = clean_ip.clone();
                                     let req_id_notify = request_id.clone();
                                     let pending_notify = pending_pairings_conn.clone();
                                     tokio::spawn(async move {
@@ -476,27 +567,28 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                             "Pairing accepted for peer '{}' ({})",
                                             origin_device, clean_ip
                                         );
+                                        let peer_listen_port = tracker_conn
+                                            .get_port_for_ip(&clean_ip)
+                                            .await
+                                            .unwrap_or(54123);
+                                        let peer_listen_addr =
+                                            format_peer_socket_addr(&clean_ip, peer_listen_port);
+
                                         tracker_conn
                                             .add_or_update(
-                                                peer_addr.to_string(),
+                                                peer_listen_addr.clone(),
                                                 origin_device.clone(),
                                             )
                                             .await;
                                         {
                                             let mut cfg = sync_cfg_arc.write().await;
-                                            if !cfg.sync.trusted_peers.contains(&clean_ip) {
-                                                cfg.sync.trusted_peers.push(clean_ip.clone());
-                                            }
-                                            if !origin_device.is_empty()
-                                                && !cfg.sync.trusted_peers.contains(&origin_device)
-                                            {
-                                                cfg.sync.trusted_peers.push(origin_device.clone());
-                                            }
-                                            let peer_full = peer_addr.to_string();
-                                            if !cfg.sync.peer_addresses.contains(&peer_full) {
-                                                cfg.sync.peer_addresses.push(peer_full);
-                                            }
-                                            cfg.sync.enabled = true;
+                                            update_paired_peer_config(
+                                                &mut cfg,
+                                                &clean_ip,
+                                                &origin_device,
+                                                &peer_listen_addr,
+                                                &remote_pin,
+                                            );
                                             let _ = cfg.save(AppConfig::config_path());
                                         }
                                         let resp = SyncMessage::PairingResponse {
@@ -508,32 +600,8 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                         let _ =
                                             send_sync_message(&mut writer, "CH_PAIRING_V1", &resp)
                                                 .await;
-
-                                        // Stream mutual history to newly paired peer and request peer's history
-                                        let (enc_enabled, max_entries) = {
-                                            let c = sync_cfg_arc.read().await;
-                                            (c.security.encryption_enabled, c.general.max_entries)
-                                        };
-                                        let _ = sync_service::stream_history_to_writer(
-                                            &mut writer,
-                                            &pin,
-                                            &dev_name,
-                                            &sync_repo,
-                                            &sync_blob_store,
-                                            &sync_crypto,
-                                            enc_enabled,
-                                            max_entries,
-                                        )
-                                        .await;
-                                        let _ = send_sync_message(
-                                            &mut writer,
-                                            &pin,
-                                            &SyncMessage::HistorySyncRequest {
-                                                origin_device: dev_name.clone(),
-                                                limit: max_entries,
-                                            },
-                                        )
-                                        .await;
+                                        let _ = writer.shutdown().await;
+                                        break;
                                     } else {
                                         info!(
                                             "Pairing rejected/timed out for peer '{}' ({})",
@@ -549,30 +617,37 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                         let _ =
                                             send_sync_message(&mut writer, "CH_PAIRING_V1", &resp)
                                                 .await;
+                                        let _ = writer.shutdown().await;
+                                        break;
                                     }
                                 }
 
                                 SyncMessage::UnpairRequest { origin_device } => {
-                                    let clean_origin_ip =
-                                        clipboard_history_core::sync::clean_ip_address(&clean_ip);
-                                    let mut cfg = sync_cfg_arc.write().await;
-                                    cfg.sync.trusted_peers.retain(|p| {
-                                        let p_clean =
-                                            clipboard_history_core::sync::clean_ip_address(p);
-                                        p_clean != clean_origin_ip && p != &origin_device
-                                    });
-                                    cfg.sync.peer_addresses.retain(|p| {
-                                        let p_clean =
-                                            clipboard_history_core::sync::clean_ip_address(p);
-                                        p_clean != clean_origin_ip && p != &origin_device
-                                    });
-                                    let _ = cfg.save(AppConfig::config_path());
+                                    let clean_origin_ip = clean_ip.clone();
+                                    {
+                                        let mut cfg = sync_cfg_arc.write().await;
+                                        cfg.sync.trusted_peers.retain(|p| {
+                                            let p_clean = clean_ip_address(p);
+                                            p_clean != clean_origin_ip
+                                                && (origin_device.is_empty() || p != &origin_device)
+                                        });
+                                        cfg.sync.peer_addresses.retain(|p| {
+                                            let p_clean = clean_ip_address(p);
+                                            p_clean != clean_origin_ip
+                                                && (origin_device.is_empty() || p != &origin_device)
+                                        });
+                                        cfg.sync.peer_pins.remove(&clean_origin_ip);
+                                        if !origin_device.is_empty() {
+                                            cfg.sync.peer_pins.remove(&origin_device);
+                                        }
+                                        let _ = cfg.save(AppConfig::config_path());
+                                    }
                                     tracker_conn.remove_peer(&clean_ip).await;
                                     if !origin_device.is_empty() {
                                         tracker_conn.remove_peer(&origin_device).await;
                                     }
                                     info!(
-                                        "Peer '{}' ({}) requested unpairing. Removed from trusted_peers and peer_addresses.",
+                                        "Peer '{}' ({}) requested unpairing. Removed from trusted_peers, peer_addresses, and peer_pins.",
                                         origin_device, clean_ip
                                     );
 
@@ -582,21 +657,27 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                     };
                                     let _ = send_sync_message(&mut writer, "CH_PAIRING_V1", &resp)
                                         .await;
+                                    let _ = writer.shutdown().await;
                                     break;
                                 }
 
                                 SyncMessage::AuthRequest {
                                     device_name: remote_dev,
-                                    pairing_pin,
                                     ..
                                 } => {
+                                    let reply_pin = if matched_pin != "CH_PAIRING_V1" {
+                                        matched_pin.clone()
+                                    } else {
+                                        current_sync.pin_for_peer(&clean_ip, &remote_dev)
+                                    };
                                     let is_trusted =
                                         current_sync.is_peer_trusted(&clean_ip, &remote_dev);
-                                    if is_trusted && (pairing_pin == pin || !pin.is_empty()) {
+                                    if is_trusted && matched_pin != "CH_PAIRING_V1" {
                                         authenticated = true;
+                                        session_pin = Some(reply_pin.clone());
                                         let _ = send_sync_message(
                                             &mut writer,
-                                            &pin,
+                                            &reply_pin,
                                             &SyncMessage::AuthResponse {
                                                 success: true,
                                                 device_name: dev_name.clone(),
@@ -607,7 +688,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                     } else {
                                         let _ = send_sync_message(
                                             &mut writer,
-                                            &pin,
+                                            &reply_pin,
                                             &SyncMessage::AuthResponse {
                                                 success: false,
                                                 device_name: dev_name.clone(),
@@ -619,6 +700,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                             },
                                         )
                                         .await;
+                                        let _ = writer.shutdown().await;
                                         break;
                                     }
                                 }
@@ -630,6 +712,9 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                     let is_trusted =
                                         current_sync.is_peer_trusted(&clean_ip, &origin_device);
                                     if is_trusted || authenticated {
+                                        let reply_pin = session_pin.clone().unwrap_or_else(|| {
+                                            current_sync.pin_for_peer(&clean_ip, &origin_device)
+                                        });
                                         let (enc_enabled, max_entries) = {
                                             let c = sync_cfg_arc.read().await;
                                             (c.security.encryption_enabled, c.general.max_entries)
@@ -637,7 +722,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                         let capped_limit = limit.clamp(1, 500);
                                         let _ = sync_service::stream_history_to_writer(
                                             &mut writer,
-                                            &pin,
+                                            &reply_pin,
                                             &dev_name,
                                             &sync_repo,
                                             &sync_blob_store,
@@ -777,9 +862,15 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                     {
                                         break;
                                     }
-                                    let _ =
-                                        send_sync_message(&mut writer, &pin, &SyncMessage::Pong)
-                                            .await;
+                                    let reply_pin = session_pin.clone().unwrap_or_else(|| {
+                                        current_sync.pin_for_peer(&clean_ip, "")
+                                    });
+                                    let _ = send_sync_message(
+                                        &mut writer,
+                                        &reply_pin,
+                                        &SyncMessage::Pong,
+                                    )
+                                    .await;
                                 }
                                 _ => {}
                             }
@@ -814,7 +905,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Spawn Micro-Batching Writer Task (commit transactions every 250ms or 10 items)
-    let (batch_tx, mut batch_rx) = mpsc::channel::<ClipboardEntry>(128);
+    let (batch_tx, mut batch_rx) = mpsc::channel::<PendingBatchItem>(128);
     let batch_repo = repo.clone();
     let batch_blob_store = blob_store.clone();
     let batch_crypto = Arc::clone(&crypto);
@@ -823,7 +914,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::spawn(async move {
         use std::time::Duration;
-        let mut buffer: Vec<ClipboardEntry> = Vec::with_capacity(10);
+        let mut buffer: Vec<PendingBatchItem> = Vec::with_capacity(10);
         let mut interval = tokio::time::interval(Duration::from_millis(250));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -875,7 +966,9 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let window_focus_detector = WindowFocusDetector::new();
+    let window_focus_detector = Arc::new(WindowFocusDetector::new());
+    let mut recent_captures: std::collections::VecDeque<(String, std::time::Instant)> =
+        std::collections::VecDeque::with_capacity(64);
 
     // Main Event Processing Loop
     while let Some(event) = event_rx.recv().await {
@@ -884,11 +977,15 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
+        let current_cfg = config_arc.read().await.clone();
+        circuit_breaker.update_limits(
+            current_cfg.general.rate_limit_per_second,
+            current_cfg.general.max_blob_size_mb,
+        );
+
         if !circuit_breaker.allow_event() {
             continue;
         }
-
-        let current_cfg = config_arc.read().await.clone();
 
         // Primary selection filtering FIRST before expensive focus detection
         if event.selection == watcher::traits::SelectionTarget::Primary {
@@ -902,8 +999,24 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // 1. Query active window once per event (Deduplicated: HIGH-05)
-        let active_win = window_focus_detector.get_active_window_info();
+        // 1. Query active window once per event (offloaded with 300ms timeout)
+        let detector_clone = Arc::clone(&window_focus_detector);
+        let active_win = match tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            tokio::task::spawn_blocking(move || detector_clone.get_active_window_info()),
+        )
+        .await
+        {
+            Ok(Ok(info)) => info,
+            Ok(Err(e)) => {
+                debug!("Window focus task join error: {}", e);
+                None
+            }
+            Err(_) => {
+                debug!("Window focus detection timed out after 300ms");
+                None
+            }
+        };
         let active_class = active_win.as_ref().map(|(_, c)| c.as_str());
 
         // Incognito & Private Browsing Window Check (adjustable in settings)
@@ -951,11 +1064,16 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
 
-            let hash = BlobStore::compute_hash(text.as_bytes());
+            let raw_hash = BlobStore::compute_hash(text.as_bytes());
 
-            // Check if this event was an echo of an incoming sync we just injected into system clipboard
-            if echo_tracker.is_echo(&hash).await {
+            // Check echo BEFORE UrlCleaner so synced URLs still suppress echo properly
+            if echo_tracker.is_echo(&raw_hash).await {
                 debug!("Skipping broadcast of locally injected synced text entry");
+                continue;
+            }
+
+            if is_recent_duplicate(&mut recent_captures, &raw_hash) {
+                debug!("Skipping duplicate capture from concurrent clipboard watchers");
                 continue;
             }
 
@@ -982,6 +1100,22 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
+            let hash = BlobStore::compute_hash(text.as_bytes());
+            if hash != raw_hash {
+                if echo_tracker.is_echo(&hash).await {
+                    debug!("Skipping broadcast of cleaned synced text echo");
+                    continue;
+                }
+                if is_recent_duplicate(&mut recent_captures, &hash) {
+                    debug!("Skipping duplicate cleaned capture");
+                    continue;
+                }
+            }
+            record_recent_capture(&mut recent_captures, raw_hash.clone());
+            if hash != raw_hash {
+                record_recent_capture(&mut recent_captures, hash.clone());
+            }
+
             let cleaned_html = event.html.map(|h| {
                 if current_cfg.security.auto_clean_tracking_urls {
                     UrlCleaner::clean_text_urls(&h)
@@ -993,7 +1127,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             let mut entry = if event.mime_types.iter().any(|m| m == "text/uri-list") {
                 ClipboardEntry::new_uri_list(
                     text.clone(),
-                    hash,
+                    hash.clone(),
                     event.mime_types,
                     source_app.map(|s| s.to_string()),
                 )
@@ -1001,23 +1135,35 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 ClipboardEntry::new_html(
                     text.clone(),
                     html.clone(),
-                    hash,
+                    hash.clone(),
                     event.mime_types,
                     source_app.map(|s| s.to_string()),
                 )
             } else {
                 ClipboardEntry::new_text(
                     text.clone(),
-                    hash,
+                    hash.clone(),
                     event.mime_types,
                     source_app.map(|s| s.to_string()),
                 )
             };
 
+            let orig_id = entry.id.clone();
+            let mut wrapped_dek_opt = None;
+
             // Storage encryption at rest with Envelope Encryption (DEK)
             if current_cfg.security.encryption_enabled {
-                if let Ok(wrapped_dek) = crypto.encrypt_entry_envelope(&mut entry) {
-                    let _ = repo.insert_entry_dek(&entry.id, &wrapped_dek, &[]);
+                let already_exists = repo.get_by_hash(&hash).ok().flatten().is_some();
+                if !already_exists {
+                    if let Ok(wrapped_dek) = crypto.encrypt_entry_envelope(&mut entry) {
+                        wrapped_dek_opt = Some(wrapped_dek);
+                    } else {
+                        entry.preview = crypto.encrypt_str(&entry.preview).unwrap_or(entry.preview);
+                        entry.text_content =
+                            entry.text_content.and_then(|t| crypto.encrypt_str(&t).ok());
+                        entry.html_content =
+                            entry.html_content.and_then(|h| crypto.encrypt_str(&h).ok());
+                    }
                 } else {
                     entry.preview = crypto.encrypt_str(&entry.preview).unwrap_or(entry.preview);
                     entry.text_content =
@@ -1031,18 +1177,29 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 "Captured clipboard entry: [{}] {}",
                 entry.entry_type, entry.preview
             );
-            let _ = batch_tx.send(entry).await;
+            let _ = batch_tx
+                .send(PendingBatchItem {
+                    entry,
+                    orig_id,
+                    wrapped_dek: wrapped_dek_opt,
+                })
+                .await;
         } else if let Some(image_bytes) = event.image_data {
             if !circuit_breaker.allow_payload_size(image_bytes.len()) {
                 continue;
             }
 
-            // Check if this image was an echo of an incoming sync we just injected into system clipboard
-            let hash = BlobStore::compute_hash(&image_bytes);
-            if echo_tracker.is_echo(&hash).await {
+            // Check if this image was an echo or a recent duplicate
+            let plain_hash = BlobStore::compute_hash(&image_bytes);
+            if echo_tracker.is_echo(&plain_hash).await {
                 debug!("Skipping broadcast of locally injected synced image");
                 continue;
             }
+            if is_recent_duplicate(&mut recent_captures, &plain_hash) {
+                debug!("Skipping duplicate image capture from concurrent clipboard watchers");
+                continue;
+            }
+            record_recent_capture(&mut recent_captures, plain_hash.clone());
 
             let blob_store_clone = blob_store.clone();
             let crypto_clone = Arc::clone(&crypto);
@@ -1075,7 +1232,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                         Err(_) => ((0, 0), None),
                     };
 
-                let entry = ClipboardEntry::new_image(
+                let mut entry = ClipboardEntry::new_image(
                     blob_hash,
                     thumb_hash,
                     image_bytes_clone.len(),
@@ -1083,6 +1240,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                     mime_types,
                     src_app,
                 );
+                entry.content_hash = plain_hash;
                 Ok::<_, clipboard_history_core::error::CoreError>(entry)
             })
             .await;
@@ -1090,7 +1248,14 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             match process_res {
                 Ok(Ok(entry)) => {
                     info!("Captured clipboard image entry: {}", entry.preview);
-                    let _ = batch_tx.send(entry).await;
+                    let orig_id = entry.id.clone();
+                    let _ = batch_tx
+                        .send(PendingBatchItem {
+                            entry,
+                            orig_id,
+                            wrapped_dek: None,
+                        })
+                        .await;
                 }
                 Ok(Err(e)) => error!("Failed to process image blob: {}", e),
                 Err(e) => error!("Tokio spawn_blocking error processing image: {}", e),
@@ -1106,8 +1271,139 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+struct PendingBatchItem {
+    entry: ClipboardEntry,
+    orig_id: String,
+    wrapped_dek: Option<Vec<u8>>,
+}
+
+fn has_active_wayland_socket() -> bool {
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| {
+            let uid = unsafe { libc::getuid() };
+            format!("/run/user/{}", uid)
+        });
+    let Ok(entries) = std::fs::read_dir(&runtime_dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with("wayland-")
+            && !name_str.ends_with(".lock")
+            && std::os::unix::net::UnixStream::connect(entry.path()).is_ok()
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn sanitize_peer_addresses(config: &mut AppConfig) -> bool {
+    let listen_port = config.sync.listen_port;
+    let mut sanitized: Vec<String> = Vec::with_capacity(config.sync.peer_addresses.len());
+    let mut seen_ips: Vec<String> = Vec::with_capacity(config.sync.peer_addresses.len());
+
+    for entry in &config.sync.peer_addresses {
+        let (raw_host, port_opt) = clipboard_history_core::sync::split_host_and_port(entry);
+        let clean_ip = clipboard_history_core::sync::clean_ip_address(&raw_host);
+        if clean_ip.is_empty() || seen_ips.contains(&clean_ip) {
+            continue;
+        }
+        seen_ips.push(clean_ip.clone());
+        let port = match port_opt {
+            Some(p) if p > 0 && (p == 54123 || p == 54124 || p == listen_port || p < 32768) => p,
+            _ => 54123,
+        };
+        sanitized.push(clipboard_history_core::sync::format_peer_socket_addr(
+            &clean_ip, port,
+        ));
+    }
+
+    if sanitized != config.sync.peer_addresses {
+        info!(
+            "Sanitized sync.peer_addresses on startup: {:?} -> {:?}",
+            config.sync.peer_addresses, sanitized
+        );
+        config.sync.peer_addresses = sanitized;
+        true
+    } else {
+        false
+    }
+}
+
+fn update_paired_peer_config(
+    cfg: &mut AppConfig,
+    clean_ip: &str,
+    origin_device: &str,
+    peer_listen_addr: &str,
+    remote_pin: &str,
+) {
+    if !clean_ip.is_empty() && !cfg.sync.trusted_peers.iter().any(|p| p == clean_ip) {
+        cfg.sync.trusted_peers.push(clean_ip.to_string());
+    }
+    if !origin_device.is_empty() && !cfg.sync.trusted_peers.iter().any(|p| p == origin_device) {
+        cfg.sync.trusted_peers.push(origin_device.to_string());
+    }
+    cfg.sync
+        .peer_addresses
+        .retain(|p| clipboard_history_core::sync::clean_ip_address(p) != clean_ip);
+    if !peer_listen_addr.is_empty() {
+        cfg.sync.peer_addresses.push(peer_listen_addr.to_string());
+    }
+    if !remote_pin.is_empty() {
+        if remote_pin != cfg.sync.pairing_pin {
+            if !clean_ip.is_empty() {
+                cfg.sync
+                    .peer_pins
+                    .insert(clean_ip.to_string(), remote_pin.to_string());
+            }
+            if !origin_device.is_empty() {
+                cfg.sync
+                    .peer_pins
+                    .insert(origin_device.to_string(), remote_pin.to_string());
+            }
+        } else {
+            if !clean_ip.is_empty() {
+                cfg.sync.peer_pins.remove(clean_ip);
+            }
+            if !origin_device.is_empty() {
+                cfg.sync.peer_pins.remove(origin_device);
+            }
+        }
+    }
+    cfg.sync.enabled = true;
+}
+
+fn is_recent_duplicate(
+    recent: &mut std::collections::VecDeque<(String, std::time::Instant)>,
+    hash: &str,
+) -> bool {
+    let ttl = std::time::Duration::from_millis(1500);
+    while let Some((_, ts)) = recent.front() {
+        if ts.elapsed() >= ttl {
+            recent.pop_front();
+        } else {
+            break;
+        }
+    }
+    recent.iter().any(|(h, _)| h == hash)
+}
+
+fn record_recent_capture(
+    recent: &mut std::collections::VecDeque<(String, std::time::Instant)>,
+    hash: String,
+) {
+    if recent.len() >= 64 {
+        recent.pop_front();
+    }
+    recent.push_back((hash, std::time::Instant::now()));
+}
+
 async fn flush_micro_batch(
-    buffer: &mut Vec<ClipboardEntry>,
+    buffer: &mut Vec<PendingBatchItem>,
     repo: &SqliteRepository,
     blob_store: &BlobStore,
     crypto: &CryptoEngine,
@@ -1118,11 +1414,21 @@ async fn flush_micro_batch(
         return;
     }
     let items = std::mem::take(buffer);
+    let entries: Vec<ClipboardEntry> = items.iter().map(|i| i.entry.clone()).collect();
     let repo_clone = repo.clone();
-    let items_clone = items.clone();
 
-    let res =
-        tokio::task::spawn_blocking(move || repo_clone.batch_insert_or_update(&items_clone)).await;
+    let res = tokio::task::spawn_blocking(move || {
+        let saved_items = repo_clone.batch_insert_or_update(&entries)?;
+        for (saved, item) in saved_items.iter().zip(items.iter()) {
+            if let Some(ref wrapped_dek) = item.wrapped_dek {
+                if saved.id == item.orig_id {
+                    let _ = repo_clone.insert_entry_dek(&saved.id, wrapped_dek, &[]);
+                }
+            }
+        }
+        Ok::<_, clipboard_history_core::error::CoreError>(saved_items)
+    })
+    .await;
 
     match res {
         Ok(Ok(saved_items)) => {
@@ -1132,7 +1438,11 @@ async fn flush_micro_batch(
             );
             let current_cfg = config.read().await.clone();
             let active_peers = peer_tracker.get_all_peers().await;
+            let mut seen_hashes = std::collections::HashSet::with_capacity(saved_items.len());
             for entry in saved_items {
+                if !seen_hashes.insert(entry.content_hash.clone()) {
+                    continue;
+                }
                 broadcast_to_peers(
                     &current_cfg.sync,
                     &entry,
@@ -1195,4 +1505,72 @@ fn broadcast_to_peers(
     };
 
     sync_service::broadcast_sync_message(cfg, known_peers, msg);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_peer_addresses_strips_ephemeral_and_dedups() {
+        let mut cfg = AppConfig::default();
+        cfg.sync.listen_port = 54123;
+        cfg.sync.peer_addresses = vec![
+            "[::ffff:192.168.1.50]:49382".to_string(),
+            "192.168.1.50:54123".to_string(),
+            "192.168.1.60:54124".to_string(),
+            "2001:db8::1".to_string(),
+        ];
+        assert!(sanitize_peer_addresses(&mut cfg));
+        assert_eq!(
+            cfg.sync.peer_addresses,
+            vec![
+                "192.168.1.50:54123",
+                "192.168.1.60:54124",
+                "[2001:db8::1]:54123",
+            ]
+        );
+        // Second call is idempotent
+        assert!(!sanitize_peer_addresses(&mut cfg));
+    }
+
+    #[test]
+    fn test_update_paired_peer_config_normalizes_and_stores_pin() {
+        let mut cfg = AppConfig::default();
+        cfg.sync.pairing_pin = "111111".to_string();
+        cfg.sync.peer_addresses = vec!["192.168.1.50:49382".to_string()];
+
+        update_paired_peer_config(
+            &mut cfg,
+            "192.168.1.50",
+            "cachyos-laptop",
+            "192.168.1.50:54124",
+            "999999",
+        );
+
+        assert!(cfg.sync.enabled);
+        assert!(cfg.sync.trusted_peers.contains(&"192.168.1.50".to_string()));
+        assert!(cfg
+            .sync
+            .trusted_peers
+            .contains(&"cachyos-laptop".to_string()));
+        assert_eq!(
+            cfg.sync.peer_addresses,
+            vec!["192.168.1.50:54124".to_string()]
+        );
+        assert_eq!(
+            cfg.sync
+                .pin_for_peer("192.168.1.50:54124", "cachyos-laptop"),
+            "999999"
+        );
+    }
+
+    #[test]
+    fn test_recent_capture_dedup() {
+        let mut recent = std::collections::VecDeque::new();
+        assert!(!is_recent_duplicate(&mut recent, "hash1"));
+        record_recent_capture(&mut recent, "hash1".to_string());
+        assert!(is_recent_duplicate(&mut recent, "hash1"));
+        assert!(!is_recent_duplicate(&mut recent, "hash2"));
+    }
 }

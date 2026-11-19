@@ -1,7 +1,9 @@
 use crate::injector::traits::PasteInjector;
 use async_trait::async_trait;
+use std::process::Stdio;
+use std::time::Duration;
 use tokio::process::Command;
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub struct YdotoolInjector;
 
@@ -39,11 +41,19 @@ impl PasteInjector for YdotoolInjector {
         } else {
             &["key", "29:1", "47:1", "47:0", "29:0"]
         };
-        Command::new("ydotool")
-            .args(args)
-            .status()
-            .await
-            .map(|s| s.success())
-            .unwrap_or(false)
+        let mut cmd = Command::new("ydotool");
+        cmd.args(args).stdin(Stdio::null()).kill_on_drop(true);
+
+        match tokio::time::timeout(Duration::from_secs(2), cmd.status()).await {
+            Ok(Ok(status)) => status.success(),
+            Ok(Err(e)) => {
+                debug!("ydotool execution failed: {}", e);
+                false
+            }
+            Err(_) => {
+                warn!("ydotool timed out after 2s");
+                false
+            }
+        }
     }
 }

@@ -283,29 +283,45 @@ impl DaemonServer {
                     offset,
                     filter,
                     pinned_only,
-                } => match repo.list(limit, offset, filter, pinned_only) {
-                    Ok(mut entries) => {
+                } => {
+                    let repo_c = repo.clone();
+                    let crypto_c = Arc::clone(&crypto);
+                    match tokio::task::spawn_blocking(move || {
+                        let mut entries = repo_c.list(limit, offset, filter, pinned_only)?;
                         for e in &mut entries {
-                            decrypt_entry(e, &repo, &crypto);
+                            decrypt_entry(e, &repo_c, &crypto_c);
                         }
-                        IpcResponse::Entries(entries)
+                        Ok::<_, clipboard_history_core::error::CoreError>(entries)
+                    })
+                    .await
+                    {
+                        Ok(Ok(entries)) => IpcResponse::Entries(entries),
+                        Ok(Err(e)) => IpcResponse::Error(e.to_string()),
+                        Err(e) => IpcResponse::Error(format!("Task join error: {}", e)),
                     }
-                    Err(e) => IpcResponse::Error(e.to_string()),
-                },
+                }
 
                 IpcRequest::Search {
                     query,
                     limit,
                     offset,
-                } => match repo.search(&query, limit, offset) {
-                    Ok(mut entries) => {
+                } => {
+                    let repo_c = repo.clone();
+                    let crypto_c = Arc::clone(&crypto);
+                    match tokio::task::spawn_blocking(move || {
+                        let mut entries = repo_c.search(&query, limit, offset)?;
                         for e in &mut entries {
-                            decrypt_entry(e, &repo, &crypto);
+                            decrypt_entry(e, &repo_c, &crypto_c);
                         }
-                        IpcResponse::Entries(entries)
+                        Ok::<_, clipboard_history_core::error::CoreError>(entries)
+                    })
+                    .await
+                    {
+                        Ok(Ok(entries)) => IpcResponse::Entries(entries),
+                        Ok(Err(e)) => IpcResponse::Error(e.to_string()),
+                        Err(e) => IpcResponse::Error(format!("Task join error: {}", e)),
                     }
-                    Err(e) => IpcResponse::Error(e.to_string()),
-                },
+                }
 
                 IpcRequest::GetEntry { id } => match repo.get_by_id(&id) {
                     Ok(mut entry) => {
@@ -434,32 +450,42 @@ impl DaemonServer {
                     Err(e) => IpcResponse::Error(e.to_string()),
                 },
 
-                IpcRequest::ClearHistory { include_pinned } => match repo.clear(include_pinned) {
-                    Ok(_) => {
-                        if let Ok(active_hashes) = repo.get_all_blob_hashes() {
-                            let _ = blob_store.cleanup_orphans(&active_hashes);
+                IpcRequest::ClearHistory { include_pinned } => {
+                    let repo_c = repo.clone();
+                    let blob_c = blob_store.clone();
+                    let clear_res = tokio::task::spawn_blocking(move || {
+                        repo_c.clear(include_pinned)?;
+                        if let Ok(active_hashes) = repo_c.get_all_blob_hashes() {
+                            let _ = blob_c.cleanup_orphans(&active_hashes);
                         }
+                        Ok::<_, clipboard_history_core::error::CoreError>(())
+                    })
+                    .await;
 
-                        // If Network Sync is enabled, broadcast ClearHistorySync to all paired devices
-                        let sync_cfg = config.read().await.sync.clone();
-                        if sync_cfg.enabled {
-                            let active_peers = peer_tracker.get_all_peers().await;
-                            let clear_msg =
-                                clipboard_history_core::sync::SyncMessage::ClearHistorySync {
-                                    origin_device: sync_cfg.device_name.clone(),
-                                    include_pinned,
-                                };
-                            crate::sync_service::broadcast_sync_message(
-                                &sync_cfg,
-                                &active_peers,
-                                clear_msg,
-                            );
+                    match clear_res {
+                        Ok(Ok(())) => {
+                            // If Network Sync is enabled, broadcast ClearHistorySync to all paired devices
+                            let sync_cfg = config.read().await.sync.clone();
+                            if sync_cfg.enabled {
+                                let active_peers = peer_tracker.get_all_peers().await;
+                                let clear_msg =
+                                    clipboard_history_core::sync::SyncMessage::ClearHistorySync {
+                                        origin_device: sync_cfg.device_name.clone(),
+                                        include_pinned,
+                                    };
+                                crate::sync_service::broadcast_sync_message(
+                                    &sync_cfg,
+                                    &active_peers,
+                                    clear_msg,
+                                );
+                            }
+
+                            IpcResponse::Success
                         }
-
-                        IpcResponse::Success
+                        Ok(Err(e)) => IpcResponse::Error(e.to_string()),
+                        Err(e) => IpcResponse::Error(format!("Task join error: {}", e)),
                     }
-                    Err(e) => IpcResponse::Error(e.to_string()),
-                },
+                }
 
                 IpcRequest::GetStatus => {
                     let total = repo.count().unwrap_or(0);
@@ -486,7 +512,11 @@ impl DaemonServer {
 
                 IpcRequest::UpdateConfig { config: new_cfg } => {
                     let mut guard = config.write().await;
-                    *guard = *new_cfg.clone();
+                    let preserved_trusted = guard.sync.trusted_peers.clone();
+                    let preserved_pins = guard.sync.peer_pins.clone();
+                    *guard = *new_cfg;
+                    guard.sync.trusted_peers = preserved_trusted;
+                    guard.sync.peer_pins = preserved_pins;
                     let save_res = guard.save(AppConfig::config_path());
                     if let Err(e) = save_res {
                         IpcResponse::Error(e.to_string())
@@ -503,34 +533,66 @@ impl DaemonServer {
                 IpcRequest::TriggerSyncScan => {
                     peer_tracker.trigger_scan().await;
 
-                    let trusted = config.read().await.sync.trusted_peers.clone();
-                    let my_dev = config.read().await.sync.device_name.clone();
-                    let my_pin = config.read().await.sync.pairing_pin.clone();
-                    let (enc_enabled, max_entries) = {
+                    let (sync_cfg, enc_enabled, max_entries) = {
                         let c = config.read().await;
-                        (c.security.encryption_enabled, c.general.max_entries)
+                        (
+                            c.sync.clone(),
+                            c.security.encryption_enabled,
+                            c.general.max_entries,
+                        )
                     };
+                    let active_peers = peer_tracker.get_all_peers().await;
                     let repo_clone = repo.clone();
                     let blob_clone = blob_store.clone();
                     let crypto_clone = crypto.clone();
                     let echo_tracker_clone = echo_tracker.clone();
 
                     tokio::spawn(async move {
-                        for peer in trusted {
-                            if peer.contains('.') || peer.contains(':') {
-                                let _ = crate::sync_service::perform_mutual_history_sync(
-                                    &peer,
-                                    &my_pin,
-                                    &my_dev,
-                                    repo_clone.clone(),
-                                    blob_clone.clone(),
-                                    crypto_clone.clone(),
-                                    enc_enabled,
-                                    max_entries,
-                                    echo_tracker_clone.clone(),
-                                )
-                                .await;
+                        let mut targets: Vec<(String, String)> = Vec::new();
+                        let mut seen_ips: Vec<String> = Vec::new();
+
+                        let mut push_target = |addr: &str, dev_name: &str| {
+                            let clean = clipboard_history_core::sync::clean_ip_address(addr);
+                            if clean.is_empty() || seen_ips.contains(&clean) {
+                                return;
                             }
+                            if clean.parse::<std::net::IpAddr>().is_ok()
+                                || addr.contains('.')
+                                || addr.contains(':')
+                            {
+                                seen_ips.push(clean);
+                                targets.push((addr.to_string(), dev_name.to_string()));
+                            }
+                        };
+
+                        for (addr, dev_name) in &active_peers {
+                            if sync_cfg.is_peer_trusted(addr, dev_name) {
+                                push_target(addr, dev_name);
+                            }
+                        }
+                        for peer in &sync_cfg.peer_addresses {
+                            push_target(peer, "");
+                        }
+                        for peer in &sync_cfg.trusted_peers {
+                            if peer.contains('.') || peer.contains(':') {
+                                push_target(peer, "");
+                            }
+                        }
+
+                        for (peer, dev_name) in targets {
+                            let pin = sync_cfg.pin_for_peer(&peer, &dev_name);
+                            let _ = crate::sync_service::perform_mutual_history_sync(
+                                &peer,
+                                &pin,
+                                &sync_cfg.device_name,
+                                repo_clone.clone(),
+                                blob_clone.clone(),
+                                crypto_clone.clone(),
+                                enc_enabled,
+                                max_entries,
+                                echo_tracker_clone.clone(),
+                            )
+                            .await;
                         }
                     });
 
@@ -570,21 +632,34 @@ impl DaemonServer {
                     cfg.sync.trusted_peers.retain(|p| {
                         let clean_p = clipboard_history_core::sync::clean_ip_address(p);
                         p != &peer_identifier
-                            && clean_p != clean_id
-                            && !clean_p.starts_with(&clean_id)
+                            && (clean_id.is_empty() || clean_p != clean_id)
                             && !matching_names.contains(p)
                             && !matching_addrs.contains(p)
                     });
                     cfg.sync.peer_addresses.retain(|p| {
                         let clean_p = clipboard_history_core::sync::clean_ip_address(p);
                         p != &peer_identifier
-                            && clean_p != clean_id
-                            && !clean_p.starts_with(&clean_id)
+                            && (clean_id.is_empty() || clean_p != clean_id)
                             && !matching_names.contains(p)
                             && !matching_addrs.contains(p)
                     });
+                    cfg.sync.peer_pins.remove(&peer_identifier);
+                    if !clean_id.is_empty() {
+                        cfg.sync.peer_pins.remove(&clean_id);
+                    }
+                    for a in &matching_addrs {
+                        cfg.sync.peer_pins.remove(a);
+                        let clean_a = clipboard_history_core::sync::clean_ip_address(a);
+                        if !clean_a.is_empty() {
+                            cfg.sync.peer_pins.remove(&clean_a);
+                        }
+                    }
+                    for n in &matching_names {
+                        cfg.sync.peer_pins.remove(n);
+                    }
                     let _ = cfg.save(AppConfig::config_path());
                     let my_dev = cfg.sync.device_name.clone();
+                    let listen_port = cfg.sync.listen_port;
                     drop(cfg);
 
                     peer_tracker.remove_peer(&peer_identifier).await;
@@ -600,15 +675,12 @@ impl DaemonServer {
                         if addr.is_empty() {
                             return;
                         }
-                        let clean = clipboard_history_core::sync::clean_ip_address(addr);
-                        if clean.contains('.') {
-                            let p1 = format!("{}:54123", clean);
-                            let p2 = format!("{}:54124", clean);
-                            if !candidate_addrs.contains(&p1) {
-                                candidate_addrs.push(p1);
-                            }
-                            if !candidate_addrs.contains(&p2) {
-                                candidate_addrs.push(p2);
+                        for candidate in clipboard_history_core::sync::build_candidate_sync_addrs(
+                            addr,
+                            listen_port,
+                        ) {
+                            if !candidate_addrs.contains(&candidate) {
+                                candidate_addrs.push(candidate);
                             }
                         }
                     };
@@ -626,6 +698,7 @@ impl DaemonServer {
                             read_sync_message, send_sync_message, SyncMessage,
                         };
                         use std::time::Duration;
+                        use tokio::io::AsyncWriteExt;
 
                         for target_addr in candidate_addrs {
                             if let Ok(Ok(mut stream)) = tokio::time::timeout(
@@ -638,17 +711,23 @@ impl DaemonServer {
                                 let unpair_req = SyncMessage::UnpairRequest {
                                     origin_device: my_dev.clone(),
                                 };
-                                if send_sync_message(&mut writer, "CH_PAIRING_V1", &unpair_req)
-                                    .await
-                                    .is_ok()
-                                {
+                                let send_ok = tokio::time::timeout(
+                                    Duration::from_secs(5),
+                                    send_sync_message(&mut writer, "CH_PAIRING_V1", &unpair_req),
+                                )
+                                .await
+                                .is_ok_and(|r| r.is_ok());
+
+                                if send_ok {
                                     let _ = tokio::time::timeout(
                                         Duration::from_secs(3),
                                         read_sync_message(&mut reader, "CH_PAIRING_V1"),
                                     )
                                     .await;
+                                    let _ = writer.shutdown().await;
                                     break;
                                 }
+                                let _ = writer.shutdown().await;
                             }
                         }
                     });
@@ -658,29 +737,21 @@ impl DaemonServer {
 
                 IpcRequest::SendPairingRequest { peer_address } => {
                     use clipboard_history_core::sync::{
-                        read_sync_message, send_sync_message, SyncMessage,
+                        build_candidate_sync_addrs, clean_ip_address, format_peer_socket_addr,
+                        read_sync_message, send_sync_message, split_host_and_port, SyncMessage,
                     };
                     use std::time::Duration;
+                    use tokio::io::AsyncWriteExt;
 
                     let current = config.read().await.sync.clone();
                     let my_dev = current.device_name.clone();
                     let my_pin = current.pairing_pin.clone();
                     let request_id = format!("{:x}", rand::random::<u128>());
 
-                    let candidate_addrs = if peer_address.contains(':') {
-                        let parts: Vec<&str> = peer_address.split(':').collect();
-                        let ip = parts[0];
-                        let port: u16 = parts[1].parse().unwrap_or(54123);
-                        let alt_port = if port == 54123 { 54124 } else { 54123 };
-                        vec![peer_address.clone(), format!("{}:{}", ip, alt_port)]
-                    } else {
-                        vec![
-                            format!("{}:54123", peer_address),
-                            format!("{}:54124", peer_address),
-                        ]
-                    };
+                    let candidate_addrs =
+                        build_candidate_sync_addrs(&peer_address, current.listen_port);
 
-                    let mut connected_stream = None;
+                    let mut connected: Option<(tokio::net::TcpStream, String)> = None;
                     for addr in &candidate_addrs {
                         if let Ok(Ok(stream)) = tokio::time::timeout(
                             Duration::from_secs(4),
@@ -688,12 +759,12 @@ impl DaemonServer {
                         )
                         .await
                         {
-                            connected_stream = Some(stream);
+                            connected = Some((stream, addr.clone()));
                             break;
                         }
                     }
 
-                    if let Some(mut stream) = connected_stream {
+                    if let Some((mut stream, connected_addr)) = connected {
                         let (mut reader, mut writer) = stream.split();
                         let pair_req = SyncMessage::PairingRequest {
                             origin_device: my_dev.clone(),
@@ -701,115 +772,156 @@ impl DaemonServer {
                             request_id: request_id.clone(),
                         };
 
-                        if let Err(e) =
-                            send_sync_message(&mut writer, "CH_PAIRING_V1", &pair_req).await
-                        {
-                            IpcResponse::PairingResult {
-                                success: false,
-                                message: format!("Failed to send pairing request: {}", e),
-                                peer_address: peer_address.clone(),
-                                device_name: String::new(),
+                        let send_res = tokio::time::timeout(
+                            Duration::from_secs(5),
+                            send_sync_message(&mut writer, "CH_PAIRING_V1", &pair_req),
+                        )
+                        .await;
+                        match send_res {
+                            Err(_) => {
+                                let _ = writer.shutdown().await;
+                                IpcResponse::PairingResult {
+                                    success: false,
+                                    message: "Timed out sending pairing request".to_string(),
+                                    peer_address: peer_address.clone(),
+                                    device_name: String::new(),
+                                }
                             }
-                        } else {
-                            // Wait up to 45 seconds for peer's user to accept/reject
-                            let response_fut = read_sync_message(&mut reader, "CH_PAIRING_V1");
-                            match tokio::time::timeout(Duration::from_secs(45), response_fut).await
-                            {
-                                Ok(Ok(SyncMessage::PairingResponse {
-                                    accepted: true,
-                                    device_name,
-                                    ..
-                                })) => {
-                                    let mut cfg = config.write().await;
-                                    let clean_ip = if let Some(idx) = peer_address.find(':') {
-                                        peer_address[..idx].to_string()
-                                    } else {
-                                        peer_address.clone()
-                                    };
-                                    if !cfg.sync.trusted_peers.contains(&clean_ip) {
-                                        cfg.sync.trusted_peers.push(clean_ip);
-                                    }
-                                    if !device_name.is_empty()
-                                        && !cfg.sync.trusted_peers.contains(&device_name)
-                                    {
-                                        cfg.sync.trusted_peers.push(device_name.clone());
-                                    }
-                                    if !cfg.sync.peer_addresses.contains(&peer_address) {
-                                        cfg.sync.peer_addresses.push(peer_address.clone());
-                                    }
-                                    cfg.sync.enabled = true;
-                                    let _ = cfg.save(AppConfig::config_path());
-                                    drop(cfg);
+                            Ok(Err(e)) => {
+                                let _ = writer.shutdown().await;
+                                IpcResponse::PairingResult {
+                                    success: false,
+                                    message: format!("Failed to send pairing request: {}", e),
+                                    peer_address: peer_address.clone(),
+                                    device_name: String::new(),
+                                }
+                            }
+                            Ok(Ok(())) => {
+                                // Wait up to 45 seconds for peer's user to accept/reject
+                                let response_fut = read_sync_message(&mut reader, "CH_PAIRING_V1");
+                                let resp_result =
+                                    tokio::time::timeout(Duration::from_secs(45), response_fut)
+                                        .await;
+                                let _ = writer.shutdown().await;
 
-                                    // Trigger immediate mutual history sync with newly paired peer
-                                    let repo_sync = repo.clone();
-                                    let blob_sync = blob_store.clone();
-                                    let crypto_sync = crypto.clone();
-                                    let peer_sync = peer_address.clone();
-                                    let my_dev_sync = my_dev.clone();
-                                    let my_pin_sync = my_pin.clone();
-                                    let (enc_enabled, max_entries) = {
-                                        let c = config.read().await;
-                                        (c.security.encryption_enabled, c.general.max_entries)
-                                    };
-                                    let echo_tracker_sync = echo_tracker.clone();
+                                match resp_result {
+                                    Ok(Ok(SyncMessage::PairingResponse {
+                                        accepted: true,
+                                        device_name,
+                                        ..
+                                    })) => {
+                                        let (raw_host, port_opt) =
+                                            split_host_and_port(&connected_addr);
+                                        let clean_ip = clean_ip_address(&raw_host);
+                                        let connected_port =
+                                            port_opt.unwrap_or(current.listen_port);
+                                        let normalized_peer_addr = format_peer_socket_addr(
+                                            &clean_ip,
+                                            connected_port,
+                                        );
 
-                                    tokio::spawn(async move {
-                                         crate::sync_service::perform_mutual_history_sync(
-                                             &peer_sync,
-                                             &my_pin_sync,
-                                             &my_dev_sync,
-                                             repo_sync,
-                                             blob_sync,
-                                             crypto_sync,
-                                             enc_enabled,
-                                             max_entries,
-                                             echo_tracker_sync,
-                                         )
-                                         .await;
-                                    });
+                                        let mut cfg = config.write().await;
+                                        if !clean_ip.is_empty()
+                                            && !cfg.sync.trusted_peers.contains(&clean_ip)
+                                        {
+                                            cfg.sync.trusted_peers.push(clean_ip.clone());
+                                        }
+                                        if !device_name.is_empty()
+                                            && !cfg.sync.trusted_peers.contains(&device_name)
+                                        {
+                                            cfg.sync.trusted_peers.push(device_name.clone());
+                                        }
+                                        cfg.sync.peer_addresses.retain(|p| {
+                                            clean_ip_address(p) != clean_ip
+                                        });
+                                        if !normalized_peer_addr.is_empty() {
+                                            cfg.sync
+                                                .peer_addresses
+                                                .push(normalized_peer_addr.clone());
+                                        }
+                                        cfg.sync.enabled = true;
+                                        let sync_pin = cfg
+                                            .sync
+                                            .pin_for_peer(&normalized_peer_addr, &device_name);
+                                        let _ = cfg.save(AppConfig::config_path());
+                                        drop(cfg);
 
-                                    IpcResponse::PairingResult {
-                                        success: true,
+                                        peer_tracker
+                                            .add_or_update(
+                                                normalized_peer_addr.clone(),
+                                                device_name.clone(),
+                                            )
+                                            .await;
+
+                                        // Trigger immediate mutual history sync with newly paired peer
+                                        let repo_sync = repo.clone();
+                                        let blob_sync = blob_store.clone();
+                                        let crypto_sync = crypto.clone();
+                                        let peer_sync = normalized_peer_addr.clone();
+                                        let my_dev_sync = my_dev.clone();
+                                        let (enc_enabled, max_entries) = {
+                                            let c = config.read().await;
+                                            (c.security.encryption_enabled, c.general.max_entries)
+                                        };
+                                        let echo_tracker_sync = echo_tracker.clone();
+
+                                        tokio::spawn(async move {
+                                            crate::sync_service::perform_mutual_history_sync(
+                                                &peer_sync,
+                                                &sync_pin,
+                                                &my_dev_sync,
+                                                repo_sync,
+                                                blob_sync,
+                                                crypto_sync,
+                                                enc_enabled,
+                                                max_entries,
+                                                echo_tracker_sync,
+                                            )
+                                            .await;
+                                        });
+
+                                        IpcResponse::PairingResult {
+                                            success: true,
+                                            message: format!(
+                                                "Successfully paired with '{}'!",
+                                                device_name
+                                            ),
+                                            peer_address: normalized_peer_addr,
+                                            device_name,
+                                        }
+                                    }
+                                    Ok(Ok(SyncMessage::PairingResponse {
+                                        accepted: false,
+                                        message,
+                                        ..
+                                    })) => IpcResponse::PairingResult {
+                                        success: false,
+                                        message: format!("Pairing rejected: {}", message),
+                                        peer_address: peer_address.clone(),
+                                        device_name: String::new(),
+                                    },
+                                    Ok(Err(e)) => IpcResponse::PairingResult {
+                                        success: false,
                                         message: format!(
-                                            "Successfully paired with '{}'!",
-                                            device_name
+                                            "Protocol error while receiving response: {}",
+                                            e
                                         ),
                                         peer_address: peer_address.clone(),
-                                        device_name,
-                                    }
+                                        device_name: String::new(),
+                                    },
+                                    Err(_) => IpcResponse::PairingResult {
+                                        success: false,
+                                        message: "No response received from remote device (timeout). Ensure the device is powered on and connected to the network.".to_string(),
+                                        peer_address: peer_address.clone(),
+                                        device_name: String::new(),
+                                    },
+                                    _ => IpcResponse::PairingResult {
+                                        success: false,
+                                        message: "Unknown response type received.".to_string(),
+                                        peer_address: peer_address.clone(),
+                                        device_name: String::new(),
+                                    },
                                 }
-                                Ok(Ok(SyncMessage::PairingResponse {
-                                    accepted: false,
-                                    message,
-                                    ..
-                                })) => IpcResponse::PairingResult {
-                                    success: false,
-                                    message: format!("Pairing rejected: {}", message),
-                                    peer_address: peer_address.clone(),
-                                    device_name: String::new(),
-                                },
-                                Ok(Err(e)) => IpcResponse::PairingResult {
-                                    success: false,
-                                    message: format!(
-                                        "Protocol error while receiving response: {}",
-                                        e
-                                    ),
-                                    peer_address: peer_address.clone(),
-                                    device_name: String::new(),
-                                },
-                                Err(_) => IpcResponse::PairingResult {
-                                    success: false,
-                                    message: "No response received from remote device (timeout). Ensure the device is powered on and connected to the network.".to_string(),
-                                    peer_address: peer_address.clone(),
-                                    device_name: String::new(),
-                                },
-                                _ => IpcResponse::PairingResult {
-                                    success: false,
-                                    message: "Unknown response type received.".to_string(),
-                                    peer_address: peer_address.clone(),
-                                    device_name: String::new(),
-                                },
                             }
                         }
                     } else {
@@ -826,31 +938,72 @@ impl DaemonServer {
                 }
 
                 IpcRequest::GetBlob { hash } => {
-                    let res = if config.read().await.security.encryption_enabled {
-                        blob_store
-                            .read_decrypted(&hash, &crypto)
-                            .or_else(|_| blob_store.read(&hash))
-                    } else {
-                        blob_store.read(&hash)
-                    };
-                    match res {
-                        Ok(bytes) => IpcResponse::Blob(bytes),
-                        Err(e) => IpcResponse::Error(e.to_string()),
+                    let enc = config.read().await.security.encryption_enabled;
+                    let blob_c = blob_store.clone();
+                    let crypto_c = Arc::clone(&crypto);
+                    match tokio::task::spawn_blocking(move || {
+                        if enc {
+                            blob_c
+                                .read_decrypted(&hash, &crypto_c)
+                                .or_else(|_| blob_c.read(&hash))
+                        } else {
+                            blob_c.read(&hash)
+                        }
+                    })
+                    .await
+                    {
+                        Ok(Ok(bytes)) => IpcResponse::Blob(bytes),
+                        Ok(Err(e)) => IpcResponse::Error(e.to_string()),
+                        Err(e) => IpcResponse::Error(format!("Task join error: {}", e)),
                     }
                 }
 
                 IpcRequest::AddManualEntry { text } => {
+                    let enc_enabled = config.read().await.security.encryption_enabled;
                     let hash = BlobStore::compute_hash(text.as_bytes());
-                    let entry = ClipboardEntry::new_text(
+                    let mut entry = ClipboardEntry::new_text(
                         text,
-                        hash,
+                        hash.clone(),
                         vec!["text/plain".to_string()],
                         Some("cli".to_string()),
                     );
+                    let orig_id = entry.id.clone();
+                    let mut wrapped_dek_opt = None;
+                    if enc_enabled {
+                        let already_exists = repo.get_by_hash(&hash).ok().flatten().is_some();
+                        if !already_exists {
+                            if let Ok(wrapped_dek) = crypto.encrypt_entry_envelope(&mut entry) {
+                                wrapped_dek_opt = Some(wrapped_dek);
+                            } else {
+                                entry.preview =
+                                    crypto.encrypt_str(&entry.preview).unwrap_or(entry.preview);
+                                entry.text_content =
+                                    entry.text_content.and_then(|t| crypto.encrypt_str(&t).ok());
+                                entry.html_content =
+                                    entry.html_content.and_then(|h| crypto.encrypt_str(&h).ok());
+                            }
+                        } else {
+                            entry.preview =
+                                crypto.encrypt_str(&entry.preview).unwrap_or(entry.preview);
+                            entry.text_content =
+                                entry.text_content.and_then(|t| crypto.encrypt_str(&t).ok());
+                            entry.html_content =
+                                entry.html_content.and_then(|h| crypto.encrypt_str(&h).ok());
+                        }
+                    }
+
                     match repo.insert_or_update(&entry) {
-                        Ok(saved) => {
+                        Ok(mut saved) => {
+                            if let Some(wrapped_dek) = wrapped_dek_opt {
+                                if saved.id == orig_id {
+                                    let _ = repo.insert_entry_dek(&saved.id, &wrapped_dek, &[]);
+                                }
+                            }
                             let sync_cfg = config.read().await.sync.clone();
                             if sync_cfg.enabled {
+                                crate::sync_service::decrypt_entry_for_transit(
+                                    &mut saved, &repo, &crypto,
+                                );
                                 let active_peers = peer_tracker.get_all_peers().await;
                                 let msg = clipboard_history_core::sync::SyncMessage::EntrySync {
                                     origin_device: sync_cfg.device_name.clone(),
@@ -906,8 +1059,12 @@ impl DaemonServer {
                 }
 
                 IpcRequest::CheckFirewall => {
-                    let result = clipboard_history_core::check_firewall_status();
-                    IpcResponse::FirewallStatus(result)
+                    match tokio::task::spawn_blocking(clipboard_history_core::check_firewall_status)
+                        .await
+                    {
+                        Ok(result) => IpcResponse::FirewallStatus(result),
+                        Err(e) => IpcResponse::Error(format!("Task join error: {}", e)),
+                    }
                 }
 
                 IpcRequest::PerformOcr { blob_hash } => {
@@ -963,10 +1120,14 @@ impl DaemonServer {
                     }
                 }
 
-                IpcRequest::BatchDelete { ids } => match repo.batch_delete(&ids) {
-                    Ok(count) => IpcResponse::BatchSuccess { count },
-                    Err(e) => IpcResponse::Error(e.to_string()),
-                },
+                IpcRequest::BatchDelete { ids } => {
+                    let repo_c = repo.clone();
+                    match tokio::task::spawn_blocking(move || repo_c.batch_delete(&ids)).await {
+                        Ok(Ok(count)) => IpcResponse::BatchSuccess { count },
+                        Ok(Err(e)) => IpcResponse::Error(e.to_string()),
+                        Err(e) => IpcResponse::Error(format!("Task join error: {}", e)),
+                    }
+                }
 
                 IpcRequest::BatchPin { ids, pinned } => {
                     let mut items = Vec::new();

@@ -126,6 +126,7 @@ pub fn ensure_systemd_unit_installed() -> Result<bool, String> {
 Description=Universal Linux Clipboard History Daemon
 Documentation=https://github.com/alierenaltindag/clipboard-history
 After=graphical-session.target
+PartOf=graphical-session.target
 
 [Service]
 Type=simple
@@ -134,7 +135,7 @@ Restart=on-failure
 RestartSec=2s
 Environment=RUST_LOG=info
 Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
-PassEnvironment=WAYLAND_DISPLAY DISPLAY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XAUTHORITY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
+PassEnvironment=WAYLAND_DISPLAY DISPLAY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XAUTHORITY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS HYPRLAND_INSTANCE_SIGNATURE SWAYSOCK KDE_SESSION_VERSION XDG_SESSION_DESKTOP
 Slice=app.slice
 TimeoutStopSec=5s
 UMask=0077
@@ -398,6 +399,10 @@ pub async fn smart_start_daemon() -> Result<IpcClient, String> {
                 "XDG_CURRENT_DESKTOP",
                 "XDG_SESSION_TYPE",
                 "XDG_RUNTIME_DIR",
+                "HYPRLAND_INSTANCE_SIGNATURE",
+                "SWAYSOCK",
+                "KDE_SESSION_VERSION",
+                "XDG_SESSION_DESKTOP",
             ])
             .status();
 

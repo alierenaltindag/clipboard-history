@@ -9,19 +9,37 @@ struct WindowInfoCache {
 }
 
 pub struct WindowFocusDetector {
-    is_x11: bool,
     cache: Mutex<Option<WindowInfoCache>>,
 }
 
 impl WindowFocusDetector {
     pub fn new() -> Self {
-        let is_x11 = std::env::var("DISPLAY").is_ok()
-            && std::env::var("WAYLAND_DISPLAY").is_err()
-            && std::env::var("XDG_SESSION_TYPE").unwrap_or_default() != "wayland";
         Self {
-            is_x11,
             cache: Mutex::new(None),
         }
+    }
+
+    fn is_x11_env(
+        display: Option<&str>,
+        wayland_display: Option<&str>,
+        session_type: Option<&str>,
+    ) -> bool {
+        let has_display = display.is_some_and(|v| !v.trim().is_empty());
+        let has_wayland = wayland_display.is_some_and(|v| !v.trim().is_empty());
+        let session_is_wayland =
+            session_type.is_some_and(|v| v.trim().eq_ignore_ascii_case("wayland"));
+        has_display && !has_wayland && !session_is_wayland
+    }
+
+    fn detect_is_x11() -> bool {
+        let display = std::env::var("DISPLAY").ok();
+        let wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
+        let session_type = std::env::var("XDG_SESSION_TYPE").ok();
+        Self::is_x11_env(
+            display.as_deref(),
+            wayland_display.as_deref(),
+            session_type.as_deref(),
+        )
     }
 
     /// Queries the currently active window title and class if accessible (cached for 500ms to avoid process storms).
@@ -34,7 +52,7 @@ impl WindowFocusDetector {
             }
         }
 
-        let res = if self.is_x11 {
+        let res = if Self::detect_is_x11() {
             self.get_x11_active_window()
         } else {
             self.get_wayland_active_window()
@@ -403,16 +421,20 @@ impl WindowFocusDetector {
                 }
             }
 
-            if which::which("qdbus").is_ok() {
-                if let Ok(output) = Command::new("qdbus")
+            for qdbus_bin in ["qdbus6", "qdbus"] {
+                if which::which(qdbus_bin).is_err() {
+                    continue;
+                }
+                let Ok(output) = Command::new(qdbus_bin)
                     .args(["org.kde.KWin", "/KWin", "org.kde.KWin.activeWindow"])
                     .output()
-                {
-                    if output.status.success() {
-                        let win_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                        if !win_name.is_empty() {
-                            return Some((win_name.clone(), win_name));
-                        }
+                else {
+                    continue;
+                };
+                if output.status.success() {
+                    let win_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if !win_name.is_empty() {
+                        return Some((win_name.clone(), win_name));
                     }
                 }
             }
@@ -676,5 +698,25 @@ mod tests {
 
         // Empty title and class
         assert!(!WindowFocusDetector::is_terminal_window("", ""));
+    }
+
+    #[test]
+    fn test_is_x11_env_detection() {
+        assert!(WindowFocusDetector::is_x11_env(
+            Some(":0"),
+            None,
+            Some("x11")
+        ));
+        assert!(!WindowFocusDetector::is_x11_env(
+            Some(":0"),
+            Some("wayland-0"),
+            Some("wayland")
+        ));
+        assert!(!WindowFocusDetector::is_x11_env(
+            Some(":0"),
+            None,
+            Some("Wayland")
+        ));
+        assert!(!WindowFocusDetector::is_x11_env(None, None, Some("x11")));
     }
 }
